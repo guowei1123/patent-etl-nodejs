@@ -1,29 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getBatchById } from '@/lib/db'
+import { getBatchByCode } from '@/lib/db'
 import { isTaskRunning, cancelTask } from '@/lib/etl-pipeline'
 
-// GET /api/sync/status?batch_id=xxx - 获取同步状态
+// GET /api/sync/status?batch_code=xxx - 获取同步状态
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams
-    const batchId = searchParams.get('batch_id')
+    const batchCode = searchParams.get('batch_code')
 
-    if (!batchId) {
+    if (!batchCode) {
       return NextResponse.json(
-        { success: false, error: '缺少 batch_id 参数' },
+        { success: false, error: '缺少 batch_code 参数' },
         { status: 400 },
       )
     }
 
-    const id = parseInt(batchId)
-    if (isNaN(id)) {
-      return NextResponse.json(
-        { success: false, error: '无效的 batch_id' },
-        { status: 400 },
-      )
-    }
-
-    const batch = await getBatchById(id)
+    const batch = await getBatchByCode(batchCode)
 
     if (!batch) {
       return NextResponse.json(
@@ -32,7 +24,7 @@ export async function GET(request: NextRequest) {
       )
     }
 
-    const running = isTaskRunning(id)
+    const running = isTaskRunning(batchCode)
 
     // 计算进度百分比
     let progress = 0
@@ -92,31 +84,23 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { batch_id, action } = body
+    const { batch_code, action } = body
 
-    if (!batch_id || action !== 'cancel') {
+    if (!batch_code || action !== 'cancel') {
       return NextResponse.json(
         { success: false, error: '缺少参数或无效的操作' },
         { status: 400 },
       )
     }
 
-    const id = parseInt(batch_id)
-    if (isNaN(id)) {
-      return NextResponse.json(
-        { success: false, error: '无效的 batch_id' },
-        { status: 400 },
-      )
-    }
-
-    if (!isTaskRunning(id)) {
+    if (!isTaskRunning(batch_code)) {
       return NextResponse.json(
         { success: false, error: '该任务未在运行' },
         { status: 400 },
       )
     }
 
-    const cancelled = cancelTask(id)
+    const cancelled = cancelTask(batch_code)
 
     return NextResponse.json({
       success: cancelled,

@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import useSWR from 'swr'
-import { Sidebar } from '@/components/layout/sidebar'
+import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
 import { PatentTable } from '@/components/patents/patent-table'
 import { Card, CardContent } from '@/components/ui/card'
@@ -46,37 +46,33 @@ export default function PatentsPage() {
   }
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar />
+    <AppShell>
+      <Header
+        title="专利数据"
+        description="浏览和搜索已同步的专利数据"
+        onRefresh={() => mutate()}
+      />
 
-      <main className="flex-1 pl-64">
-        <Header
-          title="专利数据"
-          description="浏览和搜索已同步的专利数据"
-          onRefresh={() => mutate()}
-        />
-
-        <div className="p-6">
-          {isLoading ? (
-            <Card className="bg-card border-border">
-              <CardContent className="py-12">
-                <div className="flex items-center justify-center">
-                  <div className="border-primary h-8 w-8 animate-spin rounded-full border-2 border-t-transparent" />
-                </div>
-              </CardContent>
-            </Card>
-          ) : (
-            <PatentTable
-              data={patents}
-              onPageChange={setPage}
-              onSearch={handleSearch}
-              onTypeFilter={handleTypeFilter}
-              search={search}
-              typeFilter={typeFilter}
-            />
-          )}
-        </div>
-      </main>
-    </div>
+      <div className="p-6">
+        {isLoading ? (
+          <Card className="bg-card border-border">
+            <CardContent className="py-12">
+              <div className="flex items-center justify-center">
+                <div className="border-primary h-8 w-8 animate-spin rounded-full border-2 border-t-transparent" />
+              </div>
+            </CardContent>
+          </Card>
+        ) : (
+          <PatentTable
+            data={patents}
+            onPageChange={setPage}
+            onSearch={handleSearch}
+            onTypeFilter={handleTypeFilter}
+            search={search}
+            typeFilter={typeFilter}
+          />
+        )}
+      </div>
+    </AppShell>
   )
 }

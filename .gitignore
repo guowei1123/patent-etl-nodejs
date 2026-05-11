@@ -44,5 +44,8 @@ next-env.d.ts
 # Vibe Coding
 .claude/
 
-# reference
-ref/
+# documentation
+docs/*.pdf
+
+# ETL data
+/data/

@@ -116,9 +116,7 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
           </div>
           <p className="text-muted-foreground mt-4 text-sm">暂无批次记录</p>
           <Button className="mt-4" size="sm" asChild>
-            <Link href="/">
-              创建新批次
-            </Link>
+            <Link href="/">创建新批次</Link>
           </Button>
         </CardContent>
       </Card>
@@ -152,8 +150,8 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
 
           return (
             <Link
-              key={batch.id}
-              href={`/batches/${batch.id}`}
+              key={batch.batch_code}
+              href={`/batches/${batch.batch_code}`}
               className="block"
             >
               <div className="group border-border bg-secondary/30 hover:bg-secondary/50 rounded-lg border p-4 transition-colors">

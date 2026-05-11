@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
     const search = searchParams.get('search') || undefined
     const patentType = searchParams.get('patent_type') as PatentType | null
-    const batchId = searchParams.get('batch_id')
+    const batchCode = searchParams.get('batch_code')
     const grantDateFrom = searchParams.get('grant_date_from') || undefined
     const grantDateTo = searchParams.get('grant_date_to') || undefined
 
@@ -22,7 +22,7 @@ export async function GET(request: NextRequest) {
       {
         search,
         patent_type: patentType || undefined,
-        batch_id: batchId ? parseInt(batchId) : undefined,
+        batch_code: batchCode || undefined,
         grant_date_from: grantDateFrom,
         grant_date_to: grantDateTo,
       },

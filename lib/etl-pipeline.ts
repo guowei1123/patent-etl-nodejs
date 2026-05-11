@@ -13,7 +13,7 @@ import {
   updateBatchProgress,
   insertPatents,
   addLog,
-  getBatchById,
+  getBatchByCode,
 } from './db'
 import type { PatentType, ETLProgress, SyncBatch, FtpConfig } from '@/types'
 
@@ -28,7 +28,7 @@ export interface ETLOptions {
 
 export interface ETLResult {
   success: boolean
-  batchId: number
+  batchCode: string
   totalFiles: number
   totalPatents: number
   importedPatents: number
@@ -36,17 +36,17 @@ export interface ETLResult {
 }
 
 // 运行中的任务
-const runningTasks = new Map<number, { cancel: () => void }>()
+const runningTasks = new Map<string, { cancel: () => void }>()
 
-export function isTaskRunning(batchId: number): boolean {
-  return runningTasks.has(batchId)
+export function isTaskRunning(batchCode: string): boolean {
+  return runningTasks.has(batchCode)
 }
 
-export function cancelTask(batchId: number): boolean {
-  const task = runningTasks.get(batchId)
+export function cancelTask(batchCode: string): boolean {
+  const task = runningTasks.get(batchCode)
   if (task) {
     task.cancel()
-    runningTasks.delete(batchId)
+    runningTasks.delete(batchCode)
     return true
   }
   return false
@@ -65,7 +65,7 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
   let batch: SyncBatch | null = null
   let ftpClient: FtpClient | null = null
   let cancelled = false
-  const tempSubdir = `batch-${Date.now()}`
+  const tempSubdir = batchCode
 
   const report = (progress: ETLProgress) => {
     if (onProgress) onProgress(progress)
@@ -77,22 +77,25 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
     batch = await createBatch(batchCode, dataType, ftpFolder)
 
     // 设置取消函数
-    runningTasks.set(batch.id, {
+    runningTasks.set(batch.batch_code, {
       cancel: () => {
         cancelled = true
       },
     })
 
-    await addLog(batch.id, 'info', 'ETL任务启动', { ftpFolder, dataType })
+    await addLog(batch.batch_code, 'info', 'ETL任务启动', {
+      ftpFolder,
+      dataType,
+    })
 
     // 连接 FTP
     report({ stage: 'connecting', message: '连接 FTP 服务器...' })
-    await updateBatchStatus(batch.id, 'downloading')
+    await updateBatchStatus(batch.batch_code, 'downloading')
 
     ftpClient = createFtpClient(ftpConfig)
     await ftpClient.connect()
 
-    await addLog(batch.id, 'info', 'FTP连接成功')
+    await addLog(batch.batch_code, 'info', 'FTP连接成功')
 
     if (cancelled) throw new Error('任务已取消')
 
@@ -120,14 +123,18 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
       },
     )
 
-    await updateBatchProgress(batch.id, downloadedFiles.length)
-    await addLog(batch.id, 'info', `下载完成: ${downloadedFiles.length} 个文件`)
+    await updateBatchProgress(batch.batch_code, downloadedFiles.length)
+    await addLog(
+      batch.batch_code,
+      'info',
+      `下载完成: ${downloadedFiles.length} 个文件`,
+    )
 
     if (cancelled) throw new Error('任务已取消')
 
     // 解压文件
     report({ stage: 'extracting', message: '正在解压文件...' })
-    await updateBatchStatus(batch.id, 'extracting')
+    await updateBatchStatus(batch.batch_code, 'extracting')
 
     const extractDir = getTempPath(`${tempSubdir}/extracted`)
     await extractFiles(
@@ -142,7 +149,7 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
           total,
           percentage: Math.round((current / total) * 100),
         })
-        updateBatchProgress(batch!.id, undefined, current)
+        updateBatchProgress(batch!.batch_code, undefined, current)
       },
     )
 
@@ -151,18 +158,22 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
     const totalXmlFiles = xmlFiles.length
 
     await updateBatchProgress(
-      batch.id,
+      batch.batch_code,
       undefined,
       downloadedFiles.length,
       totalXmlFiles,
     )
-    await addLog(batch.id, 'info', `解压完成: ${totalXmlFiles} 个 XML 文件`)
+    await addLog(
+      batch.batch_code,
+      'info',
+      `解压完成: ${totalXmlFiles} 个 XML 文件`,
+    )
 
     if (cancelled) throw new Error('任务已取消')
 
     // 解析 XML
     report({ stage: 'parsing', message: '正在解析专利数据...' })
-    await updateBatchStatus(batch.id, 'parsing')
+    await updateBatchStatus(batch.batch_code, 'parsing')
 
     const patents = await parsePatentFiles(
       xmlFiles,
@@ -179,13 +190,17 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
       },
     )
 
-    await addLog(batch.id, 'info', `解析完成: ${patents.length} 条专利数据`)
+    await addLog(
+      batch.batch_code,
+      'info',
+      `解析完成: ${patents.length} 条专利数据`,
+    )
 
     if (cancelled) throw new Error('任务已取消')
 
     // 导入数据库
     report({ stage: 'importing', message: '正在导入数据库...' })
-    await updateBatchStatus(batch.id, 'importing')
+    await updateBatchStatus(batch.batch_code, 'importing')
 
     const BATCH_SIZE = 100
     let importedCount = 0
@@ -194,11 +209,11 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
       if (cancelled) throw new Error('任务已取消')
 
       const batchPatents = patents.slice(i, i + BATCH_SIZE)
-      const inserted = await insertPatents(batch.id, batchPatents)
+      const inserted = await insertPatents(batch.batch_code, batchPatents)
       importedCount += inserted
 
       await updateBatchProgress(
-        batch.id,
+        batch.batch_code,
         undefined,
         undefined,
         undefined,
@@ -214,12 +229,12 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
       })
     }
 
-    await addLog(batch.id, 'info', `导入完成: ${importedCount} 条记录`)
+    await addLog(batch.batch_code, 'info', `导入完成: ${importedCount} 条记录`)
 
     // 完成
-    await updateBatchStatus(batch.id, 'completed')
+    await updateBatchStatus(batch.batch_code, 'completed')
     await updateBatchProgress(
-      batch.id,
+      batch.batch_code,
       downloadedFiles.length,
       downloadedFiles.length,
       totalXmlFiles,
@@ -227,16 +242,16 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
     )
 
     report({ stage: 'completed', message: 'ETL任务完成!' })
-    await addLog(batch.id, 'info', 'ETL任务成功完成')
+    await addLog(batch.batch_code, 'info', 'ETL任务成功完成')
 
     // 清理临时文件
     cleanTempDir(tempSubdir)
 
-    runningTasks.delete(batch.id)
+    runningTasks.delete(batch.batch_code)
 
     return {
       success: true,
-      batchId: batch.id,
+      batchCode: batch.batch_code,
       totalFiles: downloadedFiles.length,
       totalPatents: totalXmlFiles,
       importedPatents: importedCount,
@@ -248,11 +263,11 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
     report({ stage: 'failed', message: `任务失败: ${errorMessage}` })
 
     if (batch) {
-      await updateBatchStatus(batch.id, 'failed', errorMessage)
-      await addLog(batch.id, 'error', errorMessage, {
+      await updateBatchStatus(batch.batch_code, 'failed', errorMessage)
+      await addLog(batch.batch_code, 'error', errorMessage, {
         stack: error instanceof Error ? error.stack : undefined,
       })
-      runningTasks.delete(batch.id)
+      runningTasks.delete(batch.batch_code)
     }
 
     // 清理临时文件
@@ -264,7 +279,7 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
 
     return {
       success: false,
-      batchId: batch?.id || 0,
+      batchCode: batch?.batch_code || '',
       totalFiles: 0,
       totalPatents: 0,
       importedPatents: 0,
@@ -283,25 +298,25 @@ export async function runETLPipeline(options: ETLOptions): Promise<ETLResult> {
 }
 
 // 获取批次当前状态
-export async function getBatchStatus(batchId: number): Promise<{
+export async function getBatchStatus(batchCode: string): Promise<{
   batch: SyncBatch | null
   isRunning: boolean
 }> {
-  const batch = await getBatchById(batchId)
+  const batch = await getBatchByCode(batchCode)
   return {
     batch,
-    isRunning: isTaskRunning(batchId),
+    isRunning: isTaskRunning(batchCode),
   }
 }
 
 // 重试失败的批次
-export async function retryBatch(batchId: number): Promise<ETLResult> {
-  const batch = await getBatchById(batchId)
+export async function retryBatch(batchCode: string): Promise<ETLResult> {
+  const batch = await getBatchByCode(batchCode)
 
   if (!batch) {
     return {
       success: false,
-      batchId,
+      batchCode,
       totalFiles: 0,
       totalPatents: 0,
       importedPatents: 0,
@@ -312,7 +327,7 @@ export async function retryBatch(batchId: number): Promise<ETLResult> {
   if (batch.status !== 'failed') {
     return {
       success: false,
-      batchId,
+      batchCode,
       totalFiles: 0,
       totalPatents: 0,
       importedPatents: 0,

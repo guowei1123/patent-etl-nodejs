@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import useSWR from 'swr'
 import {
   Dialog,
   DialogContent,
@@ -29,11 +30,21 @@ interface NewBatchDialogProps {
   onSuccess?: () => void
 }
 
+const fetcher = (url: string) => fetch(url).then((res) => res.json())
+
 export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
   const router = useRouter()
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [showFtpBrowser, setShowFtpBrowser] = useState(false)
+
+  const { data: configData } = useSWR<{
+    ftp: {
+      data_paths: { invention: string; utility_model: string }
+    }
+  }>('/api/config', fetcher)
+
+  const dataPaths = configData?.ftp?.data_paths
 
   const [formData, setFormData] = useState({
     batch_code: '',
@@ -41,15 +52,25 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
     ftp_folder: '',
   })
 
-  // 生成默认批次编号
-  const generateBatchCode = () => {
-    const now = new Date()
-    const year = now.getFullYear()
-    const week = Math.ceil(
-      (now.getTime() - new Date(year, 0, 1).getTime()) /
-        (7 * 24 * 60 * 60 * 1000),
-    )
-    return `${year}-W${String(week).padStart(2, '0')}-${formData.data_type === 'invention' ? 'INV' : 'UM'}`
+  // FtpBrowser 打开时定位到数据类型对应的 data 根目录
+  const browserInitialPath = dataPaths
+    ? (formData.data_type === 'invention'
+        ? dataPaths.invention
+        : dataPaths.utility_model) || '/'
+    : '/'
+
+  // 根据 FTP 文件夹路径生成批次编号
+  const generateBatchCode = (dataType: string, ftpFolder: string): string => {
+    const prefix =
+      dataType === 'invention' ? 'CN-PA-TXTS-10-B' : 'CN-PA-TXTS-20-U'
+    const folderName = ftpFolder.split('/').filter(Boolean).pop() || ''
+    const match = folderName.match(/^(\d{8})(rawdata)?$/i)
+    if (match) {
+      const date = match[1]
+      const suffix = match[2] ? '-Raw' : ''
+      return `${prefix}-${date}${suffix}`
+    }
+    return `${prefix}-${folderName}`
   }
 
   const handleSubmit = async () => {
@@ -59,6 +80,16 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
     }
     if (!formData.ftp_folder) {
       toast.error('请选择 FTP 文件夹')
+      return
+    }
+
+    // 校验：必须选择 data 目录下的子目录，不能是 data 根目录本身
+    const dataRoot =
+      formData.data_type === 'invention'
+        ? dataPaths?.invention
+        : dataPaths?.utility_model
+    if (dataRoot && formData.ftp_folder === dataRoot) {
+      toast.error('请选择具体的批次子目录，不能选择数据根目录')
       return
     }
 
@@ -89,7 +120,11 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
   }
 
   const handleSelectFolder = (path: string) => {
-    setFormData((prev) => ({ ...prev, ftp_folder: path }))
+    setFormData((prev) => ({
+      ...prev,
+      ftp_folder: path,
+      batch_code: generateBatchCode(prev.data_type, path),
+    }))
     setShowFtpBrowser(false)
   }
 
@@ -115,9 +150,13 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
               <Label htmlFor="data_type">数据类型</Label>
               <Select
                 value={formData.data_type}
-                onValueChange={(value) =>
-                  setFormData((prev) => ({ ...prev, data_type: value }))
-                }
+                onValueChange={(value) => {
+                  setFormData({
+                    batch_code: '',
+                    data_type: value,
+                    ftp_folder: '',
+                  })
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -140,7 +179,10 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                   onClick={() =>
                     setFormData((prev) => ({
                       ...prev,
-                      batch_code: generateBatchCode(),
+                      batch_code: generateBatchCode(
+                        prev.data_type,
+                        prev.ftp_folder,
+                      ),
                     }))
                   }
                 >
@@ -149,7 +191,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
               </div>
               <Input
                 id="batch_code"
-                placeholder="例如: 2024-W01-INV"
+                placeholder="例如: CN-PA-TXTS-10-B-20231003"
                 value={formData.batch_code}
                 onChange={(e) =>
                   setFormData((prev) => ({
@@ -207,7 +249,11 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
               浏览 FTP 服务器并选择要同步的文件夹
             </DialogDescription>
           </DialogHeader>
-          <FtpBrowser onSelect={handleSelectFolder} />
+          <FtpBrowser
+            key={formData.data_type}
+            initialPath={browserInitialPath}
+            onSelect={handleSelectFolder}
+          />
         </DialogContent>
       </Dialog>
     </>

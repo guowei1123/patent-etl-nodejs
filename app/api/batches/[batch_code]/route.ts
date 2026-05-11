@@ -1,23 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getBatchById, deleteBatch, getLogsByBatch } from '@/lib/db'
+import { getBatchByCode, deleteBatch, getLogsByBatch } from '@/lib/db'
 
-// GET /api/batches/[id] - 获取批次详情
+// GET /api/batches/[batch_code] - 获取批次详情
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: { params: Promise<{ batch_code: string }> },
 ) {
   try {
-    const { id } = await params
-    const batchId = parseInt(id)
+    const { batch_code } = await params
 
-    if (isNaN(batchId)) {
+    if (!batch_code) {
       return NextResponse.json(
-        { success: false, error: '无效的批次ID' },
+        { success: false, error: '缺少批次编号' },
         { status: 400 },
       )
     }
 
-    const batch = await getBatchById(batchId)
+    const batch = await getBatchByCode(batch_code)
 
     if (!batch) {
       return NextResponse.json(
@@ -27,7 +26,7 @@ export async function GET(
     }
 
     // 获取日志
-    const logs = await getLogsByBatch(batchId, 100)
+    const logs = await getLogsByBatch(batch_code, 100)
 
     return NextResponse.json({
       success: true,
@@ -48,23 +47,22 @@ export async function GET(
   }
 }
 
-// DELETE /api/batches/[id] - 删除批次
+// DELETE /api/batches/[batch_code] - 删除批次
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: { params: Promise<{ batch_code: string }> },
 ) {
   try {
-    const { id } = await params
-    const batchId = parseInt(id)
+    const { batch_code } = await params
 
-    if (isNaN(batchId)) {
+    if (!batch_code) {
       return NextResponse.json(
-        { success: false, error: '无效的批次ID' },
+        { success: false, error: '缺少批次编号' },
         { status: 400 },
       )
     }
 
-    const batch = await getBatchById(batchId)
+    const batch = await getBatchByCode(batch_code)
 
     if (!batch) {
       return NextResponse.json(
@@ -85,7 +83,7 @@ export async function DELETE(
       )
     }
 
-    await deleteBatch(batchId)
+    await deleteBatch(batch_code)
 
     return NextResponse.json({
       success: true,

@@ -62,10 +62,23 @@ export async function testConnection(): Promise<{
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect()
   try {
+    // 检测旧 schema（patents 表有 batch_id 而非 batch_code），需要重建
+    const colCheck = await client.query(`
+      SELECT column_name FROM information_schema.columns
+      WHERE table_name = 'patents' AND column_name = 'batch_code' LIMIT 1
+    `)
+    const patentsExists = await client.query(
+      `SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'patents')`,
+    )
+    if (patentsExists.rows[0].exists && colCheck.rows.length === 0) {
+      await client.query(
+        'DROP TABLE IF EXISTS sync_logs, patents, sync_batches CASCADE',
+      )
+    }
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS sync_batches (
-        id              SERIAL PRIMARY KEY,
-        batch_code      VARCHAR(50) UNIQUE NOT NULL,
+        batch_code      VARCHAR(50) PRIMARY KEY,
         data_type       VARCHAR(20) NOT NULL,
         ftp_folder      VARCHAR(500),
         status          VARCHAR(20) DEFAULT 'pending',
@@ -77,11 +90,13 @@ export async function initializeDatabase(): Promise<void> {
         started_at      TIMESTAMP,
         completed_at    TIMESTAMP,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
+      )
+    `)
 
+    await client.query(`
       CREATE TABLE IF NOT EXISTS patents (
         id                  SERIAL PRIMARY KEY,
-        batch_id            INTEGER REFERENCES sync_batches(id) ON DELETE CASCADE,
+        batch_code          VARCHAR(50) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
         patent_number       VARCHAR(50) UNIQUE NOT NULL,
         patent_type         VARCHAR(20) NOT NULL,
         title               TEXT NOT NULL,
@@ -102,22 +117,32 @@ export async function initializeDatabase(): Promise<void> {
         raw_xml             TEXT,
         created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
+      )
+    `)
 
+    await client.query(`
       CREATE TABLE IF NOT EXISTS sync_logs (
         id          SERIAL PRIMARY KEY,
-        batch_id    INTEGER REFERENCES sync_batches(id) ON DELETE CASCADE,
+        batch_code  VARCHAR(50) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
         level       VARCHAR(10),
         message     TEXT,
         details     JSONB,
         created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_patents_type ON patents(patent_type);
-      CREATE INDEX IF NOT EXISTS idx_patents_grant_date ON patents(grant_date);
-      CREATE INDEX IF NOT EXISTS idx_patents_batch_id ON patents(batch_id);
-      CREATE INDEX IF NOT EXISTS idx_sync_logs_batch_id ON sync_logs(batch_id);
+      )
     `)
+
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_patents_type ON patents(patent_type)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_patents_grant_date ON patents(grant_date)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_patents_batch_code ON patents(batch_code)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_sync_logs_batch_code ON sync_logs(batch_code)',
+    )
   } finally {
     client.release()
   }
@@ -137,14 +162,6 @@ export async function createBatch(
     [batchCode, dataType, ftpFolder || null],
   )
   return result.rows[0]
-}
-
-export async function getBatchById(id: number): Promise<SyncBatch | null> {
-  const result = await pool.query<SyncBatch>(
-    'SELECT * FROM sync_batches WHERE id = $1',
-    [id],
-  )
-  return result.rows[0] || null
 }
 
 export async function getBatchByCode(code: string): Promise<SyncBatch | null> {
@@ -195,12 +212,12 @@ export async function getAllBatches(
 }
 
 export async function updateBatchStatus(
-  id: number,
+  batchCode: string,
   status: BatchStatus,
   errorMessage?: string,
 ): Promise<void> {
   const updates: string[] = ['status = $2']
-  const params: (number | string | null)[] = [id, status]
+  const params: (string | null)[] = [batchCode, status]
 
   if (
     status === 'downloading' ||
@@ -208,7 +225,7 @@ export async function updateBatchStatus(
     status === 'parsing' ||
     status === 'importing'
   ) {
-    if (!(await getBatchStartedAt(id))) {
+    if (!(await getBatchStartedAt(batchCode))) {
       updates.push('started_at = CURRENT_TIMESTAMP')
     }
   }
@@ -223,28 +240,28 @@ export async function updateBatchStatus(
   }
 
   await pool.query(
-    `UPDATE sync_batches SET ${updates.join(', ')} WHERE id = $1`,
+    `UPDATE sync_batches SET ${updates.join(', ')} WHERE batch_code = $1`,
     params,
   )
 }
 
-async function getBatchStartedAt(id: number): Promise<Date | null> {
+async function getBatchStartedAt(batchCode: string): Promise<Date | null> {
   const result = await pool.query(
-    'SELECT started_at FROM sync_batches WHERE id = $1',
-    [id],
+    'SELECT started_at FROM sync_batches WHERE batch_code = $1',
+    [batchCode],
   )
   return result.rows[0]?.started_at || null
 }
 
 export async function updateBatchProgress(
-  id: number,
+  batchCode: string,
   totalFiles?: number,
   processedFiles?: number,
   totalPatents?: number,
   importedPatents?: number,
 ): Promise<void> {
   const updates: string[] = []
-  const params: number[] = [id]
+  const params: (string | number)[] = [batchCode]
 
   if (totalFiles !== undefined) {
     params.push(totalFiles)
@@ -265,20 +282,22 @@ export async function updateBatchProgress(
 
   if (updates.length > 0) {
     await pool.query(
-      `UPDATE sync_batches SET ${updates.join(', ')} WHERE id = $1`,
+      `UPDATE sync_batches SET ${updates.join(', ')} WHERE batch_code = $1`,
       params,
     )
   }
 }
 
-export async function deleteBatch(id: number): Promise<void> {
-  await pool.query('DELETE FROM sync_batches WHERE id = $1', [id])
+export async function deleteBatch(batchCode: string): Promise<void> {
+  await pool.query('DELETE FROM sync_batches WHERE batch_code = $1', [
+    batchCode,
+  ])
 }
 
 // ============ Patent 操作 ============
 
 export async function insertPatents(
-  batchId: number,
+  batchCode: string,
   patents: ParsedPatent[],
 ): Promise<number> {
   if (patents.length === 0) return 0
@@ -293,7 +312,7 @@ export async function insertPatents(
       try {
         await client.query(
           `INSERT INTO patents (
-            batch_id, patent_number, patent_type, title, abstract, claims,
+            batch_code, patent_number, patent_type, title, abstract, claims,
             applicant, inventor, application_number, application_date,
             publication_number, publication_date, grant_number, grant_date,
             ipc_codes, agency, agent, priority_info, raw_xml
@@ -304,7 +323,7 @@ export async function insertPatents(
             claims = EXCLUDED.claims,
             updated_at = CURRENT_TIMESTAMP`,
           [
-            batchId,
+            batchCode,
             patent.patent_number,
             patent.patent_type,
             patent.title,
@@ -356,9 +375,9 @@ export async function getPatents(
     conditions.push(`patent_type = $${params.length}`)
   }
 
-  if (filter.batch_id) {
-    params.push(filter.batch_id)
-    conditions.push(`batch_id = $${params.length}`)
+  if (filter.batch_code) {
+    params.push(filter.batch_code)
+    conditions.push(`batch_code = $${params.length}`)
   }
 
   if (filter.search) {
@@ -415,24 +434,24 @@ export async function getPatentById(id: number): Promise<Patent | null> {
 // ============ Log 操作 ============
 
 export async function addLog(
-  batchId: number,
+  batchCode: string,
   level: LogLevel,
   message: string,
   details?: Record<string, unknown>,
 ): Promise<void> {
   await pool.query(
-    'INSERT INTO sync_logs (batch_id, level, message, details) VALUES ($1, $2, $3, $4)',
-    [batchId, level, message, details ? JSON.stringify(details) : null],
+    'INSERT INTO sync_logs (batch_code, level, message, details) VALUES ($1, $2, $3, $4)',
+    [batchCode, level, message, details ? JSON.stringify(details) : null],
   )
 }
 
 export async function getLogsByBatch(
-  batchId: number,
+  batchCode: string,
   limit = 100,
 ): Promise<SyncLog[]> {
   const result = await pool.query<SyncLog>(
-    'SELECT * FROM sync_logs WHERE batch_id = $1 ORDER BY created_at DESC LIMIT $2',
-    [batchId, limit],
+    'SELECT * FROM sync_logs WHERE batch_code = $1 ORDER BY created_at DESC LIMIT $2',
+    [batchCode, limit],
   )
   return result.rows
 }

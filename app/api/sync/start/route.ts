@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
     // 检查批次是否已存在，避免异步任务在 createBatch 时因为唯一约束失败
     const existingBatch = await getBatchByCode(batch_code)
     if (existingBatch) {
-      if (isTaskRunning(existingBatch.id)) {
+      if (isTaskRunning(existingBatch.batch_code)) {
         return NextResponse.json(
           { success: false, error: '该批次任务正在运行中' },
           { status: 409 },

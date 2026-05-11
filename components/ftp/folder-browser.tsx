@@ -64,6 +64,8 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
 
         if (result.success) {
           setEntries(result.data.entries)
+          setCurrentPath(initialPath)
+          setSelectedPath(null)
         } else {
           setError(result.error || '加载失败')
         }

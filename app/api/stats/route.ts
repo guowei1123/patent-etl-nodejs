@@ -1,5 +1,10 @@
 import { NextResponse } from 'next/server'
-import { getDashboardStats, initializeDatabase, testConnection } from '@/lib/db'
+import {
+  getDashboardStats,
+  initializeDatabase,
+  isDbConfigured,
+  testConnection,
+} from '@/lib/db'
 import { isFtpConfigured } from '@/lib/ftp-client'
 
 // GET /api/stats - 获取仪表盘统计数据
@@ -14,7 +19,7 @@ export async function GET() {
         error: '数据库连接失败',
         details: dbTest.error,
         data: {
-          database_connected: false,
+          database_connected: isDbConfigured(),
           ftp_configured: isFtpConfigured(),
           total_batches: 0,
           total_patents: 0,
@@ -37,7 +42,7 @@ export async function GET() {
       success: true,
       data: {
         ...stats,
-        database_connected: true,
+        database_connected: isDbConfigured(),
         ftp_configured: isFtpConfigured(),
       },
     })
@@ -48,7 +53,7 @@ export async function GET() {
         success: false,
         error: error instanceof Error ? error.message : '获取失败',
         data: {
-          database_connected: false,
+          database_connected: isDbConfigured(),
           ftp_configured: isFtpConfigured(),
           total_batches: 0,
           total_patents: 0,

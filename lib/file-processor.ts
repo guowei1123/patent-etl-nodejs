@@ -7,7 +7,7 @@ import yauzl from 'yauzl'
 const gunzip = promisify(zlib.gunzip)
 
 // 临时文件目录
-const TEMP_DIR = process.env.TEMP_DIR || '/tmp/patent-etl'
+const TEMP_DIR = process.env.TEMP_DIR || path.join(process.cwd(), 'data')
 
 export function ensureTempDir(): string {
   if (!fs.existsSync(TEMP_DIR)) {

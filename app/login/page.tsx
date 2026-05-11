@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { ThemeToggle } from '@/components/layout/theme-toggle'
 import { FolderSync, Loader2 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -21,7 +22,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!username || !password) {
       toast.error('请输入用户名和密码')
@@ -51,11 +52,15 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="bg-background flex min-h-screen items-center justify-center">
-      <Card className="bg-card border-border w-full max-w-sm">
+    <div className="bg-background relative flex min-h-screen items-center justify-center px-4">
+      <div className="absolute top-4 right-4">
+        <ThemeToggle />
+      </div>
+
+      <Card className="bg-card border-border w-full max-w-sm shadow-sm">
         <CardHeader className="text-center">
-          <div className="bg-accent mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl">
-            <FolderSync className="text-accent-foreground h-6 w-6" />
+          <div className="bg-primary/12 mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl">
+            <FolderSync className="text-primary h-6 w-6" />
           </div>
           <CardTitle className="text-lg">专利数据湖仓一体化平台</CardTitle>
           <CardDescription>请登录以继续</CardDescription>

@@ -16,7 +16,6 @@ export type LogLevel = 'info' | 'warn' | 'error'
 
 // 同步批次
 export interface SyncBatch {
-  id: number
   batch_code: string
   data_type: PatentType
   ftp_folder: string | null
@@ -34,7 +33,7 @@ export interface SyncBatch {
 // 专利数据
 export interface Patent {
   id: number
-  batch_id: number
+  batch_code: string
   patent_number: string
   patent_type: PatentType
   title: string
@@ -60,7 +59,7 @@ export interface Patent {
 // 同步日志
 export interface SyncLog {
   id: number
-  batch_id: number
+  batch_code: string
   level: LogLevel
   message: string
   details: Record<string, unknown> | null
@@ -154,7 +153,7 @@ export interface PatentFilter {
   search?: string
   grant_date_from?: string
   grant_date_to?: string
-  batch_id?: number
+  batch_code?: string
 }
 
 // 仪表盘统计
