@@ -104,11 +104,11 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
       const result = await response.json()
 
       if (result.success) {
-        toast.success('同步任务已启动')
+        toast.success('批次创建成功')
         setOpen(false)
         setFormData({ batch_code: '', data_type: 'invention', ftp_folder: '' })
         onSuccess?.()
-        router.push('/batches')
+        router.push(`/batches/${formData.batch_code}`)
       } else {
         toast.error(result.error || '启动失败')
       }

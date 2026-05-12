@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getBatchByCode } from '@/lib/db'
-import { isTaskRunning, cancelTask } from '@/lib/etl-pipeline'
+import {
+  isTaskRunning,
+  cancelTask,
+  getDownloadProgress,
+  getDownloadFileList,
+} from '@/lib/etl-pipeline'
 
 // GET /api/sync/status?batch_code=xxx - 获取同步状态
 export async function GET(request: NextRequest) {
@@ -30,33 +35,31 @@ export async function GET(request: NextRequest) {
     let progress = 0
     if (batch.status === 'completed') {
       progress = 100
-    } else if (batch.total_files > 0 || batch.total_patents > 0) {
-      if (batch.status === 'downloading') {
-        progress = Math.min(
-          25,
-          (batch.processed_files / Math.max(batch.total_files, 1)) * 25,
-        )
-      } else if (batch.status === 'extracting') {
-        progress =
-          25 +
-          Math.min(
-            25,
-            (batch.processed_files / Math.max(batch.total_files, 1)) * 25,
-          )
-      } else if (batch.status === 'parsing') {
-        progress =
-          50 +
-          Math.min(
-            25,
-            (batch.imported_patents / Math.max(batch.total_patents, 1)) * 25,
-          )
-      } else if (batch.status === 'importing') {
-        progress =
-          75 +
-          Math.min(
-            25,
-            (batch.imported_patents / Math.max(batch.total_patents, 1)) * 25,
-          )
+    } else {
+      const progressMap: Record<string, number> = {
+        pending: 0,
+        downloading: 0,
+        downloaded: 33,
+        processing: 33,
+        processed: 66,
+        importing: 66,
+        failed: 0,
+      }
+      const base = progressMap[batch.status] ?? 0
+
+      const isActive = ['downloading', 'processing', 'importing'].includes(
+        batch.status,
+      )
+      if (isActive && (batch.total_files > 0 || batch.total_patents > 0)) {
+        const stageProgress =
+          batch.status === 'importing' && batch.total_patents > 0
+            ? (batch.imported_patents / Math.max(batch.total_patents, 1)) * 25
+            : batch.total_files > 0
+              ? (batch.processed_files / Math.max(batch.total_files, 1)) * 25
+              : 0
+        progress = base + Math.min(stageProgress, 25)
+      } else {
+        progress = base
       }
     }
 
@@ -66,6 +69,8 @@ export async function GET(request: NextRequest) {
         batch,
         is_running: running,
         progress: Math.round(progress),
+        current_file: running ? getDownloadProgress(batchCode) : null,
+        file_list: running ? getDownloadFileList(batchCode) : null,
       },
     })
   } catch (error) {

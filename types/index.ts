@@ -5,8 +5,9 @@ export type PatentType = 'invention' | 'utility_model'
 export type BatchStatus =
   | 'pending'
   | 'downloading'
-  | 'extracting'
-  | 'parsing'
+  | 'downloaded'
+  | 'processing'
+  | 'processed'
   | 'importing'
   | 'completed'
   | 'failed'
@@ -82,6 +83,7 @@ export interface FtpConfig {
   user: string
   password: string
   secure: boolean
+  timeout?: number
 }
 
 // 解析后的专利数据 (用于插入数据库前)
@@ -111,8 +113,9 @@ export interface ETLProgress {
   stage:
     | 'connecting'
     | 'downloading'
-    | 'extracting'
-    | 'parsing'
+    | 'downloaded'
+    | 'processing'
+    | 'processed'
     | 'importing'
     | 'completed'
     | 'failed'
@@ -120,6 +123,30 @@ export interface ETLProgress {
   current?: number
   total?: number
   percentage?: number
+}
+
+// 单文件下载进度
+export interface FileDownloadProgress {
+  fileName: string
+  bytesDownloaded: number
+  totalBytes: number
+  speedBytesPerSec: number // 滑动窗口速度，0 = 计算中
+  fileEtaSeconds: number | null // 当前文件剩余秒数
+  batchEtaSeconds: number | null // 整个批次下载剩余秒数
+}
+
+// 文件列表中单个文件的下载状态
+export type FileDownloadStatus =
+  | 'pending'
+  | 'downloading'
+  | 'completed'
+  | 'skipped'
+
+export interface FileDownloadItem {
+  fileName: string
+  fileSize: number
+  status: FileDownloadStatus
+  bytesDownloaded: number
 }
 
 // API 响应

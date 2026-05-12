@@ -1,6 +1,7 @@
 'use client'
 
 import useSWR from 'swr'
+import { useRef } from 'react'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
 import { StatsCards } from '@/components/dashboard/stats-cards'
@@ -15,6 +16,8 @@ import type { DashboardStats, SyncBatch, PaginatedResponse } from '@/types'
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
 export default function DashboardPage() {
+  const hasRunningRef = useRef(false)
+
   const {
     data: statsData,
     error: statsError,
@@ -26,12 +29,16 @@ export default function DashboardPage() {
       ftp_configured: boolean
     }
     error?: string
-  }>('/api/stats', fetcher, { refreshInterval: 10000 })
+  }>('/api/stats', fetcher, {
+    refreshInterval: hasRunningRef.current ? 5000 : 0,
+  })
 
   const { data: batchesData, mutate: mutateBatches } = useSWR<{
     success: boolean
     data: PaginatedResponse<SyncBatch>
-  }>('/api/batches?limit=5', fetcher, { refreshInterval: 5000 })
+  }>('/api/batches?limit=5', fetcher, {
+    refreshInterval: hasRunningRef.current ? 3000 : 0,
+  })
 
   const handleRefresh = () => {
     mutateStats()
@@ -40,6 +47,9 @@ export default function DashboardPage() {
 
   const stats = statsData?.data
   const batches = batchesData?.data?.items || []
+  hasRunningRef.current = batches.some((b) =>
+    ['downloading', 'processing', 'importing'].includes(b.status),
+  )
   const isLoading = !statsData && !statsError
   const showSetupWarning =
     stats && (!stats.database_connected || !stats.ftp_configured)

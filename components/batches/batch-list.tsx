@@ -2,7 +2,6 @@
 
 import Link from 'next/link'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import {
@@ -12,12 +11,13 @@ import {
   XCircle,
   Loader2,
   Download,
-  FileArchive,
   FileSearch,
   Database,
 } from 'lucide-react'
 import type { SyncBatch, BatchStatus } from '@/types'
 import { cn } from '@/lib/utils'
+import { StepProgressIndicator } from './step-progress-indicator'
+import { getProgress } from './step-config'
 
 interface BatchListProps {
   batches: SyncBatch[]
@@ -45,17 +45,23 @@ const statusConfig: Record<
     variant: 'default',
     color: 'text-info',
   },
-  extracting: {
-    label: '解压中',
-    icon: FileArchive,
-    variant: 'default',
-    color: 'text-info',
+  downloaded: {
+    label: '已下载',
+    icon: CheckCircle2,
+    variant: 'outline',
+    color: 'text-warning',
   },
-  parsing: {
-    label: '解析中',
+  processing: {
+    label: '处理中',
     icon: FileSearch,
     variant: 'default',
     color: 'text-info',
+  },
+  processed: {
+    label: '已处理',
+    icon: CheckCircle2,
+    variant: 'outline',
+    color: 'text-warning',
   },
   importing: {
     label: '导入中',
@@ -80,28 +86,6 @@ const statusConfig: Record<
 const dataTypeLabels: Record<string, string> = {
   invention: '发明授权',
   utility_model: '实用新型',
-}
-
-function getProgress(batch: SyncBatch): number {
-  if (batch.status === 'completed') return 100
-  if (batch.status === 'pending') return 0
-  if (batch.status === 'failed') return 0
-
-  const stages = ['downloading', 'extracting', 'parsing', 'importing']
-  const stageIndex = stages.indexOf(batch.status)
-  const baseProgress = stageIndex * 25
-
-  if (batch.total_files > 0 || batch.total_patents > 0) {
-    const stageProgress =
-      batch.status === 'importing' && batch.total_patents > 0
-        ? (batch.imported_patents / batch.total_patents) * 25
-        : batch.total_files > 0
-          ? (batch.processed_files / batch.total_files) * 25
-          : 0
-    return Math.min(baseProgress + stageProgress, 99)
-  }
-
-  return baseProgress
 }
 
 export function BatchList({ batches, showAll = false }: BatchListProps) {
@@ -138,15 +122,17 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
       </CardHeader>
       <CardContent className="space-y-3 pt-0">
         {displayBatches.map((batch) => {
-          const status = statusConfig[batch.status]
+          const status = statusConfig[batch.status] ?? {
+            label: batch.status,
+            icon: Clock,
+            variant: 'secondary' as const,
+            color: 'text-muted-foreground',
+          }
           const StatusIcon = status.icon
           const progress = getProgress(batch)
-          const isRunning = [
-            'downloading',
-            'extracting',
-            'parsing',
-            'importing',
-          ].includes(batch.status)
+          const isRunning = ['downloading', 'processing', 'importing'].includes(
+            batch.status,
+          )
 
           return (
             <Link
@@ -166,7 +152,11 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
                             ? 'bg-destructive/20'
                             : isRunning
                               ? 'bg-info/20'
-                              : 'bg-secondary',
+                              : ['downloaded', 'processed'].includes(
+                                    batch.status,
+                                  )
+                                ? 'bg-warning/20'
+                                : 'bg-secondary',
                       )}
                     >
                       {isRunning ? (
@@ -189,9 +179,11 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
                   </div>
 
                   <div className="flex items-center gap-3">
-                    <Badge variant={status.variant} className="text-xs">
-                      {status.label}
-                    </Badge>
+                    <StepProgressIndicator
+                      status={batch.status}
+                      compact
+                      batch={batch}
+                    />
                     <ChevronRight className="text-muted-foreground h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
                   </div>
                 </div>

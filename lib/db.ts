@@ -176,13 +176,16 @@ export async function getAllBatches(
   page = 1,
   limit = 20,
   status?: BatchStatus,
+  activeOnly = false,
 ): Promise<PaginatedResponse<SyncBatch>> {
   const offset = (page - 1) * limit
 
   let whereClause = ''
   const params: (string | number)[] = []
 
-  if (status) {
+  if (activeOnly) {
+    whereClause = "WHERE status IN ('downloading', 'processing', 'importing')"
+  } else if (status) {
     whereClause = 'WHERE status = $1'
     params.push(status)
   }
@@ -221,8 +224,7 @@ export async function updateBatchStatus(
 
   if (
     status === 'downloading' ||
-    status === 'extracting' ||
-    status === 'parsing' ||
+    status === 'processing' ||
     status === 'importing'
   ) {
     if (!(await getBatchStartedAt(batchCode))) {

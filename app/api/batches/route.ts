@@ -9,11 +9,17 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1')
     const limit = parseInt(searchParams.get('limit') || '20')
     const status = searchParams.get('status') as BatchStatus | null
+    const activeOnly = searchParams.get('active') === 'true'
 
     // 确保数据库表存在
     await initializeDatabase()
 
-    const result = await getAllBatches(page, limit, status || undefined)
+    const result = await getAllBatches(
+      page,
+      limit,
+      activeOnly ? undefined : status || undefined,
+      activeOnly,
+    )
 
     return NextResponse.json({
       success: true,
@@ -37,9 +43,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { batch_code, data_type, ftp_folder } = body
 
-    if (!batch_code || !data_type) {
+    if (!batch_code || !data_type || !ftp_folder) {
       return NextResponse.json(
-        { success: false, error: '缺少必填字段: batch_code, data_type' },
+        {
+          success: false,
+          error: '缺少必填字段: batch_code, data_type, ftp_folder',
+        },
         { status: 400 },
       )
     }

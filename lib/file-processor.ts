@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as zlib from 'zlib'
 import { promisify } from 'util'
+import { StringDecoder } from 'string_decoder'
 import yauzl from 'yauzl'
 
 const gunzip = promisify(zlib.gunzip)
@@ -155,6 +156,7 @@ export async function extractFiles(
   onProgress?: (current: number, total: number, fileName: string) => void,
 ): Promise<string[]> {
   const allExtracted: string[] = []
+  const failedFiles: string[] = []
 
   for (let i = 0; i < filePaths.length; i++) {
     const filePath = filePaths[i]
@@ -168,7 +170,12 @@ export async function extractFiles(
       allExtracted.push(...extracted)
     } catch (error) {
       console.error(`解压文件失败 ${filePath}:`, error)
+      failedFiles.push(path.basename(filePath))
     }
+  }
+
+  if (failedFiles.length > 0) {
+    throw new Error(`解压失败文件: ${failedFiles.join(', ')}`)
   }
 
   return allExtracted
@@ -213,6 +220,30 @@ export function formatFileSize(bytes: number): string {
   return `${size.toFixed(2)} ${units[unitIndex]}`
 }
 
+// 扫描目录中的压缩文件（ZIP、分卷 ZIP），用于跳过下载时构建文件列表
+export function scanLocalArchiveFiles(dirPath: string): string[] {
+  const files: string[] = []
+
+  if (!fs.existsSync(dirPath)) return files
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true })
+  for (const entry of entries) {
+    if (entry.isFile()) {
+      const name = entry.name.toLowerCase()
+      if (
+        name.endsWith('.zip') ||
+        name.endsWith('.gz') ||
+        name.endsWith('.xml') ||
+        /^\.z\d+$/.test(name.substring(name.lastIndexOf('.')))
+      ) {
+        files.push(path.join(dirPath, entry.name))
+      }
+    }
+  }
+
+  return files
+}
+
 // 检查文件是否是专利 XML 文件
 export function isPatentXmlFile(fileName: string): boolean {
   const lowerName = fileName.toLowerCase()
@@ -222,4 +253,83 @@ export function isPatentXmlFile(fileName: string): boolean {
     !lowerName.includes('xsd') &&
     !lowerName.includes('schema')
   )
+}
+
+// 流式遍历 ZIP 中的文件 entry，将内容收集为字符串后回调，不写磁盘
+export async function forEachZipEntry(
+  zipPath: string,
+  handler: (fileName: string, content: string) => void | Promise<void>,
+  filter?: (fileName: string) => boolean,
+): Promise<{ processed: number; skipped: number }> {
+  return new Promise((resolve, reject) => {
+    let processed = 0
+    let skipped = 0
+
+    yauzl.open(zipPath, { lazyEntries: true }, (err, zipfile) => {
+      if (err || !zipfile) {
+        reject(err || new Error('无法打开ZIP文件'))
+        return
+      }
+
+      zipfile.readEntry()
+
+      zipfile.on('entry', (entry) => {
+        // 跳过目录
+        if (/\/$/.test(entry.fileName)) {
+          zipfile.readEntry()
+          return
+        }
+
+        // 应用过滤器
+        if (filter && !filter(entry.fileName)) {
+          skipped++
+          zipfile.readEntry()
+          return
+        }
+
+        zipfile.openReadStream(entry, async (err, readStream) => {
+          if (err || !readStream) {
+            skipped++
+            zipfile.readEntry()
+            return
+          }
+
+          // 收集流数据为字符串
+          const decoder = new StringDecoder('utf-8')
+          const chunks: string[] = []
+
+          readStream.on('data', (chunk: Buffer) => {
+            chunks.push(decoder.write(chunk))
+          })
+
+          readStream.on('end', async () => {
+            chunks.push(decoder.end())
+            const content = chunks.join('')
+
+            try {
+              await handler(entry.fileName, content)
+              processed++
+            } catch {
+              skipped++
+            }
+
+            zipfile.readEntry()
+          })
+
+          readStream.on('error', () => {
+            skipped++
+            zipfile.readEntry()
+          })
+        })
+      })
+
+      zipfile.on('end', () => {
+        resolve({ processed, skipped })
+      })
+
+      zipfile.on('error', (err) => {
+        reject(err)
+      })
+    })
+  })
 }

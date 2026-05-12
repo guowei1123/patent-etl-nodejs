@@ -1,6 +1,6 @@
 'use client'
 
-import { use } from 'react'
+import { use, useRef, useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -21,9 +21,30 @@ import {
   AlertCircle,
   Info,
   Loader2,
+  Play,
+  Wrench,
+  ShieldCheck,
+  FolderCheck,
+  Activity,
+  Timer,
+  HardDrive,
 } from 'lucide-react'
-import type { SyncBatch, SyncLog, BatchStatus } from '@/types'
+import type {
+  SyncBatch,
+  SyncLog,
+  BatchStatus,
+  FileDownloadProgress,
+  FileDownloadItem,
+} from '@/types'
 import { cn } from '@/lib/utils'
+import {
+  formatBytes,
+  formatSpeed,
+  formatDuration,
+  formatProgress,
+} from '@/lib/format'
+import { stepConfig, getProgress } from '@/components/batches/step-config'
+import { StepProgressIndicator } from '@/components/batches/step-progress-indicator'
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
@@ -41,8 +62,17 @@ const statusConfig: Record<
     bgColor: 'bg-secondary',
   },
   downloading: { label: '下载中', color: 'text-info', bgColor: 'bg-info/20' },
-  extracting: { label: '解压中', color: 'text-info', bgColor: 'bg-info/20' },
-  parsing: { label: '解析中', color: 'text-info', bgColor: 'bg-info/20' },
+  downloaded: {
+    label: '已下载',
+    color: 'text-warning',
+    bgColor: 'bg-warning/20',
+  },
+  processing: { label: '处理中', color: 'text-info', bgColor: 'bg-info/20' },
+  processed: {
+    label: '已处理',
+    color: 'text-warning',
+    bgColor: 'bg-warning/20',
+  },
   importing: { label: '导入中', color: 'text-info', bgColor: 'bg-info/20' },
   completed: {
     label: '已完成',
@@ -62,6 +92,162 @@ const logIcons = {
   error: XCircle,
 }
 
+function getNextStep(status: BatchStatus): string | null {
+  const map: Record<string, string> = {
+    pending: 'download',
+    downloaded: 'process',
+    processed: 'import',
+  }
+  return map[status] || null
+}
+
+function DownloadProgressCard({
+  progress,
+}: {
+  progress: FileDownloadProgress
+}) {
+  const filePercent =
+    progress.totalBytes > 0
+      ? Math.min(
+          Math.round((progress.bytesDownloaded / progress.totalBytes) * 100),
+          100,
+        )
+      : 0
+
+  return (
+    <Card className="border-info/30">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <HardDrive className="text-info h-4 w-4" />
+          当前文件下载
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-foreground truncate font-mono text-sm">
+          {progress.fileName}
+        </p>
+
+        <div className="space-y-1">
+          <div className="flex justify-between text-xs">
+            <span className="text-muted-foreground">
+              {formatProgress(progress.bytesDownloaded, progress.totalBytes)}
+            </span>
+            <span className="text-foreground font-medium">{filePercent}%</span>
+          </div>
+          <Progress value={filePercent} className="h-2" />
+        </div>
+
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <p className="text-muted-foreground flex items-center gap-1 text-xs">
+              <Activity className="h-3 w-3" />
+              速度
+            </p>
+            <p className="text-foreground text-sm font-medium">
+              {progress.speedBytesPerSec > 0
+                ? formatSpeed(progress.speedBytesPerSec)
+                : '计算中...'}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground flex items-center gap-1 text-xs">
+              <Timer className="h-3 w-3" />
+              文件剩余
+            </p>
+            <p className="text-foreground text-sm font-medium">
+              {formatDuration(progress.fileEtaSeconds) ?? '计算中...'}
+            </p>
+          </div>
+          <div>
+            <p className="text-muted-foreground flex items-center gap-1 text-xs">
+              <Timer className="h-3 w-3" />
+              批次剩余
+            </p>
+            <p className="text-foreground text-sm font-medium">
+              {formatDuration(progress.batchEtaSeconds) ?? '计算中...'}
+            </p>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function DownloadFileList({ files }: { files: FileDownloadItem[] }) {
+  const statusIcon = (status: FileDownloadItem['status']) => {
+    switch (status) {
+      case 'completed':
+        return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+      case 'skipped':
+        return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+      case 'downloading':
+        return <Loader2 className="text-info h-3.5 w-3.5 animate-spin" />
+      default:
+        return <Clock className="text-muted-foreground h-3.5 w-3.5" />
+    }
+  }
+
+  const completed = files.filter(
+    (f) => f.status === 'completed' || f.status === 'skipped',
+  ).length
+
+  return (
+    <Card className="border-border">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center justify-between text-sm font-medium">
+          <span className="flex items-center gap-2">
+            <FolderCheck className="text-info h-4 w-4" />
+            文件列表
+          </span>
+          <span className="text-muted-foreground text-xs">
+            {completed} / {files.length} 已完成
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ScrollArea className="max-h-[320px]">
+          <div className="space-y-1">
+            {files.map((file) => {
+              const percent =
+                file.fileSize > 0
+                  ? Math.min(
+                      Math.round((file.bytesDownloaded / file.fileSize) * 100),
+                      100,
+                    )
+                  : 0
+              return (
+                <div
+                  key={file.fileName}
+                  className={cn(
+                    'flex items-center gap-3 rounded-md px-3 py-2',
+                    file.status === 'downloading' ? 'bg-info/10' : '',
+                  )}
+                >
+                  {statusIcon(file.status)}
+                  <span className="text-foreground min-w-0 flex-1 truncate font-mono text-xs">
+                    {file.fileName}
+                  </span>
+                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                    {formatBytes(file.fileSize)}
+                  </span>
+                  {file.status === 'downloading' && (
+                    <div className="flex items-center gap-2">
+                      <Progress value={percent} className="h-1.5 w-16" />
+                      <span className="text-foreground w-8 text-right text-xs tabular-nums">
+                        {percent}%
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        </ScrollArea>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function BatchDetailPage({
   params,
 }: {
@@ -69,18 +255,78 @@ export default function BatchDetailPage({
 }) {
   const { batch_code } = use(params)
   const router = useRouter()
+  const runningRef = useRef(false)
+  const [verifying, setVerifying] = useState<'download' | 'extract' | null>(
+    null,
+  )
+  const [verifyResult, setVerifyResult] = useState<{
+    type: 'download' | 'extract'
+    passed: boolean
+    checkedFiles: number
+    failures: {
+      file: string
+      reason: string
+      expected?: string
+      actual?: string
+    }[]
+    report: string
+  } | null>(null)
 
   const { data, error, mutate } = useSWR<{
     success: boolean
     data: { batch: SyncBatch; logs: SyncLog[] }
-  }>(`/api/batches/${batch_code}`, fetcher, { refreshInterval: 3000 })
+  }>(`/api/batches/${batch_code}`, fetcher, {
+    refreshInterval: runningRef.current ? 3000 : 0,
+  })
+
+  // 下载进度实时轮询（仅下载中激活，1 秒间隔）
+  const [isDownloading, setIsDownloading] = useState(false)
+  const { data: statusData } = useSWR<{
+    success: boolean
+    data: {
+      batch: SyncBatch
+      is_running: boolean
+      progress: number
+      current_file: FileDownloadProgress | null
+      file_list: FileDownloadItem[] | null
+    }
+  }>(
+    isDownloading ? `/api/sync/status?batch_code=${batch_code}` : null,
+    fetcher,
+    { refreshInterval: 1000 },
+  )
+
+  // 额外轮询：当数据库状态为活跃时，检查任务是否真正在运行（检测孤儿状态）
+  const [needStatusCheck, setNeedStatusCheck] = useState(false)
+  const { data: orphanCheckData } = useSWR<{
+    success: boolean
+    data: { is_running: boolean }
+  }>(
+    needStatusCheck && !isDownloading
+      ? `/api/sync/status?batch_code=${batch_code}`
+      : null,
+    fetcher,
+    { refreshInterval: 3000 },
+  )
 
   const batch = data?.data?.batch
   const logs = data?.data?.logs || []
   const isLoading = !data && !error
-  const isRunning =
-    batch &&
-    ['downloading', 'extracting', 'parsing', 'importing'].includes(batch.status)
+  const statusActive =
+    batch && ['downloading', 'processing', 'importing'].includes(batch.status)
+  const actuallyRunning = isDownloading
+    ? (statusData?.data?.is_running ?? false)
+    : (orphanCheckData?.data?.is_running ?? !!statusActive)
+  const isRunning = !!statusActive && actuallyRunning
+  const isOrphaned = !!statusActive && !actuallyRunning
+  runningRef.current = !!statusActive
+
+  // 同步下载状态到第二个 SWR hook 的条件 key
+  if (batch?.status === 'downloading' && !isDownloading) setIsDownloading(true)
+  if (batch?.status !== 'downloading' && isDownloading) setIsDownloading(false)
+  // 活跃状态时启用孤儿检测轮询
+  if (statusActive && !needStatusCheck) setNeedStatusCheck(true)
+  if (!statusActive && needStatusCheck) setNeedStatusCheck(false)
 
   const handleDelete = async () => {
     if (!confirm('确定要删除这个批次吗？相关的专利数据也将被删除。')) return
@@ -122,14 +368,75 @@ export default function BatchDetailPage({
     }
   }
 
-  const getProgress = () => {
-    if (!batch) return 0
-    if (batch.status === 'completed') return 100
-    if (batch.status === 'pending' || batch.status === 'failed') return 0
+  const handleRunStep = async (step: string) => {
+    setVerifyResult(null)
+    try {
+      const response = await fetch('/api/sync/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code, step }),
+      })
+      const result = await response.json()
 
-    const stages = ['downloading', 'extracting', 'parsing', 'importing']
-    const stageIndex = stages.indexOf(batch.status)
-    return Math.min(stageIndex * 25 + 12, 99)
+      if (result.success) {
+        toast.success(result.message || '步骤已启动')
+        if (step === 'download') setIsDownloading(true)
+        mutate()
+      } else {
+        toast.error(result.error || '启动失败')
+      }
+    } catch {
+      toast.error('请求失败')
+    }
+  }
+
+  const handleFix = async () => {
+    setVerifyResult(null)
+    try {
+      const response = await fetch('/api/sync/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code }),
+      })
+      const result = await response.json()
+
+      if (result.success) {
+        toast.success('修复成功')
+        mutate()
+      } else {
+        toast.error(result.error || '修复失败')
+      }
+    } catch {
+      toast.error('请求失败')
+    }
+  }
+
+  const handleVerify = async (type: 'download' | 'extract') => {
+    setVerifying(type)
+    try {
+      const response = await fetch('/api/sync/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code, type }),
+      })
+      const result = await response.json()
+
+      if (result.success) {
+        setVerifyResult(result.data)
+        toast[result.data.passed ? 'success' : 'error'](
+          result.data.passed
+            ? `校验通过: ${result.data.checkedFiles} 个文件`
+            : `校验失败: ${result.data.failures.length} 个问题`,
+        )
+        mutate()
+      } else {
+        toast.error(result.error || '校验失败')
+      }
+    } catch {
+      toast.error('请求失败')
+    } finally {
+      setVerifying(null)
+    }
   }
 
   if (isLoading) {
@@ -157,7 +464,26 @@ export default function BatchDetailPage({
     )
   }
 
-  const status = statusConfig[batch.status]
+  const status = statusConfig[batch.status] ?? {
+    label: batch.status,
+    color: 'text-muted-foreground',
+    bgColor: 'bg-secondary',
+  }
+  const nextStep = getNextStep(batch.status)
+  const canVerifyDownload = [
+    'downloaded',
+    'processing',
+    'processed',
+    'completed',
+    'failed',
+  ].includes(batch.status)
+  const canVerifyExtract = [
+    'downloaded',
+    'processing',
+    'processed',
+    'completed',
+    'failed',
+  ].includes(batch.status)
 
   return (
     <AppShell>
@@ -172,10 +498,16 @@ export default function BatchDetailPage({
                 取消任务
               </Button>
             )}
+            {isOrphaned && (
+              <Button variant="outline" onClick={handleFix}>
+                <Wrench className="mr-2 h-4 w-4" />
+                修复状态
+              </Button>
+            )}
             <Button
               variant="destructive"
               onClick={handleDelete}
-              disabled={isRunning}
+              disabled={!!isRunning}
             >
               <Trash2 className="mr-2 h-4 w-4" />
               删除
@@ -204,11 +536,15 @@ export default function BatchDetailPage({
                   status.bgColor,
                 )}
               >
-                {isRunning ? (
+                {isOrphaned ? (
+                  <AlertCircle className={cn('text-warning h-6 w-6')} />
+                ) : isRunning ? (
                   <Loader2
                     className={cn('h-6 w-6 animate-spin', status.color)}
                   />
-                ) : batch.status === 'completed' ? (
+                ) : ['completed', 'downloaded', 'processed'].includes(
+                    batch.status,
+                  ) ? (
                   <CheckCircle2 className={cn('h-6 w-6', status.color)} />
                 ) : batch.status === 'failed' ? (
                   <XCircle className={cn('h-6 w-6', status.color)} />
@@ -231,49 +567,213 @@ export default function BatchDetailPage({
               </div>
             </div>
 
+            {/* Orphaned State Warning */}
+            {isOrphaned && (
+              <div className="bg-warning/10 mt-4 rounded-lg p-4">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="text-warning h-4 w-4" />
+                  <span className="text-warning text-sm font-medium">
+                    任务状态异常
+                  </span>
+                </div>
+                <p className="text-muted-foreground mt-1 text-sm">
+                  数据库状态为「{status.label}
+                  」但进程内无对应任务（可能因服务重启导致）。请点击上方「修复状态」按钮重置批次状态。
+                </p>
+              </div>
+            )}
+
             {/* Progress */}
             {isRunning && (
               <div className="mt-6">
                 <div className="mb-2 flex justify-between text-sm">
                   <span className="text-muted-foreground">进度</span>
                   <span className="text-foreground">
-                    {Math.round(getProgress())}%
+                    {Math.round(getProgress(batch))}%
                   </span>
                 </div>
-                <Progress value={getProgress()} className="h-2" />
+                <Progress value={getProgress(batch)} className="h-2" />
               </div>
             )}
 
             {/* Error Message */}
             {batch.status === 'failed' && batch.error_message && (
               <div className="bg-destructive/10 mt-4 rounded-lg p-4">
-                <p className="text-destructive text-sm">
+                <p className="text-destructive text-sm whitespace-pre-wrap">
                   {batch.error_message}
                 </p>
               </div>
             )}
 
+            {/* Actions Panel */}
+            {(!isRunning || isOrphaned) &&
+              (nextStep ||
+                canVerifyDownload ||
+                canVerifyExtract ||
+                batch.status === 'failed' ||
+                isOrphaned) && (
+                <div className="mt-6 space-y-4">
+                  <div className="text-muted-foreground text-xs font-medium tracking-wider uppercase">
+                    操作
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {nextStep && (
+                      <Button onClick={() => handleRunStep(nextStep)}>
+                        <Play className="mr-2 h-4 w-4" />
+                        执行{stepConfig.find((s) => s.key === nextStep)?.label}
+                      </Button>
+                    )}
+
+                    {canVerifyDownload && (
+                      <Button
+                        variant="outline"
+                        onClick={() => handleVerify('download')}
+                        disabled={verifying === 'download'}
+                      >
+                        {verifying === 'download' ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="mr-2 h-4 w-4" />
+                        )}
+                        校验下载文件
+                      </Button>
+                    )}
+
+                    {canVerifyExtract && (
+                      <Button
+                        variant="outline"
+                        onClick={() => handleVerify('extract')}
+                        disabled={verifying === 'extract'}
+                      >
+                        {verifying === 'extract' ? (
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        ) : (
+                          <FolderCheck className="mr-2 h-4 w-4" />
+                        )}
+                        校验解压文件
+                      </Button>
+                    )}
+
+                    {(batch.status === 'failed' || isOrphaned) && (
+                      <Button variant="outline" onClick={handleFix}>
+                        <Wrench className="mr-2 h-4 w-4" />
+                        修复状态
+                      </Button>
+                    )}
+                  </div>
+
+                  {/* Verification Result */}
+                  {verifyResult && (
+                    <div
+                      className={cn(
+                        'rounded-lg p-4',
+                        verifyResult.passed
+                          ? 'bg-success/10'
+                          : 'bg-destructive/10',
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        {verifyResult.passed ? (
+                          <CheckCircle2 className="text-success h-4 w-4" />
+                        ) : (
+                          <XCircle className="text-destructive h-4 w-4" />
+                        )}
+                        <span
+                          className={cn(
+                            'text-sm font-medium',
+                            verifyResult.passed
+                              ? 'text-success'
+                              : 'text-destructive',
+                          )}
+                        >
+                          {verifyResult.type === 'download'
+                            ? '下载文件'
+                            : '解压文件'}
+                          校验
+                          {verifyResult.passed ? '通过' : '失败'}
+                          ：已检查 {verifyResult.checkedFiles} 个文件
+                        </span>
+                      </div>
+                      {verifyResult.failures.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          {verifyResult.failures.map((f, i) => (
+                            <p key={i} className="text-destructive text-xs">
+                              {f.file}: {f.reason}
+                              {f.expected && f.actual
+                                ? ` (期望: ${f.expected}, 实际: ${f.actual})`
+                                : ''}
+                            </p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+            {/* Step Progress Indicator */}
+            <div className="mt-6">
+              <StepProgressIndicator status={batch.status} batch={batch} />
+            </div>
+
             {/* Stats */}
             <div className="mt-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
-              <div className="bg-secondary/50 rounded-lg p-4">
-                <p className="text-2xl font-bold">{batch.total_files}</p>
-                <p className="text-muted-foreground text-xs">总文件数</p>
-              </div>
-              <div className="bg-secondary/50 rounded-lg p-4">
-                <p className="text-2xl font-bold">{batch.processed_files}</p>
-                <p className="text-muted-foreground text-xs">已处理</p>
-              </div>
-              <div className="bg-secondary/50 rounded-lg p-4">
-                <p className="text-2xl font-bold">{batch.total_patents}</p>
-                <p className="text-muted-foreground text-xs">专利总数</p>
-              </div>
-              <div className="bg-secondary/50 rounded-lg p-4">
-                <p className="text-2xl font-bold">{batch.imported_patents}</p>
-                <p className="text-muted-foreground text-xs">已导入</p>
-              </div>
+              {[
+                'downloading',
+                'downloaded',
+                'processing',
+                'processed',
+                'importing',
+                'completed',
+                'failed',
+              ].includes(batch.status) && (
+                <div className="bg-secondary/50 rounded-lg p-4">
+                  <p className="text-2xl font-bold">{batch.total_files}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {['downloading'].includes(batch.status)
+                      ? '总文件数'
+                      : '文件数'}
+                  </p>
+                </div>
+              )}
+              {['downloading', 'downloaded', 'completed', 'failed'].includes(
+                batch.status,
+              ) && (
+                <div className="bg-secondary/50 rounded-lg p-4">
+                  <p className="text-2xl font-bold">{batch.processed_files}</p>
+                  <p className="text-muted-foreground text-xs">
+                    {batch.status === 'downloading' ? '已下载' : '已处理文件'}
+                  </p>
+                </div>
+              )}
+              {['processed', 'importing', 'completed', 'failed'].includes(
+                batch.status,
+              ) && (
+                <div className="bg-secondary/50 rounded-lg p-4">
+                  <p className="text-2xl font-bold">{batch.total_patents}</p>
+                  <p className="text-muted-foreground text-xs">专利总数</p>
+                </div>
+              )}
+              {['importing', 'completed', 'failed'].includes(batch.status) && (
+                <div className="bg-secondary/50 rounded-lg p-4">
+                  <p className="text-2xl font-bold">{batch.imported_patents}</p>
+                  <p className="text-muted-foreground text-xs">已导入</p>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
+
+        {/* Download Progress Card */}
+        {isDownloading && statusData?.data?.current_file && (
+          <DownloadProgressCard progress={statusData.data.current_file} />
+        )}
+
+        {/* Download File List */}
+        {isDownloading && statusData?.data?.file_list && (
+          <DownloadFileList files={statusData.data.file_list} />
+        )}
 
         {/* Logs */}
         <Card className="bg-card border-border">

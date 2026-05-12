@@ -72,11 +72,7 @@ export async function DELETE(
     }
 
     // 不允许删除正在运行的批次
-    if (
-      ['downloading', 'extracting', 'parsing', 'importing'].includes(
-        batch.status,
-      )
-    ) {
+    if (['downloading', 'processing', 'importing'].includes(batch.status)) {
       return NextResponse.json(
         { success: false, error: '不能删除正在运行的批次' },
         { status: 400 },

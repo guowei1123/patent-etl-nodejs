@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.3.0 - 2025-05-13
+
+### 新增
+
+- 分步 ETL 流水线：将原一体化流程拆分为下载→校验→处理→导入四个独立步骤，支持单步执行和重试
+- 新增 `app/api/sync/step` API，支持按步骤触发流水线
+- 新增 `app/api/sync/verify` API，下载完整性校验（多卷 ZIP、CRC32）
+- 新增 `app/api/sync/fix` API，同步修复批次状态
+- 新增 `lib/integrity.ts`，CRC32 计算与 ZIP 结构完整性检测
+- 新增 `lib/format.ts`，通用格式化工具函数
+- 新增 `components/batches/step-progress-indicator.tsx`，分步进度指示器组件
+- 新增 `components/batches/step-config.ts`，步骤配置常量
+- 新增 `doc/data-pipeline.md`，数据流水线设计文档
+- FTP 连接池（`FtpConnectionPool`）：支持并发下载、断点续传、进度回调
+- 批次详情页大幅增强：实时下载进度、文件列表状态、分步操作按钮
+
+### 变更
+
+- 批次状态流从 `downloading→extracting→parsing→importing` 简化为 `downloading→processing→importing`
+- `/api/sync/start` 改为仅创建批次记录，不再自动启动流水线
+- `/api/sync/status` 重构进度计算逻辑，适配新状态流
+- `/api/batches` 新增 `active` 查询参数，支持筛选活跃批次
+- `lib/ftp-client.ts` 重写为连接池模式，支持多连接并发
+- `lib/etl-pipeline.ts` 重构为分步执行架构
+- `types/index.ts` 新增下载进度和文件状态类型定义
+
 ## 0.2.0 - 2025-05-11
 
 ### 新增

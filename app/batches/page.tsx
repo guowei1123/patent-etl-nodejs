@@ -8,24 +8,29 @@ import { NewBatchDialog } from '@/components/batches/new-batch-dialog'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { SyncBatch, PaginatedResponse, BatchStatus } from '@/types'
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
+type FilterValue = BatchStatus | 'all' | 'active'
+
 export default function BatchesPage() {
-  const [statusFilter, setStatusFilter] = useState<BatchStatus | 'all'>('all')
+  const [statusFilter, setStatusFilter] = useState<FilterValue>('all')
   const [page, setPage] = useState(1)
+  const hasRunningRef = useRef(false)
 
   const url =
     statusFilter === 'all'
       ? `/api/batches?page=${page}&limit=20`
-      : `/api/batches?page=${page}&limit=20&status=${statusFilter}`
+      : statusFilter === 'active'
+        ? `/api/batches?page=${page}&limit=20&active=true`
+        : `/api/batches?page=${page}&limit=20&status=${statusFilter}`
 
   const { data, error, mutate } = useSWR<{
     success: boolean
     data: PaginatedResponse<SyncBatch>
-  }>(url, fetcher, { refreshInterval: 5000 })
+  }>(url, fetcher, { refreshInterval: hasRunningRef.current ? 3000 : 0 })
 
   const handleRefresh = () => {
     mutate()
@@ -33,6 +38,9 @@ export default function BatchesPage() {
 
   const batches = data?.data?.items || []
   const pagination = data?.data
+  hasRunningRef.current = batches.some((b) =>
+    ['downloading', 'processing', 'importing'].includes(b.status),
+  )
   const isLoading = !data && !error
 
   return (
@@ -50,14 +58,16 @@ export default function BatchesPage() {
           <Tabs
             value={statusFilter}
             onValueChange={(v) => {
-              setStatusFilter(v as BatchStatus | 'all')
+              setStatusFilter(v as FilterValue)
               setPage(1)
             }}
           >
             <TabsList className="bg-secondary">
               <TabsTrigger value="all">全部</TabsTrigger>
+              <TabsTrigger value="active">运行中</TabsTrigger>
               <TabsTrigger value="pending">待处理</TabsTrigger>
-              <TabsTrigger value="downloading">进行中</TabsTrigger>
+              <TabsTrigger value="downloaded">已下载</TabsTrigger>
+              <TabsTrigger value="processed">已处理</TabsTrigger>
               <TabsTrigger value="completed">已完成</TabsTrigger>
               <TabsTrigger value="failed">失败</TabsTrigger>
             </TabsList>
