@@ -27,7 +27,6 @@ import {
   FolderCheck,
   Activity,
   Timer,
-  HardDrive,
 } from 'lucide-react'
 import type {
   SyncBatch,
@@ -101,79 +100,13 @@ function getNextStep(status: BatchStatus): string | null {
   return map[status] || null
 }
 
-function DownloadProgressCard({
-  progress,
+function DownloadFileList({
+  files,
+  currentFile,
 }: {
-  progress: FileDownloadProgress
+  files: FileDownloadItem[]
+  currentFile?: FileDownloadProgress | null
 }) {
-  const filePercent =
-    progress.totalBytes > 0
-      ? Math.min(
-          Math.round((progress.bytesDownloaded / progress.totalBytes) * 100),
-          100,
-        )
-      : 0
-
-  return (
-    <Card className="border-info/30">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-sm font-medium">
-          <HardDrive className="text-info h-4 w-4" />
-          当前文件下载
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <p className="text-foreground truncate font-mono text-sm">
-          {progress.fileName}
-        </p>
-
-        <div className="space-y-1">
-          <div className="flex justify-between text-xs">
-            <span className="text-muted-foreground">
-              {formatProgress(progress.bytesDownloaded, progress.totalBytes)}
-            </span>
-            <span className="text-foreground font-medium">{filePercent}%</span>
-          </div>
-          <Progress value={filePercent} className="h-2" />
-        </div>
-
-        <div className="grid grid-cols-3 gap-4">
-          <div>
-            <p className="text-muted-foreground flex items-center gap-1 text-xs">
-              <Activity className="h-3 w-3" />
-              速度
-            </p>
-            <p className="text-foreground text-sm font-medium">
-              {progress.speedBytesPerSec > 0
-                ? formatSpeed(progress.speedBytesPerSec)
-                : '计算中...'}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground flex items-center gap-1 text-xs">
-              <Timer className="h-3 w-3" />
-              文件剩余
-            </p>
-            <p className="text-foreground text-sm font-medium">
-              {formatDuration(progress.fileEtaSeconds) ?? '计算中...'}
-            </p>
-          </div>
-          <div>
-            <p className="text-muted-foreground flex items-center gap-1 text-xs">
-              <Timer className="h-3 w-3" />
-              批次剩余
-            </p>
-            <p className="text-foreground text-sm font-medium">
-              {formatDuration(progress.batchEtaSeconds) ?? '计算中...'}
-            </p>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-function DownloadFileList({ files }: { files: FileDownloadItem[] }) {
   const statusIcon = (status: FileDownloadItem['status']) => {
     switch (status) {
       case 'completed':
@@ -192,20 +125,28 @@ function DownloadFileList({ files }: { files: FileDownloadItem[] }) {
   ).length
 
   return (
-    <Card className="border-border">
+    <Card className="border-info/30">
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-sm font-medium">
           <span className="flex items-center gap-2">
             <FolderCheck className="text-info h-4 w-4" />
             文件列表
           </span>
-          <span className="text-muted-foreground text-xs">
-            {completed} / {files.length} 已完成
-          </span>
+          <div className="flex items-center gap-3">
+            {currentFile?.batchEtaSeconds != null && (
+              <span className="text-muted-foreground flex items-center gap-1 text-xs">
+                <Timer className="h-3 w-3" />
+                批次剩余 {formatDuration(currentFile.batchEtaSeconds)}
+              </span>
+            )}
+            <span className="text-muted-foreground text-xs">
+              {completed} / {files.length} 已完成
+            </span>
+          </div>
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="max-h-[320px]">
+        <ScrollArea className="max-h-[480px]">
           <div className="space-y-1">
             {files.map((file) => {
               const percent =
@@ -215,29 +156,51 @@ function DownloadFileList({ files }: { files: FileDownloadItem[] }) {
                       100,
                     )
                   : 0
+              const isActive =
+                file.status === 'downloading' &&
+                currentFile?.fileName === file.fileName
               return (
                 <div
                   key={file.fileName}
                   className={cn(
-                    'flex items-center gap-3 rounded-md px-3 py-2',
-                    file.status === 'downloading' ? 'bg-info/10' : '',
+                    'flex items-center gap-3 rounded-md px-3',
+                    file.status === 'downloading' ? 'bg-info/10 py-3' : 'py-2',
                   )}
                 >
                   {statusIcon(file.status)}
-                  <span className="text-foreground min-w-0 flex-1 truncate font-mono text-xs">
-                    {file.fileName}
-                  </span>
-                  <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
-                    {formatBytes(file.fileSize)}
-                  </span>
-                  {file.status === 'downloading' && (
-                    <div className="flex items-center gap-2">
-                      <Progress value={percent} className="h-1.5 w-16" />
-                      <span className="text-foreground w-8 text-right text-xs tabular-nums">
-                        {percent}%
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-foreground truncate font-mono text-xs">
+                        {file.fileName}
+                      </span>
+                      <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
+                        {file.status === 'downloading'
+                          ? formatProgress(file.bytesDownloaded, file.fileSize)
+                          : formatBytes(file.fileSize)}
                       </span>
                     </div>
-                  )}
+                    {file.status === 'downloading' && (
+                      <div className="mt-1.5 space-y-1">
+                        <Progress value={percent} className="h-1.5" />
+                        <div className="text-muted-foreground flex gap-4 text-xs">
+                          <span className="flex items-center gap-1">
+                            <Activity className="h-3 w-3" />
+                            {isActive && currentFile.speedBytesPerSec > 0
+                              ? formatSpeed(currentFile.speedBytesPerSec)
+                              : '计算中...'}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Timer className="h-3 w-3" />
+                            剩余{' '}
+                            {isActive
+                              ? (formatDuration(currentFile.fileEtaSeconds) ??
+                                '计算中...')
+                              : '计算中...'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )
             })}
@@ -765,14 +728,12 @@ export default function BatchDetailPage({
           </CardContent>
         </Card>
 
-        {/* Download Progress Card */}
-        {isDownloading && statusData?.data?.current_file && (
-          <DownloadProgressCard progress={statusData.data.current_file} />
-        )}
-
         {/* Download File List */}
         {isDownloading && statusData?.data?.file_list && (
-          <DownloadFileList files={statusData.data.file_list} />
+          <DownloadFileList
+            files={statusData.data.file_list}
+            currentFile={statusData.data.current_file}
+          />
         )}
 
         {/* Logs */}

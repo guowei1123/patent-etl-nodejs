@@ -217,8 +217,44 @@ export async function verifyExtractedFilesCrc(
     .filter((f) => f.toUpperCase().endsWith('-CRC.TXT'))
 
   if (crcFiles.length === 0) {
-    // 没有 CRC 文件时跳过（可能不是 CNIPA 标准格式）
-    return { passed: true, checkedFiles: 0, failures: [] }
+    const allFiles = fs
+      .readdirSync(extractDir)
+      .filter((f) => fs.statSync(path.join(extractDir, f)).isFile())
+
+    if (allFiles.length === 0) {
+      return {
+        passed: false,
+        checkedFiles: 0,
+        failures: [
+          { file: extractDir, reason: '解压目录为空，文件可能未解压' },
+        ],
+      }
+    }
+
+    const zipFiles = allFiles.filter((f) => f.toUpperCase().endsWith('.ZIP'))
+    if (zipFiles.length === 0) {
+      return {
+        passed: false,
+        checkedFiles: 0,
+        failures: [
+          { file: extractDir, reason: '解压目录中无 ZIP 文件，解压可能不完整' },
+        ],
+      }
+    }
+
+    for (const zf of zipFiles) {
+      checkedFiles++
+      try {
+        await openZipForVerify(path.join(extractDir, zf))
+      } catch (err) {
+        failures.push({
+          file: zf,
+          reason: `ZIP 结构损坏: ${err instanceof Error ? err.message : String(err)}`,
+        })
+      }
+    }
+
+    return { passed: failures.length === 0, checkedFiles, failures }
   }
 
   for (const crcFile of crcFiles) {
@@ -286,7 +322,7 @@ export function formatIntegrityReport(result: IntegrityCheckResult): string {
 
 // ============ 辅助函数 ============
 
-function openZipForVerify(zipPath: string): Promise<void> {
+export function openZipForVerify(zipPath: string): Promise<void> {
   return new Promise((resolve, reject) => {
     yauzl.open(zipPath, { lazyEntries: true }, (err, zipfile) => {
       if (err || !zipfile) {

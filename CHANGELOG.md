@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.4.0 - 2025-05-18
+
+### 新增
+
+- 分卷 ZIP 自动检测与合并：支持 `.z01/.z02/.../zip` 分卷格式，自动合并后解压
+- 新 XML 格式解析：支持 `PatentDocumentAndRelated` PascalCase 节点结构（BibliographicData、PublicationReference、Claims 等）
+- `withPreparedArchiveFiles`：统一的归档文件准备流程（扫描→分卷合并→过滤）
+- `openZipForVerify`：独立的 ZIP 完整性校验接口
+- 新增 `lib/__tests__/file-processor.test.ts`，file-processor 单元测试
+- 新增 `lib/__tests__/xml-parser.test.ts`，xml-parser 单元测试
+- `vitest` 测试框架依赖
+
+### 变更
+
+- `extractZip` 改用 `decodeStrings: false` 模式，手动解码文件名以绕过 yauzl 对绝对路径的校验
+- `parsePatentXml` 增加 `removeNSPrefix` 和扩展的 `isArray` 配置，同时兼容新旧两种 XML 命名风格
+- 处理步骤在解压前先校验已有内层 ZIP 的结构完整性，损坏时自动重新解压
+- 批次详情页 UI 调整
+- 更新数据流水线和数据库文档
+
 ## 0.3.0 - 2025-05-13
 
 ### 新增

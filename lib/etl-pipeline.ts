@@ -13,12 +13,14 @@ import {
   forEachZipEntry,
   isPatentXmlFile,
   scanLocalArchiveFiles,
+  withPreparedArchiveFiles,
 } from './file-processor'
 import { parsePatentXml } from './xml-parser'
 import {
   verifyDownloadedArchive,
   verifyExtractedFilesCrc,
   formatIntegrityReport,
+  openZipForVerify,
 } from './integrity'
 import {
   updateBatchStatus,
@@ -417,23 +419,58 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           .filter((f) => f.toUpperCase().endsWith('.ZIP'))
       : []
 
-    if (innerZips.length === 0) {
-      const downloadedFiles = scanLocalArchiveFiles(tempPath).filter((file) => {
-        const name = path.basename(file).toLowerCase()
-        return name.endsWith('.zip') || name.endsWith('.gz')
-      })
-      if (downloadedFiles.length === 0) {
-        throw new Error('未找到可解压的下载文件')
+    // 跳过解压前验证已有内层 ZIP 的结构完整性
+    if (innerZips.length > 0) {
+      let allValid = true
+      for (const f of innerZips) {
+        try {
+          await openZipForVerify(path.join(extractDir, f))
+        } catch {
+          allValid = false
+          break
+        }
       }
-      await addLog(
-        batchCode,
-        'info',
-        `解压外层压缩包: ${downloadedFiles.length} 个文件`,
-      )
+      if (!allValid) {
+        await addLog(
+          batchCode,
+          'warn',
+          '已解压文件中存在损坏的 ZIP，将重新解压',
+        )
+        fs.rmSync(extractDir, { recursive: true, force: true })
+        fs.mkdirSync(extractDir, { recursive: true })
+        innerZips = []
+      }
+    }
 
-      await extractFiles(downloadedFiles, extractDir, undefined, (current) => {
-        updateBatchProgress(batchCode, undefined, current)
-      })
+    if (innerZips.length === 0) {
+      await withPreparedArchiveFiles(
+        tempPath,
+        async (filesToExtract) => {
+          await addLog(
+            batchCode,
+            'info',
+            `解压外层压缩包: ${filesToExtract.length} 个文件`,
+          )
+
+          await extractFiles(
+            filesToExtract,
+            extractDir,
+            undefined,
+            (current) => {
+              updateBatchProgress(batchCode, undefined, current)
+            },
+          )
+        },
+        {
+          beforeMerge: async (group) => {
+            await addLog(
+              batchCode,
+              'info',
+              `合并分卷 ZIP: ${group.baseName} (${group.splitParts.length + 1} 个文件)`,
+            )
+          },
+        },
+      )
 
       innerZips = fs
         .readdirSync(extractDir)

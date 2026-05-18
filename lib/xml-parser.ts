@@ -10,11 +10,33 @@ const parser = new XMLParser({
   parseAttributeValue: true,
   trimValues: true,
   parseTagValue: true,
+  removeNSPrefix: true,
   isArray: (name) => {
-    // 这些标签可能出现多次，需要作为数组处理
-    return ['ipc', 'applicant', 'inventor', 'agent', 'priority'].includes(
-      name.toLowerCase(),
+    // Support both newer PascalCase nodes and legacy lowercase/kebab-case nodes.
+    // Exact matching avoids turning container elements like ApplicantDetails into arrays.
+    if (
+      [
+        'Applicant',
+        'Inventor',
+        'Agent',
+        'ClassificationIPCR',
+        'Claim',
+        'PublicationReference',
+        'ApplicationReference',
+        'PriorityClaim',
+      ].includes(name)
     )
+      return true
+    const lower = name.toLowerCase()
+    return [
+      'applicant',
+      'inventor',
+      'agent',
+      'priority',
+      'claim',
+      'classification-ipcr',
+      'ipc',
+    ].includes(lower)
   },
 })
 
@@ -29,6 +51,18 @@ function getNestedValue(obj: unknown, ...keys: string[]): unknown {
     ) {
       return undefined
     }
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+// 穿透中间数组取首个元素的路径解析（用于 PublicationReference 等数组中取第一个）
+function resolveFirst(obj: unknown, ...keys: string[]): unknown {
+  let current = obj
+  for (const key of keys) {
+    if (current == null || typeof current !== 'object') return undefined
+    if (Array.isArray(current)) current = current[0]
+    if (current == null || typeof current !== 'object') return undefined
     current = (current as Record<string, unknown>)[key]
   }
   return current
@@ -51,14 +85,6 @@ function extractText(value: unknown): string | undefined {
     return texts.length > 0 ? texts.join(' ') : undefined
   }
   return undefined
-}
-
-// 提取数组文本
-function extractArrayText(value: unknown): string | undefined {
-  if (!value) return undefined
-  const arr = Array.isArray(value) ? value : [value]
-  const texts = arr.map((v) => extractText(v)).filter(Boolean)
-  return texts.length > 0 ? texts.join('; ') : undefined
 }
 
 // 提取 IPC 分类号
@@ -116,6 +142,7 @@ export function parsePatentXml(
 
     // 尝试多种可能的根元素路径
     const root =
+      doc['PatentDocumentAndRelated'] ||
       doc['cn-patent-document'] ||
       doc['patent-document'] ||
       doc['cn-utility-model'] ||
@@ -124,6 +151,14 @@ export function parsePatentXml(
 
     // 提取专利号
     const patentNumber =
+      getNestedValue(root, '@_docNumber') ||
+      resolveFirst(
+        root,
+        'BibliographicData',
+        'PublicationReference',
+        'DocumentID',
+        'DocNumber',
+      ) ||
       getNestedValue(root, '@_doc-number') ||
       getNestedValue(
         root,
@@ -149,6 +184,9 @@ export function parsePatentXml(
     // 提取标题
     const title =
       extractText(
+        getNestedValue(root, 'BibliographicData', 'InventionTitle'),
+      ) ||
+      extractText(
         getNestedValue(root, 'bibliographic-data', 'invention-title'),
       ) ||
       extractText(getNestedValue(root, 'invention-title')) ||
@@ -157,16 +195,36 @@ export function parsePatentXml(
 
     // 提取摘要
     const abstractContent =
+      extractText(getNestedValue(root, 'Abstract', 'Paragraphs')) ||
       extractText(getNestedValue(root, 'abstract')) ||
       extractText(getNestedValue(root, 'bibliographic-data', 'abstract'))
 
     // 提取权利要求
+    const claimEntries = getNestedValue(root, 'Claims', 'Claim')
+    const claimArr = Array.isArray(claimEntries)
+      ? claimEntries
+      : claimEntries
+        ? [claimEntries]
+        : []
     const claims =
+      claimArr
+        .map((c: unknown) =>
+          extractText((c as Record<string, unknown>)?.['ClaimText']),
+        )
+        .filter(Boolean)
+        .join('\n') ||
       extractText(getNestedValue(root, 'claims')) ||
       extractText(getNestedValue(root, 'claim'))
 
     // 提取申请人
-    const applicantData =
+    const applicantNodes =
+      getNestedValue(
+        root,
+        'BibliographicData',
+        'Parties',
+        'ApplicantDetails',
+        'Applicant',
+      ) ||
       getNestedValue(
         root,
         'bibliographic-data',
@@ -176,10 +234,30 @@ export function parsePatentXml(
       ) ||
       getNestedValue(root, 'bibliographic-data', 'applicant') ||
       getNestedValue(root, 'applicant')
-    const applicant = extractArrayText(applicantData)
+    const applicantArr = Array.isArray(applicantNodes)
+      ? applicantNodes
+      : applicantNodes
+        ? [applicantNodes]
+        : []
+    const applicantNames = applicantArr
+      .map(
+        (a: unknown) =>
+          extractText(getNestedValue(a, 'AddressBook', 'Name')) ||
+          extractText(a),
+      )
+      .filter(Boolean)
+    const applicant =
+      applicantNames.length > 0 ? applicantNames.join('; ') : undefined
 
     // 提取发明人
-    const inventorData =
+    const inventorNodes =
+      getNestedValue(
+        root,
+        'BibliographicData',
+        'Parties',
+        'InventorDetails',
+        'Inventor',
+      ) ||
       getNestedValue(
         root,
         'bibliographic-data',
@@ -189,59 +267,95 @@ export function parsePatentXml(
       ) ||
       getNestedValue(root, 'bibliographic-data', 'inventor') ||
       getNestedValue(root, 'inventor')
-    const inventor = extractArrayText(inventorData)
+    const inventorArr = Array.isArray(inventorNodes)
+      ? inventorNodes
+      : inventorNodes
+        ? [inventorNodes]
+        : []
+    const inventorNames = inventorArr
+      .map(
+        (i: unknown) =>
+          extractText(getNestedValue(i, 'AddressBook', 'Name')) ||
+          extractText(i),
+      )
+      .filter(Boolean)
+    const inventor =
+      inventorNames.length > 0 ? inventorNames.join('; ') : undefined
 
     // 提取申请信息
-    const appRef = getNestedValue(
-      root,
-      'bibliographic-data',
-      'application-reference',
-      'document-id',
-    )
+    const appRef =
+      resolveFirst(
+        root,
+        'BibliographicData',
+        'ApplicationReference',
+        'DocumentID',
+      ) ||
+      getNestedValue(
+        root,
+        'bibliographic-data',
+        'application-reference',
+        'document-id',
+      )
     const applicationNumber =
+      extractText(getNestedValue(appRef, 'DocNumber')) ||
       extractText(getNestedValue(appRef, 'doc-number')) ||
       extractText(getNestedValue(root, 'application-number'))
     const applicationDate =
+      formatDate(getNestedValue(appRef, 'Date')) ||
       formatDate(getNestedValue(appRef, 'date')) ||
       formatDate(getNestedValue(root, 'application-date'))
 
     // 提取公开信息
-    const pubRef = getNestedValue(
-      root,
-      'bibliographic-data',
-      'publication-reference',
-      'document-id',
-    )
+    const pubRef =
+      resolveFirst(
+        root,
+        'BibliographicData',
+        'PublicationReference',
+        'DocumentID',
+      ) ||
+      getNestedValue(
+        root,
+        'bibliographic-data',
+        'publication-reference',
+        'document-id',
+      )
     const publicationNumber =
+      extractText(getNestedValue(pubRef, 'DocNumber')) ||
       extractText(getNestedValue(pubRef, 'doc-number')) ||
       extractText(getNestedValue(root, 'publication-number'))
     const publicationDate =
+      formatDate(getNestedValue(pubRef, 'Date')) ||
       formatDate(getNestedValue(pubRef, 'date')) ||
       formatDate(getNestedValue(root, 'publication-date'))
 
     // 提取授权信息
-    const grantRef = getNestedValue(
-      root,
-      'bibliographic-data',
-      'grant-reference',
-      'document-id',
-    )
+    const grantRef =
+      resolveFirst(root, 'BibliographicData', 'GrantReference', 'DocumentID') ||
+      getNestedValue(
+        root,
+        'bibliographic-data',
+        'grant-reference',
+        'document-id',
+      )
     const grantNumber =
+      extractText(getNestedValue(grantRef, 'DocNumber')) ||
       extractText(getNestedValue(grantRef, 'doc-number')) ||
       extractText(getNestedValue(root, 'grant-number')) ||
       String(patentNumber)
     const grantDate =
+      formatDate(getNestedValue(grantRef, 'Date')) ||
       formatDate(getNestedValue(grantRef, 'date')) ||
       formatDate(getNestedValue(root, 'grant-date')) ||
-      formatDate(getNestedValue(root, '@_date-publ'))
+      formatDate(getNestedValue(root, '@_date-publ')) ||
+      formatDate(getNestedValue(root, '@_datePublication'))
 
     // 提取 IPC 分类
-    const ipcData =
+    const ipcNodes =
       getNestedValue(
         root,
-        'bibliographic-data',
-        'classification-ipc',
-        'main-classification',
+        'BibliographicData',
+        'ClassificationIPCRDetails',
+        'ClassificationIPCR',
       ) ||
       getNestedValue(
         root,
@@ -251,27 +365,84 @@ export function parsePatentXml(
       ) ||
       getNestedValue(root, 'ipc-codes') ||
       getNestedValue(root, 'ipc')
-    const ipcCodes = extractIpcCodes(ipcData)
+    const ipcArr = Array.isArray(ipcNodes)
+      ? ipcNodes
+      : ipcNodes
+        ? [ipcNodes]
+        : []
+    const ipcTexts = ipcArr
+      .map((item: unknown) => {
+        if (typeof item === 'string') return item.trim()
+        if (typeof item === 'object' && item !== null) {
+          const obj = item as Record<string, unknown>
+          const text =
+            obj['Text'] ||
+            obj['#text'] ||
+            obj['@_code'] ||
+            obj['main-classification'] ||
+            obj['classification']
+          return text ? String(text).trim() : undefined
+        }
+        return undefined
+      })
+      .filter(Boolean) as string[]
+    const ipcCodes =
+      ipcTexts.length > 0
+        ? ipcTexts
+        : extractIpcCodes(
+            getNestedValue(
+              root,
+              'bibliographic-data',
+              'classification-ipc',
+              'main-classification',
+            ),
+          )
 
     // 提取代理信息
-    const agentData = getNestedValue(
-      root,
-      'bibliographic-data',
-      'parties',
-      'agents',
-      'agent',
-    )
-    const agencyData = getNestedValue(
-      root,
-      'bibliographic-data',
-      'agents',
-      'agent',
-      'agency',
-    )
+    const agentNodes =
+      getNestedValue(
+        root,
+        'BibliographicData',
+        'Parties',
+        'AgentDetails',
+        'Agent',
+      ) ||
+      getNestedValue(root, 'bibliographic-data', 'parties', 'agents', 'agent')
+    const agentArr = Array.isArray(agentNodes)
+      ? agentNodes
+      : agentNodes
+        ? [agentNodes]
+        : []
     const agency =
-      extractText(agencyData) || extractText(getNestedValue(root, 'agency'))
+      agentArr
+        .map((a: unknown) =>
+          extractText(
+            getNestedValue(a, 'Agency', 'AddressBook', 'OrganizationName'),
+          ),
+        )
+        .filter(Boolean)
+        .join('; ') ||
+      extractText(
+        getNestedValue(root, 'bibliographic-data', 'agents', 'agent', 'agency'),
+      ) ||
+      extractText(getNestedValue(root, 'agency'))
     const agent =
-      extractArrayText(agentData) || extractText(getNestedValue(root, 'agent'))
+      agentArr
+        .map((a: unknown) =>
+          extractText(getNestedValue(a, 'AddressBook', 'Name')),
+        )
+        .filter(Boolean)
+        .join('; ') ||
+      extractText(
+        getNestedValue(
+          root,
+          'bibliographic-data',
+          'parties',
+          'agents',
+          'agent',
+        ),
+      ) ||
+      extractText(getNestedValue(root, 'agent'))
 
     // 提取优先权信息
     const priorityData = getNestedValue(
@@ -355,6 +526,22 @@ export async function parsePatentFiles(
 
 // 检测 XML 中的专利类型
 export function detectPatentType(xmlContent: string): PatentType | null {
+  try {
+    const doc = parser.parse(xmlContent)
+    const root =
+      doc['PatentDocumentAndRelated'] ||
+      doc['cn-patent-document'] ||
+      doc['patent-document'] ||
+      doc['cn-utility-model'] ||
+      doc['utility-model-document'] ||
+      doc
+    const kind = getNestedValue(root, '@_kind')
+    if (kind === 'U' || kind === 'u') return 'utility_model'
+    if (kind === 'B' || kind === 'b') return 'invention'
+  } catch {
+    // fall through to text-based detection
+  }
+
   const lowerContent = xmlContent.toLowerCase()
 
   if (
