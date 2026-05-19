@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPatents, initializeDatabase } from '@/lib/db'
+import { getPatentList, initializeDatabase } from '@/lib/db'
 
 // GET /api/patents - 查询专利数据
 export async function GET(request: NextRequest) {
@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
     // 确保数据库表存在
     await initializeDatabase()
 
-    const result = await getPatents(
+    const result = await getPatentList(
       {
         search,
         kind,

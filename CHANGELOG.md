@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.5.1 - 2026-05-20
+
+### 修复
+
+- 修复列表页 fetcher 不检查 HTTP 状态码导致 SWR 永远不会进入 error 状态的问题，API 返回 500 时表格现在会正确显示"数据加载失败"而非"暂无数据"
+- 修复详情页将服务端错误误判为"专利不存在"的问题，现在区分 404（专利不存在）和其他错误（数据加载失败 + 错误信息）
+- 删除 `getPatents` 死代码，消除 `/api/patents` 从完整 `Patent` 切换到 `PatentListItem` 后的潜在隐患
+
 ## 0.5.0 - 2026-05-20
 
 ### 新增

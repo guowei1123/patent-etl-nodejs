@@ -3,6 +3,7 @@ import type {
   SyncBatch,
   SyncLog,
   Patent,
+  PatentListItem,
   ParsedPatent,
   DashboardStats,
   PatentFilter,
@@ -627,12 +628,22 @@ function rowToPatent(row: Record<string, unknown>): Patent {
   }
 }
 
-// 查询专利列表
-export async function getPatents(
+function rowToPatentListItem(row: Record<string, unknown>): PatentListItem {
+  return {
+    id: row.id as string,
+    doc_number: row.doc_number as string,
+    kind: row.kind as string,
+    title: row.title as string,
+    pub_date: (row.pub_date as Date) || null,
+    applicants: (row.applicants as PatentApplicantRow[]) || [],
+  }
+}
+
+export async function getPatentList(
   filter: PatentFilter,
   page = 1,
   limit = 50,
-): Promise<PaginatedResponse<Patent>> {
+): Promise<PaginatedResponse<PatentListItem>> {
   const offset = (page - 1) * limit
   const conditions: string[] = []
   const params: (string | number)[] = []
@@ -683,45 +694,13 @@ export async function getPatents(
 
   params.push(limit, offset)
   const result = await pool.query(
-    `SELECT p.*,
+    `SELECT p.id, p.doc_number, p.kind, p.title, p.pub_date,
       COALESCE(
         json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode))
         FILTER (WHERE pa.id IS NOT NULL), '[]'
-      ) AS applicants,
-      COALESCE(
-        json_agg(DISTINCT pi.name) FILTER (WHERE pi.id IS NOT NULL), '[]'
-      ) AS inventors,
-      COALESCE(
-        json_agg(DISTINCT jsonb_build_object('agency', pg.agency, 'agent', pg.agent))
-        FILTER (WHERE pg.id IS NOT NULL), '[]'
-      ) AS agents,
-      COALESCE(
-        json_agg(DISTINCT pic.ipc_code) FILTER (WHERE pic.id IS NOT NULL), '[]'
-      ) AS ipc_codes,
-      COALESCE(
-        json_agg(DISTINCT jsonb_build_object('country', pc.country, 'doc_number', pc.doc_number, 'kind', pc.kind, 'pub_date', pc.pub_date))
-        FILTER (WHERE pc.id IS NOT NULL), '[]'
-      ) AS citations,
-      COALESCE(
-        json_agg(DISTINCT pe.name) FILTER (WHERE pe.id IS NOT NULL), '[]'
-      ) AS examiners,
-      COALESCE(
-        json_agg(DISTINCT jsonb_build_object('name', pas.name, 'address', pas.address, 'province', pas.province, 'city', pas.city, 'postcode', pas.postcode))
-        FILTER (WHERE pas.id IS NOT NULL), '[]'
-      ) AS assignees,
-      COALESCE(
-        json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text))
-        FILTER (WHERE pcl.id IS NOT NULL), '[]'
-      ) AS claims_structured
+      ) AS applicants
     FROM cnipa.patent p
     LEFT JOIN cnipa.patent_applicant pa ON pa.patent_id = p.id
-    LEFT JOIN cnipa.patent_inventor pi ON pi.patent_id = p.id
-    LEFT JOIN cnipa.patent_agent pg ON pg.patent_id = p.id
-    LEFT JOIN cnipa.patent_ipc pic ON pic.patent_id = p.id
-    LEFT JOIN cnipa.patent_citation pc ON pc.patent_id = p.id
-    LEFT JOIN cnipa.patent_examiner pe ON pe.patent_id = p.id
-    LEFT JOIN cnipa.patent_assignee pas ON pas.patent_id = p.id
-    LEFT JOIN cnipa.patent_claim pcl ON pcl.patent_id = p.id
     ${whereClause}
     GROUP BY p.id
     ORDER BY p.pub_date DESC NULLS LAST, p.created_at DESC
@@ -730,7 +709,7 @@ export async function getPatents(
   )
 
   return {
-    items: result.rows.map(rowToPatent),
+    items: result.rows.map(rowToPatentListItem),
     total,
     page,
     limit,

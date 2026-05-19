@@ -5,10 +5,24 @@ import useSWR from 'swr'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
 import { PatentTable } from '@/components/patents/patent-table'
-import { Card, CardContent } from '@/components/ui/card'
-import type { Patent, PaginatedResponse } from '@/types'
+import type { PatentListItem, PaginatedResponse } from '@/types'
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json())
+type RequestError = Error & {
+  status?: number
+}
+
+const fetcher = async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const error = new Error(
+      body.error || `请求失败 (${res.status})`,
+    ) as RequestError
+    error.status = res.status
+    throw error
+  }
+  return res.json()
+}
 
 export default function PatentsPage() {
   const [page, setPage] = useState(1)
@@ -17,21 +31,22 @@ export default function PatentsPage() {
 
   const params = new URLSearchParams()
   params.set('page', String(page))
-  params.set('limit', '50')
+  params.set('limit', '20')
   if (search) params.set('search', search)
   if (typeFilter !== 'all') params.set('kind', typeFilter)
 
-  const { data, error, mutate } = useSWR<{
+  const { data, error, mutate, isLoading, isValidating } = useSWR<{
     success: boolean
-    data: PaginatedResponse<Patent>
-  }>(`/api/patents?${params.toString()}`, fetcher)
+    data: PaginatedResponse<PatentListItem>
+  }>(`/api/patents?${params.toString()}`, fetcher, {
+    keepPreviousData: true,
+  })
 
-  const isLoading = !data && !error
   const patents = data?.data || {
     items: [],
     total: 0,
     page: 1,
-    limit: 50,
+    limit: 20,
     total_pages: 0,
   }
 
@@ -54,24 +69,17 @@ export default function PatentsPage() {
       />
 
       <div className="p-6">
-        {isLoading ? (
-          <Card className="bg-card border-border">
-            <CardContent className="py-12">
-              <div className="flex items-center justify-center">
-                <div className="border-primary h-8 w-8 animate-spin rounded-full border-2 border-t-transparent" />
-              </div>
-            </CardContent>
-          </Card>
-        ) : (
-          <PatentTable
-            data={patents}
-            onPageChange={setPage}
-            onSearch={handleSearch}
-            onTypeFilter={handleTypeFilter}
-            search={search}
-            typeFilter={typeFilter}
-          />
-        )}
+        <PatentTable
+          data={patents}
+          onPageChange={setPage}
+          onSearch={handleSearch}
+          onTypeFilter={handleTypeFilter}
+          search={search}
+          typeFilter={typeFilter}
+          isLoading={isLoading || isValidating}
+          hasError={Boolean(error)}
+          errorMessage={error?.message}
+        />
       </div>
     </AppShell>
   )

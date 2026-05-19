@@ -5,24 +5,66 @@ import useSWR from 'swr'
 import Link from 'next/link'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { Separator } from '@/components/ui/separator'
 import {
   ArrowLeft,
-  Lightbulb,
-  Wrench,
-  Calendar,
-  User,
   Building,
-  Tag,
+  Calendar,
   FileText,
+  Lightbulb,
   Loader2,
+  Tag,
+  User,
+  Wrench,
 } from 'lucide-react'
 import type { Patent } from '@/types'
 import { cn } from '@/lib/utils'
 
-const fetcher = (url: string) => fetch(url).then((res) => res.json())
+type RequestError = Error & {
+  status?: number
+}
+
+const fetcher = async (url: string) => {
+  const res = await fetch(url)
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    const error = new Error(
+      body.error || `请求失败 (${res.status})`,
+    ) as RequestError
+    error.status = res.status
+    throw error
+  }
+  return res.json()
+}
+
+function DescriptionSection({
+  id,
+  title,
+  content,
+}: {
+  id: string
+  title: string
+  content: string
+}) {
+  return (
+    <section
+      id={id}
+      className="scroll-mt-28 space-y-2 py-6 first:pt-0 last:pb-0"
+    >
+      <h3 className="text-foreground text-base font-medium">{title}</h3>
+      <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
+        {content}
+      </p>
+    </section>
+  )
+}
 
 function InfoItem({
   icon: Icon,
@@ -35,12 +77,14 @@ function InfoItem({
 }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="bg-secondary flex h-8 w-8 items-center justify-center rounded-lg">
+      <div className="bg-secondary text-muted-foreground flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
         <Icon className="text-muted-foreground h-4 w-4" />
       </div>
       <div className="min-w-0 flex-1">
-        <p className="text-muted-foreground text-xs">{label}</p>
-        <p className="text-foreground mt-0.5 text-sm wrap-break-word">
+        <p className="text-muted-foreground text-xs tracking-wide uppercase">
+          {label}
+        </p>
+        <p className="text-foreground mt-1 text-sm wrap-break-word">
           {value || '-'}
         </p>
       </div>
@@ -48,14 +92,66 @@ function InfoItem({
   )
 }
 
+function MetricCard({
+  label,
+  value,
+}: {
+  label: string
+  value: string | null | undefined
+}) {
+  return (
+    <div className="bg-secondary/40 rounded-xl border p-4">
+      <p className="text-muted-foreground text-xs tracking-wide uppercase">
+        {label}
+      </p>
+      <p className="text-foreground mt-2 text-sm font-medium wrap-break-word">
+        {value || '-'}
+      </p>
+    </div>
+  )
+}
+
+function NavChip({
+  href,
+  label,
+  meta,
+}: {
+  href: string
+  label: string
+  meta?: string
+}) {
+  return (
+    <a
+      href={href}
+      className="bg-secondary/50 hover:bg-secondary text-foreground inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors"
+    >
+      <span>{label}</span>
+      {meta && <span className="text-muted-foreground text-xs">{meta}</span>}
+    </a>
+  )
+}
+
 function formatDate(d: Date | string | null | undefined): string | undefined {
   if (!d) return undefined
-  return new Date(d).toLocaleDateString('zh-CN')
+  const date = new Date(d)
+  if (Number.isNaN(date.getTime())) return undefined
+  return date.toLocaleDateString('zh-CN')
+}
+
+function joinText(
+  items: Array<string | null | undefined> | null | undefined,
+): string {
+  if (!items?.length) return '-'
+
+  const values = items
+    .map((item) => item?.trim())
+    .filter((item): item is string => Boolean(item))
+
+  return values.length ? values.join('; ') : '-'
 }
 
 function joinNames(items: Array<{ name: string }> | null | undefined): string {
-  if (!items?.length) return '-'
-  return items.map((a) => a.name).join('; ')
+  return joinText(items?.map((a) => a.name))
 }
 
 export default function PatentDetailPage({
@@ -83,6 +179,31 @@ export default function PatentDetailPage({
     )
   }
 
+  if (error) {
+    return (
+      <AppShell>
+        <div className="flex h-screen flex-col items-center justify-center">
+          <p className="text-muted-foreground">
+            {(error as RequestError).status === 404
+              ? '专利不存在'
+              : '数据加载失败'}
+          </p>
+          {(error as RequestError).status !== 404 ? (
+            <p className="text-muted-foreground/70 mt-1 text-xs">
+              {error.message}
+            </p>
+          ) : null}
+          <Link
+            href="/patents"
+            className="text-accent mt-4 text-sm hover:underline"
+          >
+            返回列表
+          </Link>
+        </div>
+      </AppShell>
+    )
+  }
+
   if (!patent) {
     return (
       <AppShell>
@@ -100,188 +221,525 @@ export default function PatentDetailPage({
   }
 
   const isInvention = patent.kind === 'B'
+  const structuredClaims =
+    patent.claims_structured?.filter((claim) => claim.claim_text?.trim()) ?? []
+  const descriptionSections = patent.description
+    ? [
+        {
+          id: 'description-technical-field',
+          title: '技术领域',
+          content: patent.description.technical_field,
+        },
+        {
+          id: 'description-background-art',
+          title: '背景技术',
+          content: patent.description.background_art,
+        },
+        {
+          id: 'description-disclosure',
+          title: '发明内容',
+          content: patent.description.disclosure,
+        },
+        {
+          id: 'description-drawings-description',
+          title: '附图说明',
+          content: patent.description.drawings_description,
+        },
+        {
+          id: 'description-embodiment',
+          title: '具体实施方式',
+          content: patent.description.embodiment,
+        },
+      ].filter(
+        (
+          section,
+        ): section is {
+          id: string
+          title: string
+          content: string
+        } => Boolean(section.content),
+      )
+    : []
+  const hasClaims = structuredClaims.length > 0 || Boolean(patent.claims)
+  const hasDescription = descriptionSections.length > 0
+  const hasCitations = Boolean(patent.citations?.length)
+  const contentSections = [
+    {
+      id: 'section-abstract',
+      label: '摘要',
+      meta: patent.abstract ? '概览' : '无内容',
+      visible: true,
+    },
+    {
+      id: 'section-claims',
+      label: '权利要求',
+      meta: structuredClaims.length
+        ? `${structuredClaims.length} 条`
+        : patent.claims
+          ? '全文'
+          : undefined,
+      visible: hasClaims,
+    },
+    {
+      id: 'section-description',
+      label: '说明书',
+      meta: hasDescription ? `${descriptionSections.length} 节` : undefined,
+      visible: hasDescription,
+    },
+    {
+      id: 'section-citations',
+      label: '引用文献',
+      meta: hasCitations ? `${patent.citations.length} 条` : undefined,
+      visible: hasCitations,
+    },
+  ].filter((section) => section.visible)
+  const overviewMetrics = [
+    {
+      label: '申请人',
+      value: patent.applicants?.length ? `${patent.applicants.length} 个` : '-',
+    },
+    {
+      label: '发明人',
+      value: patent.inventors?.length ? `${patent.inventors.length} 位` : '-',
+    },
+    {
+      label: '权利要求',
+      value: structuredClaims.length
+        ? `${structuredClaims.length} 条`
+        : patent.claims
+          ? '已收录'
+          : '-',
+    },
+    {
+      label: '说明书章节',
+      value: hasDescription ? `${descriptionSections.length} 节` : '-',
+    },
+  ]
 
   return (
     <AppShell>
       <Header title="专利详情" description={patent.doc_number} />
 
-      <div className="space-y-6 p-6">
-        {/* Back Link */}
-        <Link
-          href="/patents"
-          className="text-muted-foreground hover:text-foreground inline-flex items-center text-sm"
-        >
-          <ArrowLeft className="mr-2 h-4 w-4" />
-          返回专利列表
-        </Link>
+      <div className="p-6">
+        <div id="top" className="mx-auto max-w-7xl space-y-6">
+          <Link
+            href="/patents"
+            className="text-muted-foreground hover:text-foreground inline-flex items-center text-sm"
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
+            返回专利列表
+          </Link>
 
-        {/* Title Card */}
-        <Card className="bg-card border-border">
-          <CardContent className="p-6">
-            <div className="flex items-start gap-4">
-              <div
-                className={cn(
-                  'flex h-12 w-12 items-center justify-center rounded-lg',
-                  isInvention ? 'bg-info/20' : 'bg-warning/20',
-                )}
-              >
-                {isInvention ? (
-                  <Lightbulb className="text-info h-6 w-6" />
-                ) : (
-                  <Wrench className="text-warning h-6 w-6" />
-                )}
-              </div>
-              <div className="flex-1">
-                <div className="mb-2 flex items-center gap-2">
-                  <Badge
-                    variant="outline"
+          <Card className="bg-card border-border overflow-hidden">
+            <CardContent className="p-6 lg:p-8">
+              <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+                <div className="flex min-w-0 items-start gap-4">
+                  <div
                     className={cn(
-                      isInvention
-                        ? 'border-info/50 text-info'
-                        : 'border-warning/50 text-warning',
+                      'flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl',
+                      isInvention ? 'bg-info/15' : 'bg-warning/20',
                     )}
                   >
-                    {isInvention ? '发明授权' : '实用新型'}
-                  </Badge>
-                  <span className="text-muted-foreground font-mono text-sm">
-                    {patent.doc_number}
-                  </span>
-                </div>
-                <h1 className="text-foreground text-xl font-semibold text-balance">
-                  {patent.title}
-                </h1>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+                    {isInvention ? (
+                      <Lightbulb className="text-info h-7 w-7" />
+                    ) : (
+                      <Wrench className="text-warning h-7 w-7" />
+                    )}
+                  </div>
+                  <div className="min-w-0 space-y-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge
+                        variant="outline"
+                        className={cn(
+                          isInvention
+                            ? 'border-info/50 text-info'
+                            : 'border-warning/50 text-warning',
+                        )}
+                      >
+                        {isInvention ? '发明授权' : '实用新型'}
+                      </Badge>
+                      <Badge variant="secondary" className="font-mono">
+                        {patent.doc_number}
+                      </Badge>
+                      {patent.grant_date && (
+                        <Badge variant="secondary">
+                          授权公告 {formatDate(patent.grant_date)}
+                        </Badge>
+                      )}
+                    </div>
 
-        <div className="grid gap-6 lg:grid-cols-3">
-          {/* Basic Info */}
-          <Card className="bg-card border-border lg:col-span-1">
-            <CardHeader>
-              <CardTitle className="text-base font-medium">基本信息</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <InfoItem
-                icon={User}
-                label="申请人"
-                value={joinNames(patent.applicants)}
-              />
-              <InfoItem
-                icon={User}
-                label="发明人"
-                value={
-                  patent.inventors?.length
-                    ? patent.inventors.join('; ')
-                    : undefined
-                }
-              />
-              {patent.agents?.length > 0 && (
-                <>
+                    <div className="space-y-2">
+                      <h1 className="text-foreground text-2xl font-semibold text-balance lg:text-3xl">
+                        {patent.title}
+                      </h1>
+                      <p className="text-muted-foreground text-sm leading-6">
+                        申请人 {joinNames(patent.applicants)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:w-[360px]">
+                  <MetricCard label="申请号" value={patent.app_number} />
+                  <MetricCard
+                    label="申请日"
+                    value={formatDate(patent.app_date)}
+                  />
+                  <MetricCard label="授权公告号" value={patent.grant_number} />
+                  <MetricCard
+                    label="IPC 分类"
+                    value={
+                      patent.ipc_codes?.length
+                        ? `${patent.ipc_codes.length} 项`
+                        : undefined
+                    }
+                  />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card border-border">
+            <CardContent className="flex flex-col gap-4 p-5">
+              <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-foreground text-sm font-medium">
+                    页面导航
+                  </p>
+                  <p className="text-muted-foreground text-sm">
+                    快速跳转到正文区块与说明书章节
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {contentSections.map((section) => (
+                    <NavChip
+                      key={section.id}
+                      href={`#${section.id}`}
+                      label={section.label}
+                      meta={section.meta}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {hasDescription && (
+                <div className="border-border flex flex-wrap gap-2 border-t pt-4">
+                  {descriptionSections.map((section) => (
+                    <NavChip
+                      key={section.id}
+                      href={`#${section.id}`}
+                      label={section.title}
+                    />
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
+            <div className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+              <Card className="bg-card border-border">
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    内容概览
+                  </CardTitle>
+                  <CardDescription>
+                    当前专利详情的正文与主体覆盖情况
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="grid grid-cols-2 gap-3">
+                  {overviewMetrics.map((metric) => (
+                    <MetricCard
+                      key={metric.label}
+                      label={metric.label}
+                      value={metric.value}
+                    />
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card border-border">
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    参与主体
+                  </CardTitle>
+                  <CardDescription>
+                    优先展示阅读时最常查看的主体信息
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <InfoItem
                     icon={Building}
-                    label="代理机构"
-                    value={patent.agents.map((a) => a.agency).join('; ')}
+                    label="申请人"
+                    value={joinNames(patent.applicants)}
                   />
                   <InfoItem
                     icon={User}
-                    label="代理人"
-                    value={patent.agents.map((a) => a.agent).join('; ')}
+                    label="发明人"
+                    value={joinText(patent.inventors)}
                   />
-                </>
+                  {patent.assignees?.length > 0 && (
+                    <InfoItem
+                      icon={Building}
+                      label="专利权人"
+                      value={joinNames(patent.assignees)}
+                    />
+                  )}
+                  {patent.agents?.length > 0 && (
+                    <>
+                      <InfoItem
+                        icon={Building}
+                        label="代理机构"
+                        value={joinText(patent.agents.map((a) => a.agency))}
+                      />
+                      <InfoItem
+                        icon={User}
+                        label="代理人"
+                        value={joinText(patent.agents.map((a) => a.agent))}
+                      />
+                    </>
+                  )}
+                  {patent.examiners?.length > 0 && (
+                    <InfoItem
+                      icon={User}
+                      label="审查员"
+                      value={joinText(patent.examiners)}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card border-border">
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    文献信息
+                  </CardTitle>
+                  <CardDescription>归档编号和关键时间节点</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <InfoItem
+                    icon={FileText}
+                    label="申请号"
+                    value={patent.app_number}
+                  />
+                  <InfoItem
+                    icon={Calendar}
+                    label="申请日"
+                    value={formatDate(patent.app_date)}
+                  />
+                  <InfoItem
+                    icon={FileText}
+                    label="公开号"
+                    value={patent.doc_number}
+                  />
+                  <InfoItem
+                    icon={Calendar}
+                    label="公开日"
+                    value={formatDate(patent.pub_date)}
+                  />
+                  <InfoItem
+                    icon={FileText}
+                    label="授权公告号"
+                    value={patent.grant_number}
+                  />
+                  <InfoItem
+                    icon={Calendar}
+                    label="授权公告日"
+                    value={formatDate(patent.grant_date)}
+                  />
+                  <InfoItem icon={Tag} label="文档状态" value={patent.status} />
+                  <InfoItem
+                    icon={FileText}
+                    label="来源文件"
+                    value={patent.source_file}
+                  />
+                </CardContent>
+              </Card>
+
+              <Card className="bg-card border-border">
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">
+                    技术分类
+                  </CardTitle>
+                  <CardDescription>分类号与数据归档补充信息</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <InfoItem
+                    icon={Tag}
+                    label="专利类型"
+                    value={isInvention ? '发明授权' : '实用新型'}
+                  />
+                  <InfoItem
+                    icon={Tag}
+                    label="批次 ID"
+                    value={patent.batch_id}
+                  />
+                  <div className="space-y-3">
+                    <div className="text-muted-foreground flex items-center gap-2 text-xs tracking-wide uppercase">
+                      <Tag className="h-4 w-4" />
+                      <span>IPC 分类号</span>
+                    </div>
+                    {patent.ipc_codes?.length ? (
+                      <div className="flex flex-wrap gap-2">
+                        {patent.ipc_codes.map((code) => (
+                          <Badge
+                            key={code}
+                            variant="secondary"
+                            className="font-mono text-xs"
+                          >
+                            {code}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground text-sm">无分类号</p>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="space-y-6">
+              <Card
+                id="section-abstract"
+                className="bg-card border-border scroll-mt-28"
+              >
+                <CardHeader>
+                  <CardTitle className="text-base font-medium">摘要</CardTitle>
+                  <CardDescription>专利内容的核心概览</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {patent.abstract ? (
+                    <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
+                      {patent.abstract}
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground text-sm italic">
+                      无摘要信息
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              {hasClaims && (
+                <Card
+                  id="section-claims"
+                  className="bg-card border-border scroll-mt-28"
+                >
+                  <CardHeader>
+                    <CardTitle className="text-base font-medium">
+                      权利要求
+                    </CardTitle>
+                    <CardDescription>
+                      优先展示结构化条目，便于逐条阅读
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {structuredClaims.length > 0 ? (
+                      <div className="space-y-4">
+                        {structuredClaims.map((claim) => (
+                          <section
+                            key={claim.claim_num}
+                            className="bg-secondary/30 rounded-xl border p-4"
+                          >
+                            <p className="text-foreground mb-3 text-sm font-medium">
+                              权利要求 {claim.claim_num}
+                            </p>
+                            <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
+                              {claim.claim_text}
+                            </p>
+                          </section>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
+                        {patent.claims}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
               )}
 
-              <Separator className="my-4" />
-
-              <InfoItem
-                icon={FileText}
-                label="申请号"
-                value={patent.app_number}
-              />
-              <InfoItem
-                icon={Calendar}
-                label="申请日"
-                value={formatDate(patent.app_date)}
-              />
-              <InfoItem
-                icon={FileText}
-                label="公开号"
-                value={patent.doc_number}
-              />
-              <InfoItem
-                icon={Calendar}
-                label="公开日"
-                value={formatDate(patent.pub_date)}
-              />
-              <InfoItem
-                icon={FileText}
-                label="授权公告号"
-                value={patent.grant_number}
-              />
-              <InfoItem
-                icon={Calendar}
-                label="授权公告日"
-                value={formatDate(patent.grant_date)}
-              />
-
-              {patent.ipc_codes && patent.ipc_codes.length > 0 && (
-                <>
-                  <Separator className="my-4" />
-                  <div className="space-y-2">
-                    <div className="text-muted-foreground flex items-center gap-2">
-                      <Tag className="h-4 w-4" />
-                      <span className="text-xs">IPC 分类号</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {patent.ipc_codes.map((code, i) => (
-                        <Badge
-                          key={i}
-                          variant="secondary"
-                          className="font-mono text-xs"
-                        >
-                          {code}
-                        </Badge>
+              {hasDescription && (
+                <Card
+                  id="section-description"
+                  className="bg-card border-border scroll-mt-28"
+                >
+                  <CardHeader>
+                    <CardTitle className="text-base font-medium">
+                      说明书
+                    </CardTitle>
+                    <CardDescription>
+                      按章节整理，减少长文本阅读负担
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex flex-wrap gap-2">
+                      {descriptionSections.map((section) => (
+                        <NavChip
+                          key={section.id}
+                          href={`#${section.id}`}
+                          label={section.title}
+                        />
                       ))}
                     </div>
-                  </div>
-                </>
+                  </CardContent>
+                  <CardContent className="divide-border divide-y">
+                    {descriptionSections.map((section) => (
+                      <DescriptionSection
+                        key={section.id}
+                        id={section.id}
+                        title={section.title}
+                        content={section.content}
+                      />
+                    ))}
+                  </CardContent>
+                </Card>
               )}
-            </CardContent>
-          </Card>
 
-          {/* Content */}
-          <Card className="bg-card border-border lg:col-span-2">
-            <CardHeader>
-              <CardTitle className="text-base font-medium">摘要</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {patent.abstract ? (
-                <p className="text-muted-foreground text-sm leading-relaxed whitespace-pre-wrap">
-                  {patent.abstract}
-                </p>
-              ) : (
-                <p className="text-muted-foreground text-sm italic">
-                  无摘要信息
-                </p>
+              {hasCitations && (
+                <Card
+                  id="section-citations"
+                  className="bg-card border-border scroll-mt-28"
+                >
+                  <CardHeader>
+                    <CardTitle className="text-base font-medium">
+                      引用文献
+                    </CardTitle>
+                    <CardDescription>支持快速查看现有引证记录</CardDescription>
+                  </CardHeader>
+                  <CardContent className="grid gap-3 md:grid-cols-2">
+                    {patent.citations.map((citation, index) => (
+                      <div
+                        key={`${citation.country ?? 'citation'}-${citation.doc_number ?? index}`}
+                        className="bg-secondary/30 rounded-xl border p-4"
+                      >
+                        <p className="text-foreground text-sm font-medium">
+                          {joinText([
+                            citation.country,
+                            citation.doc_number,
+                            citation.kind,
+                          ])}
+                        </p>
+                        <p className="text-muted-foreground mt-2 text-sm">
+                          公开日期 {citation.pub_date || '-'}
+                        </p>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
               )}
-            </CardContent>
-          </Card>
 
-          {/* Claims */}
-          {patent.claims && (
-            <Card className="bg-card border-border lg:col-span-3">
-              <CardHeader>
-                <CardTitle className="text-base font-medium">
-                  权利要求
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-muted-foreground max-h-[400px] overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap">
-                  {patent.claims}
-                </p>
-              </CardContent>
-            </Card>
-          )}
+              <div className="flex justify-end">
+                <a
+                  href="#top"
+                  className="text-muted-foreground hover:text-foreground text-sm transition-colors"
+                >
+                  返回顶部
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </AppShell>

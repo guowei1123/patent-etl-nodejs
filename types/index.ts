@@ -66,6 +66,16 @@ export interface Patent {
   claims_structured: PatentClaimRow[]
 }
 
+// 列表视图轻量类型
+export interface PatentListItem {
+  id: string
+  doc_number: string
+  kind: string
+  title: string
+  pub_date: Date | null
+  applicants: PatentApplicantRow[]
+}
+
 // 子表行类型
 export interface PatentApplicantRow {
   name: string
