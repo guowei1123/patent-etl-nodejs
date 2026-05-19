@@ -49,3 +49,6 @@ docs/*.pdf
 
 # ETL data
 /data/
+
+# Codex
+.codex/
