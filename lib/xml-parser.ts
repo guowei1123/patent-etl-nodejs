@@ -1,6 +1,14 @@
 import { XMLParser } from 'fast-xml-parser'
 import * as fs from 'fs'
-import type { ParsedPatent, PatentType } from '@/types'
+import type {
+  ParsedPatent,
+  ParsedApplicant,
+  ParsedAgent,
+  ParsedCitation,
+  ParsedClaim,
+  ParsedDescription,
+  PatentType,
+} from '@/types'
 
 // 配置 XML 解析器
 const parser = new XMLParser({
@@ -12,8 +20,6 @@ const parser = new XMLParser({
   parseTagValue: true,
   removeNSPrefix: true,
   isArray: (name) => {
-    // Support both newer PascalCase nodes and legacy lowercase/kebab-case nodes.
-    // Exact matching avoids turning container elements like ApplicantDetails into arrays.
     if (
       [
         'Applicant',
@@ -24,6 +30,10 @@ const parser = new XMLParser({
         'PublicationReference',
         'ApplicationReference',
         'PriorityClaim',
+        'Citation',
+        'Examiner',
+        'Assignee',
+        'ClaimText',
       ].includes(name)
     )
       return true
@@ -34,8 +44,12 @@ const parser = new XMLParser({
       'agent',
       'priority',
       'claim',
+      'claimtext',
       'classification-ipcr',
       'ipc',
+      'citation',
+      'examiner',
+      'assignee',
     ].includes(lower)
   },
 })
@@ -98,7 +112,6 @@ function extractIpcCodes(value: unknown): string[] | undefined {
       codes.push(item.trim())
     } else if (typeof item === 'object' && item !== null) {
       const obj = item as Record<string, unknown>
-      // 常见的 IPC 格式
       const code =
         obj['@_code'] ||
         obj['@_ipc-code'] ||
@@ -129,6 +142,194 @@ function formatDate(value: unknown): string | undefined {
   }
 
   return undefined
+}
+
+// 确保数组
+function ensureArray<T>(value: T | T[] | undefined): T[] {
+  if (!value) return []
+  return Array.isArray(value) ? value : [value]
+}
+
+// 提取结构化申请人
+function extractStructuredApplicants(nodes: unknown): ParsedApplicant[] {
+  return ensureArray(nodes)
+    .map((a: unknown) => {
+      // AddressBook 结构（新格式）
+      const name = extractText(getNestedValue(a, 'AddressBook', 'Name'))
+      if (name) {
+        const addr = getNestedValue(a, 'AddressBook', 'Address')
+        const result: ParsedApplicant = { name }
+        const address = extractText(getNestedValue(addr, 'Text'))
+        if (address) result.address = address
+        const province = extractText(getNestedValue(addr, 'Province'))
+        if (province) result.province = province
+        const city = extractText(getNestedValue(addr, 'City'))
+        if (city) result.city = city
+        const county = extractText(getNestedValue(addr, 'County'))
+        if (county) result.county = county
+        const postcode = extractText(getNestedValue(addr, 'PostCode'))
+        if (postcode) result.postcode = postcode
+        return result
+      }
+      // 旧格式：纯字符串或包含 #text / name 字段的扁平对象
+      const fallbackName = extractText(a)
+      if (fallbackName) return { name: fallbackName }
+      return null
+    })
+    .filter((x): x is ParsedApplicant => x !== null)
+}
+
+// 提取结构化代理人/机构（保留配对）
+function extractStructuredAgents(nodes: unknown): ParsedAgent[] {
+  return ensureArray(nodes)
+    .map((a: unknown) => {
+      // AddressBook 结构（新格式）
+      const agentName = extractText(getNestedValue(a, 'AddressBook', 'Name'))
+      const agencyName = extractText(
+        getNestedValue(a, 'Agency', 'AddressBook', 'OrganizationName'),
+      )
+      if (agentName || agencyName) {
+        return {
+          agent_name: agentName || '',
+          agency_name: agencyName || '',
+        }
+      }
+      // 旧格式：纯字符串或扁平对象
+      const fallbackName = extractText(a)
+      if (fallbackName) return { agent_name: fallbackName, agency_name: '' }
+      return null
+    })
+    .filter((x): x is ParsedAgent => x !== null)
+}
+
+function splitMultiValueText(value: string | undefined): string[] {
+  if (!value) return []
+  return value
+    .split(';')
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeStructuredAgents(
+  agents: ParsedAgent[],
+  agentText: string | undefined,
+  agencyText: string | undefined,
+): ParsedAgent[] {
+  const agentNames = splitMultiValueText(agentText)
+  const agencyNames = splitMultiValueText(agencyText)
+
+  if (agents.length === 0) {
+    const length = Math.max(agentNames.length, agencyNames.length)
+    return Array.from({ length }, (_, index) => ({
+      agent_name: agentNames[index] || '',
+      agency_name: agencyNames[index] || '',
+    })).filter((item) => item.agent_name || item.agency_name)
+  }
+
+  return agents.map((item, index) => ({
+    agent_name: item.agent_name || agentNames[index] || '',
+    agency_name: item.agency_name || agencyNames[index] || '',
+  }))
+}
+
+// 提取结构化引用文献
+function extractCitations(root: unknown): ParsedCitation[] {
+  const citationNodes =
+    getNestedValue(root, 'BibliographicData', 'ReferencesCited', 'Citation') ||
+    getNestedValue(root, 'bibliographic-data', 'references-cited', 'citation')
+  return ensureArray(citationNodes)
+    .map((c: unknown) => {
+      const appCit =
+        getNestedValue(c, 'ApplicationCitation') ||
+        getNestedValue(c, 'application-citation')
+      const pubRef =
+        resolveFirst(appCit, 'PublicationReference', 'DocumentID') ||
+        getNestedValue(appCit, 'publication-reference', 'document-id')
+      if (!pubRef) return null
+      const result: ParsedCitation = {}
+      const country = extractText(getNestedValue(pubRef, 'WIPOST3Code'))
+      if (country) result.country = country
+      const docNumber =
+        extractText(getNestedValue(pubRef, 'DocNumber')) ||
+        extractText(getNestedValue(pubRef, 'doc-number'))
+      if (docNumber) result.doc_number = docNumber
+      const kind = extractText(getNestedValue(pubRef, 'Kind'))
+      if (kind) result.kind = kind
+      const pubDate = formatDate(getNestedValue(pubRef, 'Date'))
+      if (pubDate) result.pub_date = pubDate
+      return result
+    })
+    .filter((x): x is ParsedCitation => x !== null)
+}
+
+// 提取结构化权利要求
+function extractStructuredClaims(root: unknown): ParsedClaim[] {
+  const claimNodes = getNestedValue(root, 'Claims', 'Claim')
+  return ensureArray(claimNodes)
+    .map((c: unknown, idx: number) => {
+      const obj = c as Record<string, unknown>
+      const claimTexts = ensureArray(obj['ClaimText'])
+      const texts = claimTexts
+        .map((t: unknown) => extractText(t))
+        .filter((t): t is string => !!t)
+      if (texts.length === 0) return null
+      const num = extractText(obj['@_num']) || String(idx + 1).padStart(4, '0')
+      return { num, texts }
+    })
+    .filter((x): x is ParsedClaim => x !== null)
+}
+
+// 提取说明书
+function extractDescription(root: unknown): {
+  text: string
+  structured: ParsedDescription
+} {
+  const desc = getNestedValue(root, 'Description')
+  if (!desc || typeof desc !== 'object') return { text: '', structured: {} }
+
+  const extractSection = (...keys: string[]): string => {
+    const section = getNestedValue(desc, ...keys)
+    if (!section) return ''
+    // 收集该 section 下所有 Paragraphs 文本
+    const paragraphs: string[] = []
+    const collect = (obj: unknown) => {
+      if (!obj || typeof obj !== 'object') return
+      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+        if (k === 'Paragraphs' || k === 'Paragraph') {
+          const t = extractText(v)
+          if (t) paragraphs.push(t)
+        } else if (typeof v === 'object' && v !== null) {
+          collect(v)
+        }
+      }
+    }
+    collect(section)
+    return paragraphs.join('\n')
+  }
+
+  const structured: ParsedDescription = {
+    technical_field: extractSection('TechnicalField') || undefined,
+    background_art: extractSection('BackgroundArt') || undefined,
+    disclosure: extractSection('Disclosure') || undefined,
+    drawings_description: extractSection('DrawingsDescription') || undefined,
+    embodiment:
+      extractSection('InventionMode') ||
+      extractSection('ModeForInvention') ||
+      undefined,
+  }
+
+  // 拼接完整说明书文本
+  const text = [
+    structured.technical_field,
+    structured.background_art,
+    structured.disclosure,
+    structured.drawings_description,
+    structured.embodiment,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+
+  return { text, structured }
 }
 
 // 解析单个专利 XML
@@ -181,6 +382,13 @@ export function parsePatentXml(
       return null
     }
 
+    // === 根元素属性 ===
+    const kind = extractText(getNestedValue(root, '@_kind')) || undefined
+    const pubCountry =
+      extractText(getNestedValue(root, '@_country')) || undefined
+    const docStatus = extractText(getNestedValue(root, '@_status')) || undefined
+    const sourceFile = extractText(getNestedValue(root, '@_file')) || undefined
+
     // 提取标题
     const title =
       extractText(
@@ -199,7 +407,19 @@ export function parsePatentXml(
       extractText(getNestedValue(root, 'abstract')) ||
       extractText(getNestedValue(root, 'bibliographic-data', 'abstract'))
 
-    // 提取权利要求
+    // 提取摘要附图
+    const abstractFigure = extractText(
+      getNestedValue(
+        root,
+        'Abstract',
+        'AbstractFigure',
+        'Figure',
+        'Image',
+        '@_file',
+      ),
+    )
+
+    // 提取权利要求（文本，兼容旧接口）
     const claimEntries = getNestedValue(root, 'Claims', 'Claim')
     const claimArr = Array.isArray(claimEntries)
       ? claimEntries
@@ -216,7 +436,10 @@ export function parsePatentXml(
       extractText(getNestedValue(root, 'claims')) ||
       extractText(getNestedValue(root, 'claim'))
 
-    // 提取申请人
+    // 结构化权利要求
+    const claimsStructured = extractStructuredClaims(root)
+
+    // 提取申请人（扁平，兼容旧接口）
     const applicantNodes =
       getNestedValue(
         root,
@@ -249,7 +472,10 @@ export function parsePatentXml(
     const applicant =
       applicantNames.length > 0 ? applicantNames.join('; ') : undefined
 
-    // 提取发明人
+    // 结构化申请人
+    const applicantsStructured = extractStructuredApplicants(applicantArr)
+
+    // 提取发明人（扁平，兼容旧接口）
     const inventorNodes =
       getNestedValue(
         root,
@@ -278,18 +504,19 @@ export function parsePatentXml(
           extractText(getNestedValue(i, 'AddressBook', 'Name')) ||
           extractText(i),
       )
-      .filter(Boolean)
+      .filter((n): n is string => !!n)
     const inventor =
       inventorNames.length > 0 ? inventorNames.join('; ') : undefined
 
+    // 结构化发明人
+    const inventorsStructured = inventorNames.filter((n): n is string => !!n)
+
     // 提取申请信息
+    const appRefNode =
+      getNestedValue(root, 'BibliographicData', 'ApplicationReference') ||
+      getNestedValue(root, 'bibliographic-data', 'application-reference')
     const appRef =
-      resolveFirst(
-        root,
-        'BibliographicData',
-        'ApplicationReference',
-        'DocumentID',
-      ) ||
+      resolveFirst(appRefNode, 'DocumentID') ||
       getNestedValue(
         root,
         'bibliographic-data',
@@ -305,14 +532,23 @@ export function parsePatentXml(
       formatDate(getNestedValue(appRef, 'date')) ||
       formatDate(getNestedValue(root, 'application-date'))
 
+    // 申请类型码和国别
+    const appType =
+      extractText(
+        getNestedValue(
+          Array.isArray(appRefNode) ? appRefNode[0] : appRefNode,
+          '@_applType',
+        ),
+      ) || undefined
+    const appCountry =
+      extractText(getNestedValue(appRef, 'WIPOST3Code')) || undefined
+
     // 提取公开信息
+    const pubRefNode =
+      getNestedValue(root, 'BibliographicData', 'PublicationReference') ||
+      getNestedValue(root, 'bibliographic-data', 'publication-reference')
     const pubRef =
-      resolveFirst(
-        root,
-        'BibliographicData',
-        'PublicationReference',
-        'DocumentID',
-      ) ||
+      resolveFirst(pubRefNode, 'DocumentID') ||
       getNestedValue(
         root,
         'bibliographic-data',
@@ -327,6 +563,12 @@ export function parsePatentXml(
       formatDate(getNestedValue(pubRef, 'Date')) ||
       formatDate(getNestedValue(pubRef, 'date')) ||
       formatDate(getNestedValue(root, 'publication-date'))
+
+    // 公开国别（优先取 DocumentID 中的）
+    const pubCountryResolved =
+      extractText(getNestedValue(pubRef, 'WIPOST3Code')) ||
+      pubCountry ||
+      undefined
 
     // 提取授权信息
     const grantRef =
@@ -398,7 +640,7 @@ export function parsePatentXml(
             ),
           )
 
-    // 提取代理信息
+    // 提取代理信息（扁平，兼容旧接口）
     const agentNodes =
       getNestedValue(
         root,
@@ -408,13 +650,13 @@ export function parsePatentXml(
         'Agent',
       ) ||
       getNestedValue(root, 'bibliographic-data', 'parties', 'agents', 'agent')
-    const agentArr = Array.isArray(agentNodes)
+    const agentArrParsed = Array.isArray(agentNodes)
       ? agentNodes
       : agentNodes
         ? [agentNodes]
         : []
     const agency =
-      agentArr
+      agentArrParsed
         .map((a: unknown) =>
           extractText(
             getNestedValue(a, 'Agency', 'AddressBook', 'OrganizationName'),
@@ -427,7 +669,7 @@ export function parsePatentXml(
       ) ||
       extractText(getNestedValue(root, 'agency'))
     const agent =
-      agentArr
+      agentArrParsed
         .map((a: unknown) =>
           extractText(getNestedValue(a, 'AddressBook', 'Name')),
         )
@@ -444,6 +686,39 @@ export function parsePatentXml(
       ) ||
       extractText(getNestedValue(root, 'agent'))
 
+    // 结构化代理人/机构
+    const agentsStructured = normalizeStructuredAgents(
+      extractStructuredAgents(agentArrParsed),
+      agent,
+      agency,
+    )
+
+    // 提取审查员
+    const examinerNodes = getNestedValue(
+      root,
+      'BibliographicData',
+      'ExaminerDetails',
+      'Examiner',
+    )
+    const examiners = ensureArray(examinerNodes)
+      .map(
+        (e: unknown) =>
+          extractText(getNestedValue(e, 'Name')) || extractText(e),
+      )
+      .filter((n): n is string => !!n)
+
+    // 提取引用文献
+    const citations = extractCitations(root)
+
+    // 提取受让人
+    const assigneeNodes = getNestedValue(
+      root,
+      'BibliographicData',
+      'AssigneeDetails',
+      'Assignee',
+    )
+    const assignees = extractStructuredApplicants(assigneeNodes)
+
     // 提取优先权信息
     const priorityData = getNestedValue(
       root,
@@ -457,6 +732,10 @@ export function parsePatentXml(
         ? { claims: priorityData }
         : { claims: [priorityData] }
     }
+
+    // 提取说明书
+    const { text: descText, structured: descStructured } =
+      extractDescription(root)
 
     return {
       patent_number: String(patentNumber).trim(),
@@ -477,6 +756,29 @@ export function parsePatentXml(
       agent,
       priority_info: priorityInfo,
       raw_xml: includeRawXml ? xmlContent : undefined,
+
+      // 新增字段
+      kind,
+      pub_country: pubCountryResolved,
+      app_country: appCountry,
+      app_type: appType,
+      doc_status: docStatus,
+      source_file: sourceFile,
+      description: descText || undefined,
+      description_structured: descText ? descStructured : undefined,
+      applicants_structured:
+        applicantsStructured.length > 0 ? applicantsStructured : undefined,
+      inventors_structured:
+        inventorsStructured.length > 0 ? inventorsStructured : undefined,
+      agents_structured:
+        agentsStructured.length > 0 ? agentsStructured : undefined,
+      citations: citations.length > 0 ? citations : undefined,
+      examiners: examiners.length > 0 ? examiners : undefined,
+      assignees: assignees.length > 0 ? assignees : undefined,
+      ipc_structured: ipcCodes,
+      claims_structured:
+        claimsStructured.length > 0 ? claimsStructured : undefined,
+      abstract_figure: abstractFigure,
     }
   } catch (error) {
     console.error('XML解析错误:', error)

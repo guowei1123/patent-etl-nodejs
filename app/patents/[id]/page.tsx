@@ -48,6 +48,16 @@ function InfoItem({
   )
 }
 
+function formatDate(d: Date | string | null | undefined): string | undefined {
+  if (!d) return undefined
+  return new Date(d).toLocaleDateString('zh-CN')
+}
+
+function joinNames(items: Array<{ name: string }> | null | undefined): string {
+  if (!items?.length) return '-'
+  return items.map((a) => a.name).join('; ')
+}
+
 export default function PatentDetailPage({
   params,
 }: {
@@ -89,9 +99,11 @@ export default function PatentDetailPage({
     )
   }
 
+  const isInvention = patent.kind === 'B'
+
   return (
     <AppShell>
-      <Header title="专利详情" description={patent.patent_number} />
+      <Header title="专利详情" description={patent.doc_number} />
 
       <div className="space-y-6 p-6">
         {/* Back Link */}
@@ -110,12 +122,10 @@ export default function PatentDetailPage({
               <div
                 className={cn(
                   'flex h-12 w-12 items-center justify-center rounded-lg',
-                  patent.patent_type === 'invention'
-                    ? 'bg-info/20'
-                    : 'bg-warning/20',
+                  isInvention ? 'bg-info/20' : 'bg-warning/20',
                 )}
               >
-                {patent.patent_type === 'invention' ? (
+                {isInvention ? (
                   <Lightbulb className="text-info h-6 w-6" />
                 ) : (
                   <Wrench className="text-warning h-6 w-6" />
@@ -126,17 +136,15 @@ export default function PatentDetailPage({
                   <Badge
                     variant="outline"
                     className={cn(
-                      patent.patent_type === 'invention'
+                      isInvention
                         ? 'border-info/50 text-info'
                         : 'border-warning/50 text-warning',
                     )}
                   >
-                    {patent.patent_type === 'invention'
-                      ? '发明授权'
-                      : '实用新型'}
+                    {isInvention ? '发明授权' : '实用新型'}
                   </Badge>
                   <span className="text-muted-foreground font-mono text-sm">
-                    {patent.patent_number}
+                    {patent.doc_number}
                   </span>
                 </div>
                 <h1 className="text-foreground text-xl font-semibold text-balance">
@@ -154,48 +162,56 @@ export default function PatentDetailPage({
               <CardTitle className="text-base font-medium">基本信息</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <InfoItem icon={User} label="申请人" value={patent.applicant} />
-              <InfoItem icon={User} label="发明人" value={patent.inventor} />
               <InfoItem
-                icon={Building}
-                label="代理机构"
-                value={patent.agency}
+                icon={User}
+                label="申请人"
+                value={joinNames(patent.applicants)}
               />
-              <InfoItem icon={User} label="代理人" value={patent.agent} />
+              <InfoItem
+                icon={User}
+                label="发明人"
+                value={
+                  patent.inventors?.length
+                    ? patent.inventors.join('; ')
+                    : undefined
+                }
+              />
+              {patent.agents?.length > 0 && (
+                <>
+                  <InfoItem
+                    icon={Building}
+                    label="代理机构"
+                    value={patent.agents.map((a) => a.agency).join('; ')}
+                  />
+                  <InfoItem
+                    icon={User}
+                    label="代理人"
+                    value={patent.agents.map((a) => a.agent).join('; ')}
+                  />
+                </>
+              )}
 
               <Separator className="my-4" />
 
               <InfoItem
                 icon={FileText}
                 label="申请号"
-                value={patent.application_number}
+                value={patent.app_number}
               />
               <InfoItem
                 icon={Calendar}
                 label="申请日"
-                value={
-                  patent.application_date
-                    ? new Date(patent.application_date).toLocaleDateString(
-                        'zh-CN',
-                      )
-                    : undefined
-                }
+                value={formatDate(patent.app_date)}
               />
               <InfoItem
                 icon={FileText}
                 label="公开号"
-                value={patent.publication_number}
+                value={patent.doc_number}
               />
               <InfoItem
                 icon={Calendar}
                 label="公开日"
-                value={
-                  patent.publication_date
-                    ? new Date(patent.publication_date).toLocaleDateString(
-                        'zh-CN',
-                      )
-                    : undefined
-                }
+                value={formatDate(patent.pub_date)}
               />
               <InfoItem
                 icon={FileText}
@@ -205,11 +221,7 @@ export default function PatentDetailPage({
               <InfoItem
                 icon={Calendar}
                 label="授权公告日"
-                value={
-                  patent.grant_date
-                    ? new Date(patent.grant_date).toLocaleDateString('zh-CN')
-                    : undefined
-                }
+                value={formatDate(patent.grant_date)}
               />
 
               {patent.ipc_codes && patent.ipc_codes.length > 0 && (

@@ -132,7 +132,7 @@ describe('mergeSplitZip', () => {
     expect(content).toBe('AAAABBBBCCCC')
   })
 
-  it('works with single-part split (just .zip)', async () => {
+  it('tolerates direct helper invocation with only a .zip file', async () => {
     fs.writeFileSync(path.join(tmpDir, 'data.zip'), Buffer.from('HELLO'))
 
     const group: SplitArchiveGroup = {
@@ -166,10 +166,8 @@ describe('withPreparedArchiveFiles', () => {
   it('removes stale merged archives before planning extraction', async () => {
     fs.writeFileSync(path.join(tmpDir, '20231003.z01'), Buffer.from('PART1'))
     fs.writeFileSync(path.join(tmpDir, '20231003.zip'), makeEocd(5))
-    fs.writeFileSync(
-      path.join(tmpDir, '20231003.merged.zip'),
-      Buffer.from('STALE'),
-    )
+    const mergedPath = path.join(tmpDir, '20231003.merged.zip')
+    fs.writeFileSync(mergedPath, Buffer.from('STALE'))
 
     const seenFiles = await withPreparedArchiveFiles(
       tmpDir,
@@ -178,10 +176,21 @@ describe('withPreparedArchiveFiles', () => {
         expect(path.basename(filePaths[0])).toBe('20231003.merged.zip')
         return filePaths
       },
+      {
+        beforeMerge: (_group, outputPath) => {
+          expect(outputPath).toBe(mergedPath)
+          expect(fs.existsSync(outputPath)).toBe(false)
+        },
+        mergeArchive: async (group, outputPath) => {
+          expect(outputPath).toBe(mergedPath)
+          expect(fs.existsSync(outputPath)).toBe(false)
+          return mergeSplitZip(group, outputPath)
+        },
+      },
     )
 
     expect(seenFiles).toHaveLength(1)
-    expect(fs.existsSync(path.join(tmpDir, '20231003.merged.zip'))).toBe(false)
+    expect(fs.existsSync(mergedPath)).toBe(false)
   })
 
   it('cleans merged temp files even when extraction handler fails', async () => {

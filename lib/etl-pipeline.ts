@@ -500,9 +500,10 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       const zipFile = path.join(extractDir, innerZips[i])
       const result = await forEachZipEntry(
         zipFile,
-        (_fileName, content) => {
+        (fileName, content) => {
           const patent = parsePatentXml(content, patentType)
           if (patent) {
+            patent.source_file = fileName
             patents.push(patent)
           }
         },
@@ -522,6 +523,12 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     }
 
     // 将解析结果写入中间文件，供导入步骤使用
+    // 清除冗余的 description（与 description_structured 内容重复），避免 parsed.json 超过 V8 字符串上限
+    for (const p of patents) {
+      if (p.description_structured) {
+        p.description = undefined
+      }
+    }
     const parsedPath = path.join(tempPath, 'parsed.json')
     fs.writeFileSync(parsedPath, JSON.stringify(patents))
 
@@ -596,6 +603,10 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     }
 
     await addLog(batchCode, 'info', `导入完成: ${importedCount} 条记录`)
+
+    if (importedCount === 0) {
+      throw new Error('所有专利均导入失败')
+    }
 
     await updateBatchStatus(batchCode, 'completed')
     await updateBatchProgress(

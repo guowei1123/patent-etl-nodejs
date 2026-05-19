@@ -1,8 +1,8 @@
 import { Pool, PoolClient } from 'pg'
 import type {
   SyncBatch,
-  Patent,
   SyncLog,
+  Patent,
   ParsedPatent,
   DashboardStats,
   PatentFilter,
@@ -10,6 +10,10 @@ import type {
   BatchStatus,
   LogLevel,
   PatentType,
+  PatentApplicantRow,
+  PatentAgentRow,
+  PatentCitationRow,
+  PatentClaimRow,
 } from '@/types'
 
 function getConnectionString(): string {
@@ -32,7 +36,6 @@ export function isDbConfigured(): boolean {
   )
 }
 
-// 创建连接池
 const pool = new Pool({
   connectionString: getConnectionString() || undefined,
   max: 10,
@@ -58,27 +61,14 @@ export async function testConnection(): Promise<{
   }
 }
 
-// 初始化数据库表
+// 初始化数据库表（public: sync_batches + sync_logs; cnipa: patent + 子表）
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect()
   try {
-    // 检测旧 schema（patents 表有 batch_id 而非 batch_code），需要重建
-    const colCheck = await client.query(`
-      SELECT column_name FROM information_schema.columns
-      WHERE table_name = 'patents' AND column_name = 'batch_code' LIMIT 1
-    `)
-    const patentsExists = await client.query(
-      `SELECT EXISTS (SELECT FROM pg_tables WHERE tablename = 'patents')`,
-    )
-    if (patentsExists.rows[0].exists && colCheck.rows.length === 0) {
-      await client.query(
-        'DROP TABLE IF EXISTS sync_logs, patents, sync_batches CASCADE',
-      )
-    }
-
+    // === public schema: sync_batches ===
     await client.query(`
       CREATE TABLE IF NOT EXISTS sync_batches (
-        batch_code      VARCHAR(50) PRIMARY KEY,
+        batch_code      VARCHAR(100) PRIMARY KEY,
         data_type       VARCHAR(20) NOT NULL,
         ftp_folder      VARCHAR(500),
         status          VARCHAR(20) DEFAULT 'pending',
@@ -94,36 +84,9 @@ export async function initializeDatabase(): Promise<void> {
     `)
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS patents (
-        id                  SERIAL PRIMARY KEY,
-        batch_code          VARCHAR(50) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
-        patent_number       VARCHAR(50) UNIQUE NOT NULL,
-        patent_type         VARCHAR(20) NOT NULL,
-        title               TEXT NOT NULL,
-        abstract            TEXT,
-        claims              TEXT,
-        applicant           TEXT,
-        inventor            TEXT,
-        application_number  VARCHAR(50),
-        application_date    DATE,
-        publication_number  VARCHAR(50),
-        publication_date    DATE,
-        grant_number        VARCHAR(50),
-        grant_date          DATE,
-        ipc_codes           TEXT[],
-        agency              TEXT,
-        agent               TEXT,
-        priority_info       JSONB,
-        raw_xml             TEXT,
-        created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `)
-
-    await client.query(`
       CREATE TABLE IF NOT EXISTS sync_logs (
         id          SERIAL PRIMARY KEY,
-        batch_code  VARCHAR(50) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
+        batch_code  VARCHAR(100) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
         level       VARCHAR(10),
         message     TEXT,
         details     JSONB,
@@ -132,23 +95,118 @@ export async function initializeDatabase(): Promise<void> {
     `)
 
     await client.query(
-      'CREATE INDEX IF NOT EXISTS idx_patents_type ON patents(patent_type)',
-    )
-    await client.query(
-      'CREATE INDEX IF NOT EXISTS idx_patents_grant_date ON patents(grant_date)',
-    )
-    await client.query(
-      'CREATE INDEX IF NOT EXISTS idx_patents_batch_code ON patents(batch_code)',
-    )
-    await client.query(
       'CREATE INDEX IF NOT EXISTS idx_sync_logs_batch_code ON sync_logs(batch_code)',
+    )
+
+    // === cnipa schema: patent 主表 + 子表 ===
+    // 主表已由外部系统创建，这里仅确保子表存在
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_applicant (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        address     TEXT,
+        province    TEXT,
+        city        TEXT,
+        county      TEXT,
+        postcode    TEXT
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pa_patent_id ON cnipa.patent_applicant(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_inventor (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pi_patent_id ON cnipa.patent_inventor(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_agent (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        agency      TEXT,
+        agent       TEXT
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pag_patent_id ON cnipa.patent_agent(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_ipc (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        ipc_code    TEXT NOT NULL
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pic_patent_id ON cnipa.patent_ipc(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_citation (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        country     TEXT,
+        doc_number  TEXT,
+        kind        TEXT,
+        pub_date    DATE
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pc_patent_id ON cnipa.patent_citation(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_examiner (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pe_patent_id ON cnipa.patent_examiner(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_assignee (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        address     TEXT,
+        province    TEXT,
+        city        TEXT,
+        postcode    TEXT
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pas_patent_id ON cnipa.patent_assignee(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_claim (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        claim_num   INTEGER NOT NULL,
+        claim_text  TEXT NOT NULL
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pcl_patent_id ON cnipa.patent_claim(patent_id)',
     )
   } finally {
     client.release()
   }
 }
 
-// ============ Batch 操作 ============
+// ============ Batch 操作（public schema，不变） ============
 
 export async function createBatch(
   batchCode: string,
@@ -156,8 +214,8 @@ export async function createBatch(
   ftpFolder?: string,
 ): Promise<SyncBatch> {
   const result = await pool.query<SyncBatch>(
-    `INSERT INTO sync_batches (batch_code, data_type, ftp_folder) 
-     VALUES ($1, $2, $3) 
+    `INSERT INTO sync_batches (batch_code, data_type, ftp_folder)
+     VALUES ($1, $2, $3)
      RETURNING *`,
     [batchCode, dataType, ftpFolder || null],
   )
@@ -179,7 +237,6 @@ export async function getAllBatches(
   activeOnly = false,
 ): Promise<PaginatedResponse<SyncBatch>> {
   const offset = (page - 1) * limit
-
   let whereClause = ''
   const params: (string | number)[] = []
 
@@ -197,10 +254,9 @@ export async function getAllBatches(
   const total = parseInt(countResult.rows[0].count)
 
   const dataParams = status ? [status, limit, offset] : [limit, offset]
-
   const result = await pool.query<SyncBatch>(
-    `SELECT * FROM sync_batches ${whereClause} 
-     ORDER BY created_at DESC 
+    `SELECT * FROM sync_batches ${whereClause}
+     ORDER BY created_at DESC
      LIMIT $${status ? 2 : 1} OFFSET $${status ? 3 : 2}`,
     dataParams,
   )
@@ -296,8 +352,9 @@ export async function deleteBatch(batchCode: string): Promise<void> {
   ])
 }
 
-// ============ Patent 操作 ============
+// ============ Patent 操作（cnipa schema） ============
 
+// 将 ParsedPatent 写入 cnipa.patent + 子表
 export async function insertPatents(
   batchCode: string,
   patents: ParsedPatent[],
@@ -310,45 +367,215 @@ export async function insertPatents(
   try {
     await client.query('BEGIN')
 
-    for (const patent of patents) {
+    for (const p of patents) {
+      const spName = `sp_${inserted}`
       try {
-        await client.query(
-          `INSERT INTO patents (
-            batch_code, patent_number, patent_type, title, abstract, claims,
-            applicant, inventor, application_number, application_date,
-            publication_number, publication_date, grant_number, grant_date,
-            ipc_codes, agency, agent, priority_info, raw_xml
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-          ON CONFLICT (patent_number) DO UPDATE SET
+        await client.query(`SAVEPOINT ${spName}`)
+
+        // 1. INSERT 主表
+        const descJson: Record<string, string> = {}
+        if (p.description_structured) {
+          const d = p.description_structured
+          if (d.technical_field) descJson.technical_field = d.technical_field
+          if (d.background_art) descJson.background_art = d.background_art
+          if (d.disclosure) descJson.disclosure = d.disclosure
+          if (d.drawings_description)
+            descJson.drawings_description = d.drawings_description
+          if (d.embodiment) descJson.embodiment = d.embodiment
+        }
+
+        const claimsValue = p.claims ? JSON.stringify(p.claims) : null
+
+        const mainResult = await client.query(
+          `INSERT INTO cnipa.patent (
+            doc_number, kind, pub_country, pub_date,
+            app_number, app_date, app_country, app_type,
+            title, abstract, description, claims,
+            status, abstract_fig_key,
+            batch_id, source_file,
+            grant_number, grant_date, priority_info, raw_xml
+          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+          ON CONFLICT (doc_number, kind) DO UPDATE SET
             title = EXCLUDED.title,
             abstract = EXCLUDED.abstract,
+            description = COALESCE(EXCLUDED.description, cnipa.patent.description),
             claims = EXCLUDED.claims,
-            updated_at = CURRENT_TIMESTAMP`,
+            grant_number = EXCLUDED.grant_number,
+            grant_date = EXCLUDED.grant_date,
+            updated_at = CURRENT_TIMESTAMP
+          RETURNING id`,
           [
+            p.patent_number,
+            p.kind || (p.patent_type === 'invention' ? 'B' : 'U'),
+            p.pub_country || null,
+            p.publication_date || null,
+            p.application_number || null,
+            p.application_date || null,
+            p.app_country || null,
+            p.app_type || null,
+            p.title,
+            p.abstract || null,
+            Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null,
+            claimsValue,
+            p.doc_status || null,
+            p.abstract_figure || null,
             batchCode,
-            patent.patent_number,
-            patent.patent_type,
-            patent.title,
-            patent.abstract || null,
-            patent.claims || null,
-            patent.applicant || null,
-            patent.inventor || null,
-            patent.application_number || null,
-            patent.application_date || null,
-            patent.publication_number || null,
-            patent.publication_date || null,
-            patent.grant_number || null,
-            patent.grant_date || null,
-            patent.ipc_codes || null,
-            patent.agency || null,
-            patent.agent || null,
-            patent.priority_info ? JSON.stringify(patent.priority_info) : null,
-            patent.raw_xml || null,
+            p.source_file || null,
+            p.grant_number || null,
+            p.grant_date || null,
+            p.priority_info ? JSON.stringify(p.priority_info) : null,
+            p.raw_xml || null,
           ],
         )
+
+        const patentId: string = mainResult.rows[0].id
+
+        // 2. INSERT 子表 — 先删除旧数据（ON CONFLICT 时更新）
+        await client.query(
+          'DELETE FROM cnipa.patent_applicant WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_inventor WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_agent WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_ipc WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_citation WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_examiner WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_assignee WHERE patent_id = $1',
+          [patentId],
+        )
+        await client.query(
+          'DELETE FROM cnipa.patent_claim WHERE patent_id = $1',
+          [patentId],
+        )
+
+        // 申请人
+        if (p.applicants_structured) {
+          for (const a of p.applicants_structured) {
+            await client.query(
+              `INSERT INTO cnipa.patent_applicant (patent_id, name, address, province, city, county, postcode)
+               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+              [
+                patentId,
+                a.name,
+                a.address || null,
+                a.province || null,
+                a.city || null,
+                a.county || null,
+                a.postcode || null,
+              ],
+            )
+          }
+        }
+
+        // 发明人
+        if (p.inventors_structured) {
+          for (const name of p.inventors_structured) {
+            await client.query(
+              'INSERT INTO cnipa.patent_inventor (patent_id, name) VALUES ($1,$2)',
+              [patentId, name],
+            )
+          }
+        }
+
+        // 代理人/机构
+        if (p.agents_structured) {
+          for (const a of p.agents_structured) {
+            await client.query(
+              `INSERT INTO cnipa.patent_agent (patent_id, agency, agent)
+               VALUES ($1,$2,$3)`,
+              [patentId, a.agency_name || null, a.agent_name || null],
+            )
+          }
+        }
+
+        // IPC 分类
+        if (p.ipc_codes) {
+          for (const code of p.ipc_codes) {
+            await client.query(
+              'INSERT INTO cnipa.patent_ipc (patent_id, ipc_code) VALUES ($1,$2)',
+              [patentId, code],
+            )
+          }
+        }
+
+        // 引用文献
+        if (p.citations) {
+          for (const c of p.citations) {
+            await client.query(
+              `INSERT INTO cnipa.patent_citation (patent_id, country, doc_number, kind, pub_date)
+               VALUES ($1,$2,$3,$4,$5)`,
+              [
+                patentId,
+                c.country || null,
+                c.doc_number || null,
+                c.kind || null,
+                c.pub_date || null,
+              ],
+            )
+          }
+        }
+
+        // 审查员
+        if (p.examiners) {
+          for (const name of p.examiners) {
+            await client.query(
+              'INSERT INTO cnipa.patent_examiner (patent_id, name) VALUES ($1,$2)',
+              [patentId, name],
+            )
+          }
+        }
+
+        // 受让人
+        if (p.assignees) {
+          for (const a of p.assignees) {
+            await client.query(
+              `INSERT INTO cnipa.patent_assignee (patent_id, name, address, province, city, postcode)
+               VALUES ($1,$2,$3,$4,$5,$6)`,
+              [
+                patentId,
+                a.name,
+                a.address || null,
+                a.province || null,
+                a.city || null,
+                a.postcode || null,
+              ],
+            )
+          }
+        }
+
+        // 结构化权利要求
+        if (p.claims_structured) {
+          for (let ci = 0; ci < p.claims_structured.length; ci++) {
+            const claim = p.claims_structured[ci]
+            const text = claim.texts.join('\n')
+            await client.query(
+              'INSERT INTO cnipa.patent_claim (patent_id, claim_num, claim_text) VALUES ($1,$2,$3)',
+              [patentId, ci + 1, text],
+            )
+          }
+        }
+
+        await client.query(`RELEASE SAVEPOINT ${spName}`)
         inserted++
       } catch (err) {
-        console.error(`Failed to insert patent ${patent.patent_number}:`, err)
+        console.error(`Failed to insert patent ${p.patent_number}:`, err)
+        await client.query(`ROLLBACK TO SAVEPOINT ${spName}`)
       }
     }
 
@@ -363,6 +590,44 @@ export async function insertPatents(
   return inserted
 }
 
+// 将数据库行转为 Patent 对象（主表 + 子表聚合）
+function rowToPatent(row: Record<string, unknown>): Patent {
+  return {
+    id: row.id as string,
+    doc_number: row.doc_number as string,
+    kind: row.kind as string,
+    pub_country: (row.pub_country as string) || null,
+    pub_date: (row.pub_date as Date) || null,
+    app_number: (row.app_number as string) || null,
+    app_date: (row.app_date as Date) || null,
+    app_country: (row.app_country as string) || null,
+    app_type: (row.app_type as string) || null,
+    title: row.title as string,
+    abstract: (row.abstract as string) || null,
+    description: row.description as Record<string, string> | null,
+    claims: (row.claims_text as string) || (row.claims as string) || null,
+    status: (row.status as string) || null,
+    abstract_fig_key: (row.abstract_fig_key as string) || null,
+    batch_id: (row.batch_id as string) || null,
+    source_file: (row.source_file as string) || null,
+    grant_number: (row.grant_number as string) || null,
+    grant_date: (row.grant_date as Date) || null,
+    priority_info: row.priority_info as Record<string, unknown> | null,
+    created_at: row.created_at as Date,
+    updated_at: row.updated_at as Date,
+    // 子表聚合（由查询填充）
+    applicants: (row.applicants as PatentApplicantRow[]) || [],
+    inventors: (row.inventors as string[]) || [],
+    agents: (row.agents as PatentAgentRow[]) || [],
+    citations: (row.citations as PatentCitationRow[]) || [],
+    examiners: (row.examiners as string[]) || [],
+    assignees: (row.assignees as PatentApplicantRow[]) || [],
+    ipc_codes: (row.ipc_codes as string[]) || [],
+    claims_structured: (row.claims_structured as PatentClaimRow[]) || [],
+  }
+}
+
+// 查询专利列表
 export async function getPatents(
   filter: PatentFilter,
   page = 1,
@@ -371,53 +636,101 @@ export async function getPatents(
   const offset = (page - 1) * limit
   const conditions: string[] = []
   const params: (string | number)[] = []
+  let paramIdx = 1
 
-  if (filter.patent_type) {
-    params.push(filter.patent_type)
-    conditions.push(`patent_type = $${params.length}`)
+  if (filter.kind) {
+    params.push(filter.kind)
+    conditions.push(`p.kind = $${paramIdx++}`)
   }
-
-  if (filter.batch_code) {
-    params.push(filter.batch_code)
-    conditions.push(`batch_code = $${params.length}`)
+  if (filter.app_type) {
+    params.push(filter.app_type)
+    conditions.push(`p.app_type = $${paramIdx++}`)
   }
-
+  if (filter.batch_id) {
+    params.push(filter.batch_id)
+    conditions.push(`p.batch_id = $${paramIdx++}`)
+  }
+  if (filter.pub_date_from) {
+    params.push(filter.pub_date_from)
+    conditions.push(`p.pub_date >= $${paramIdx++}`)
+  }
+  if (filter.pub_date_to) {
+    params.push(filter.pub_date_to)
+    conditions.push(`p.pub_date <= $${paramIdx++}`)
+  }
   if (filter.search) {
     params.push(`%${filter.search}%`)
     conditions.push(
-      `(title ILIKE $${params.length} OR patent_number ILIKE $${params.length} OR applicant ILIKE $${params.length})`,
+      `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}))`,
     )
+    paramIdx++
   }
-
-  if (filter.grant_date_from) {
-    params.push(filter.grant_date_from)
-    conditions.push(`grant_date >= $${params.length}`)
-  }
-
-  if (filter.grant_date_to) {
-    params.push(filter.grant_date_to)
-    conditions.push(`grant_date <= $${params.length}`)
+  if (filter.province) {
+    params.push(filter.province)
+    conditions.push(
+      `EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.province = $${paramIdx++})`,
+    )
   }
 
   const whereClause =
     conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
   const countResult = await pool.query(
-    `SELECT COUNT(*) FROM patents ${whereClause}`,
+    `SELECT COUNT(*) FROM cnipa.patent p ${whereClause}`,
     params,
   )
   const total = parseInt(countResult.rows[0].count)
 
   params.push(limit, offset)
-  const result = await pool.query<Patent>(
-    `SELECT * FROM patents ${whereClause} 
-     ORDER BY grant_date DESC NULLS LAST, created_at DESC 
-     LIMIT $${params.length - 1} OFFSET $${params.length}`,
+  const result = await pool.query(
+    `SELECT p.*,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode))
+        FILTER (WHERE pa.id IS NOT NULL), '[]'
+      ) AS applicants,
+      COALESCE(
+        json_agg(DISTINCT pi.name) FILTER (WHERE pi.id IS NOT NULL), '[]'
+      ) AS inventors,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('agency', pg.agency, 'agent', pg.agent))
+        FILTER (WHERE pg.id IS NOT NULL), '[]'
+      ) AS agents,
+      COALESCE(
+        json_agg(DISTINCT pic.ipc_code) FILTER (WHERE pic.id IS NOT NULL), '[]'
+      ) AS ipc_codes,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('country', pc.country, 'doc_number', pc.doc_number, 'kind', pc.kind, 'pub_date', pc.pub_date))
+        FILTER (WHERE pc.id IS NOT NULL), '[]'
+      ) AS citations,
+      COALESCE(
+        json_agg(DISTINCT pe.name) FILTER (WHERE pe.id IS NOT NULL), '[]'
+      ) AS examiners,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('name', pas.name, 'address', pas.address, 'province', pas.province, 'city', pas.city, 'postcode', pas.postcode))
+        FILTER (WHERE pas.id IS NOT NULL), '[]'
+      ) AS assignees,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text))
+        FILTER (WHERE pcl.id IS NOT NULL), '[]'
+      ) AS claims_structured
+    FROM cnipa.patent p
+    LEFT JOIN cnipa.patent_applicant pa ON pa.patent_id = p.id
+    LEFT JOIN cnipa.patent_inventor pi ON pi.patent_id = p.id
+    LEFT JOIN cnipa.patent_agent pg ON pg.patent_id = p.id
+    LEFT JOIN cnipa.patent_ipc pic ON pic.patent_id = p.id
+    LEFT JOIN cnipa.patent_citation pc ON pc.patent_id = p.id
+    LEFT JOIN cnipa.patent_examiner pe ON pe.patent_id = p.id
+    LEFT JOIN cnipa.patent_assignee pas ON pas.patent_id = p.id
+    LEFT JOIN cnipa.patent_claim pcl ON pcl.patent_id = p.id
+    ${whereClause}
+    GROUP BY p.id
+    ORDER BY p.pub_date DESC NULLS LAST, p.created_at DESC
+    LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
     params,
   )
 
   return {
-    items: result.rows,
+    items: result.rows.map(rowToPatent),
     total,
     page,
     limit,
@@ -425,15 +738,57 @@ export async function getPatents(
   }
 }
 
-export async function getPatentById(id: number): Promise<Patent | null> {
-  const result = await pool.query<Patent>(
-    'SELECT * FROM patents WHERE id = $1',
+export async function getPatentById(id: string): Promise<Patent | null> {
+  const result = await pool.query(
+    `SELECT p.*,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode))
+        FILTER (WHERE pa.id IS NOT NULL), '[]'
+      ) AS applicants,
+      COALESCE(
+        json_agg(DISTINCT pi.name) FILTER (WHERE pi.id IS NOT NULL), '[]'
+      ) AS inventors,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('agency', pg.agency, 'agent', pg.agent))
+        FILTER (WHERE pg.id IS NOT NULL), '[]'
+      ) AS agents,
+      COALESCE(
+        json_agg(DISTINCT pic.ipc_code) FILTER (WHERE pic.id IS NOT NULL), '[]'
+      ) AS ipc_codes,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('country', pc.country, 'doc_number', pc.doc_number, 'kind', pc.kind, 'pub_date', pc.pub_date))
+        FILTER (WHERE pc.id IS NOT NULL), '[]'
+      ) AS citations,
+      COALESCE(
+        json_agg(DISTINCT pe.name) FILTER (WHERE pe.id IS NOT NULL), '[]'
+      ) AS examiners,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('name', pas.name, 'address', pas.address, 'province', pas.province, 'city', pas.city, 'postcode', pas.postcode))
+        FILTER (WHERE pas.id IS NOT NULL), '[]'
+      ) AS assignees,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text))
+        FILTER (WHERE pcl.id IS NOT NULL), '[]'
+      ) AS claims_structured
+    FROM cnipa.patent p
+    LEFT JOIN cnipa.patent_applicant pa ON pa.patent_id = p.id
+    LEFT JOIN cnipa.patent_inventor pi ON pi.patent_id = p.id
+    LEFT JOIN cnipa.patent_agent pg ON pg.patent_id = p.id
+    LEFT JOIN cnipa.patent_ipc pic ON pic.patent_id = p.id
+    LEFT JOIN cnipa.patent_citation pc ON pc.patent_id = p.id
+    LEFT JOIN cnipa.patent_examiner pe ON pe.patent_id = p.id
+    LEFT JOIN cnipa.patent_assignee pas ON pas.patent_id = p.id
+    LEFT JOIN cnipa.patent_claim pcl ON pcl.patent_id = p.id
+    WHERE p.id = $1
+    GROUP BY p.id`,
     [id],
   )
-  return result.rows[0] || null
+
+  if (result.rows.length === 0) return null
+  return rowToPatent(result.rows[0])
 }
 
-// ============ Log 操作 ============
+// ============ Log 操作（public schema，不变） ============
 
 export async function addLog(
   batchCode: string,
@@ -470,28 +825,34 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       lastSync,
       pendingCount,
       failedCount,
+      applicantCount,
+      inventorCount,
+      citationCount,
     ] = await Promise.all([
       client.query('SELECT COUNT(*) FROM sync_batches'),
       client.query(`
-        SELECT 
+        SELECT
           COUNT(*) as total,
-          COUNT(*) FILTER (WHERE patent_type = 'invention') as invention,
-          COUNT(*) FILTER (WHERE patent_type = 'utility_model') as utility_model
-        FROM patents
+          COUNT(*) FILTER (WHERE kind = 'B') as invention,
+          COUNT(*) FILTER (WHERE kind = 'U') as utility_model
+        FROM cnipa.patent
       `),
       client.query(`
-        SELECT COUNT(*) FROM patents 
+        SELECT COUNT(*) FROM cnipa.patent
         WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
       `),
       client.query(`
-        SELECT completed_at FROM sync_batches 
-        WHERE status = 'completed' 
+        SELECT completed_at FROM sync_batches
+        WHERE status = 'completed'
         ORDER BY completed_at DESC LIMIT 1
       `),
       client.query(
         "SELECT COUNT(*) FROM sync_batches WHERE status = 'pending'",
       ),
       client.query("SELECT COUNT(*) FROM sync_batches WHERE status = 'failed'"),
+      client.query('SELECT COUNT(*) FROM cnipa.patent_applicant'),
+      client.query('SELECT COUNT(*) FROM cnipa.patent_inventor'),
+      client.query('SELECT COUNT(*) FROM cnipa.patent_citation'),
     ])
 
     return {
@@ -503,13 +864,15 @@ export async function getDashboardStats(): Promise<DashboardStats> {
       last_sync_at: lastSync.rows[0]?.completed_at || null,
       pending_batches: parseInt(pendingCount.rows[0].count),
       failed_batches: parseInt(failedCount.rows[0].count),
+      total_applicants: parseInt(applicantCount.rows[0].count),
+      total_inventors: parseInt(inventorCount.rows[0].count),
+      total_citations: parseInt(citationCount.rows[0].count),
     }
   } finally {
     client.release()
   }
 }
 
-// 获取连接池用于事务操作
 export function getPool(): Pool {
   return pool
 }

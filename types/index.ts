@@ -31,30 +31,66 @@ export interface SyncBatch {
   created_at: Date
 }
 
-// 专利数据
+// 专利数据（对应 cnipa.patent 主表 + 关联子表聚合）
 export interface Patent {
-  id: number
-  batch_code: string
-  patent_number: string
-  patent_type: PatentType
+  id: string
+  doc_number: string
+  kind: string
+  pub_country: string | null
+  pub_date: Date | null
+  app_number: string | null
+  app_date: Date | null
+  app_country: string | null
+  app_type: string | null
   title: string
   abstract: string | null
+  description: Record<string, string> | null
   claims: string | null
-  applicant: string | null
-  inventor: string | null
-  application_number: string | null
-  application_date: Date | null
-  publication_number: string | null
-  publication_date: Date | null
+  status: string | null
+  abstract_fig_key: string | null
+  batch_id: string | null
+  source_file: string | null
   grant_number: string | null
   grant_date: Date | null
-  ipc_codes: string[] | null
-  agency: string | null
-  agent: string | null
   priority_info: Record<string, unknown> | null
-  raw_xml: string | null
   created_at: Date
   updated_at: Date
+  // 子表聚合字段
+  applicants: PatentApplicantRow[]
+  inventors: string[]
+  agents: PatentAgentRow[]
+  citations: PatentCitationRow[]
+  examiners: string[]
+  assignees: PatentApplicantRow[]
+  ipc_codes: string[]
+  claims_structured: PatentClaimRow[]
+}
+
+// 子表行类型
+export interface PatentApplicantRow {
+  name: string
+  address?: string
+  province?: string
+  city?: string
+  county?: string
+  postcode?: string
+}
+
+export interface PatentAgentRow {
+  agency: string | null
+  agent: string | null
+}
+
+export interface PatentCitationRow {
+  country: string | null
+  doc_number: string | null
+  kind: string | null
+  pub_date: string | null
+}
+
+export interface PatentClaimRow {
+  claim_num: number
+  claim_text: string
 }
 
 // 同步日志
@@ -86,6 +122,45 @@ export interface FtpConfig {
   timeout?: number
 }
 
+// 结构化申请人
+export interface ParsedApplicant {
+  name: string
+  address?: string
+  province?: string
+  city?: string
+  county?: string
+  postcode?: string
+}
+
+// 结构化代理人/机构（保留配对关系）
+export interface ParsedAgent {
+  agent_name: string
+  agency_name: string
+}
+
+// 结构化引用文献
+export interface ParsedCitation {
+  country?: string
+  doc_number?: string
+  kind?: string
+  pub_date?: string
+}
+
+// 结构化权利要求
+export interface ParsedClaim {
+  num: string
+  texts: string[]
+}
+
+// 结构化说明书
+export interface ParsedDescription {
+  technical_field?: string
+  background_art?: string
+  disclosure?: string
+  drawings_description?: string
+  embodiment?: string
+}
+
 // 解析后的专利数据 (用于插入数据库前)
 export interface ParsedPatent {
   patent_number: string
@@ -106,6 +181,25 @@ export interface ParsedPatent {
   agent?: string
   priority_info?: Record<string, unknown>
   raw_xml?: string
+
+  // === 新增字段 ===
+  kind?: string
+  pub_country?: string
+  app_country?: string
+  app_type?: string
+  doc_status?: string
+  source_file?: string
+  description?: string
+  description_structured?: ParsedDescription
+  applicants_structured?: ParsedApplicant[]
+  inventors_structured?: string[]
+  agents_structured?: ParsedAgent[]
+  citations?: ParsedCitation[]
+  examiners?: string[]
+  assignees?: ParsedApplicant[]
+  ipc_structured?: string[]
+  claims_structured?: ParsedClaim[]
+  abstract_figure?: string
 }
 
 // ETL 进度回调
@@ -176,11 +270,13 @@ export interface PaginatedResponse<T> {
 
 // 专利查询筛选
 export interface PatentFilter {
-  patent_type?: PatentType
+  kind?: string
+  app_type?: string
   search?: string
-  grant_date_from?: string
-  grant_date_to?: string
-  batch_code?: string
+  pub_date_from?: string
+  pub_date_to?: string
+  batch_id?: string
+  province?: string
 }
 
 // 仪表盘统计
@@ -193,4 +289,7 @@ export interface DashboardStats {
   last_sync_at: Date | null
   pending_batches: number
   failed_batches: number
+  total_applicants: number
+  total_inventors: number
+  total_citations: number
 }

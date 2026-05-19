@@ -8,16 +8,19 @@ export async function GET(
 ) {
   try {
     const { id } = await params
-    const patentId = parseInt(id)
 
-    if (isNaN(patentId)) {
+    if (
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+        id,
+      )
+    ) {
       return NextResponse.json(
-        { success: false, error: '无效的专利ID' },
+        { success: false, error: '无效的专利 ID 格式' },
         { status: 400 },
       )
     }
 
-    const patent = await getPatentById(patentId)
+    const patent = await getPatentById(id)
 
     if (!patent) {
       return NextResponse.json(

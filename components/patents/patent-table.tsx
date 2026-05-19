@@ -28,16 +28,21 @@ import {
   Lightbulb,
   Wrench,
 } from 'lucide-react'
-import type { Patent, PaginatedResponse, PatentType } from '@/types'
+import type { Patent, PaginatedResponse } from '@/types'
 import { cn } from '@/lib/utils'
 
 interface PatentTableProps {
   data: PaginatedResponse<Patent>
   onPageChange: (page: number) => void
   onSearch: (search: string) => void
-  onTypeFilter: (type: PatentType | 'all') => void
+  onTypeFilter: (type: 'all' | 'B' | 'U') => void
   search: string
-  typeFilter: PatentType | 'all'
+  typeFilter: 'all' | 'B' | 'U'
+}
+
+function formatApplicants(patent: Patent): string {
+  if (!patent.applicants?.length) return '-'
+  return patent.applicants.map((a) => a.name).join('; ')
 }
 
 export function PatentTable({
@@ -63,7 +68,7 @@ export function PatentTable({
           <div className="relative flex-1">
             <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
             <Input
-              placeholder="搜索专利号、名称、申请人..."
+              placeholder="搜索公开号、名称、申请人..."
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
               className="pl-9"
@@ -76,15 +81,15 @@ export function PatentTable({
 
         <Select
           value={typeFilter}
-          onValueChange={(value) => onTypeFilter(value as PatentType | 'all')}
+          onValueChange={(value) => onTypeFilter(value as 'all' | 'B' | 'U')}
         >
           <SelectTrigger className="w-[150px]">
             <SelectValue placeholder="专利类型" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部类型</SelectItem>
-            <SelectItem value="invention">发明授权</SelectItem>
-            <SelectItem value="utility_model">实用新型</SelectItem>
+            <SelectItem value="B">发明授权</SelectItem>
+            <SelectItem value="U">实用新型</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -94,11 +99,11 @@ export function PatentTable({
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-[140px]">专利号</TableHead>
+              <TableHead className="w-[140px]">公开号</TableHead>
               <TableHead className="w-[100px]">类型</TableHead>
               <TableHead>名称</TableHead>
               <TableHead className="w-[150px]">申请人</TableHead>
-              <TableHead className="w-[100px]">授权日期</TableHead>
+              <TableHead className="w-[100px]">公开日期</TableHead>
               <TableHead className="w-[60px]"></TableHead>
             </TableRow>
           </TableHeader>
@@ -113,24 +118,24 @@ export function PatentTable({
               data.items.map((patent) => (
                 <TableRow key={patent.id} className="group">
                   <TableCell className="font-mono text-xs">
-                    {patent.patent_number}
+                    {patent.doc_number}
                   </TableCell>
                   <TableCell>
                     <Badge
                       variant="outline"
                       className={cn(
                         'gap-1 text-xs',
-                        patent.patent_type === 'invention'
+                        patent.kind === 'B'
                           ? 'border-info/50 text-info'
                           : 'border-warning/50 text-warning',
                       )}
                     >
-                      {patent.patent_type === 'invention' ? (
+                      {patent.kind === 'B' ? (
                         <Lightbulb className="h-3 w-3" />
                       ) : (
                         <Wrench className="h-3 w-3" />
                       )}
-                      {patent.patent_type === 'invention' ? '发明' : '实用'}
+                      {patent.kind === 'B' ? '发明' : '实用'}
                     </Badge>
                   </TableCell>
                   <TableCell className="max-w-[300px]">
@@ -141,14 +146,14 @@ export function PatentTable({
                   <TableCell className="text-muted-foreground text-sm">
                     <p
                       className="max-w-[150px] truncate"
-                      title={patent.applicant || ''}
+                      title={formatApplicants(patent)}
                     >
-                      {patent.applicant || '-'}
+                      {formatApplicants(patent)}
                     </p>
                   </TableCell>
                   <TableCell className="text-muted-foreground text-sm">
-                    {patent.grant_date
-                      ? new Date(patent.grant_date).toLocaleDateString('zh-CN')
+                    {patent.pub_date
+                      ? new Date(patent.pub_date).toLocaleDateString('zh-CN')
                       : '-'}
                   </TableCell>
                   <TableCell>

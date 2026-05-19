@@ -6,20 +6,20 @@ import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
 import { PatentTable } from '@/components/patents/patent-table'
 import { Card, CardContent } from '@/components/ui/card'
-import type { Patent, PaginatedResponse, PatentType } from '@/types'
+import type { Patent, PaginatedResponse } from '@/types'
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
 
 export default function PatentsPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
-  const [typeFilter, setTypeFilter] = useState<PatentType | 'all'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'B' | 'U'>('all')
 
   const params = new URLSearchParams()
   params.set('page', String(page))
   params.set('limit', '50')
   if (search) params.set('search', search)
-  if (typeFilter !== 'all') params.set('patent_type', typeFilter)
+  if (typeFilter !== 'all') params.set('kind', typeFilter)
 
   const { data, error, mutate } = useSWR<{
     success: boolean
@@ -40,7 +40,7 @@ export default function PatentsPage() {
     setPage(1)
   }
 
-  const handleTypeFilter = (type: PatentType | 'all') => {
+  const handleTypeFilter = (type: 'all' | 'B' | 'U') => {
     setTypeFilter(type)
     setPage(1)
   }
