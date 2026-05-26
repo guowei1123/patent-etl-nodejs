@@ -242,6 +242,7 @@ export interface FileDownloadProgress {
 // 文件列表中单个文件的下载状态
 export type FileDownloadStatus =
   | 'pending'
+  | 'partial'
   | 'downloading'
   | 'completed'
   | 'skipped'

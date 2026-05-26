@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useRef, useState } from 'react'
+import { use, useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -113,6 +113,8 @@ function DownloadFileList({
         return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
       case 'skipped':
         return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+      case 'partial':
+        return <Clock className="text-warning h-3.5 w-3.5" />
       case 'downloading':
         return <Loader2 className="text-info h-3.5 w-3.5 animate-spin" />
       default:
@@ -176,7 +178,12 @@ function DownloadFileList({
                       <span className="text-muted-foreground shrink-0 text-xs tabular-nums">
                         {file.status === 'downloading'
                           ? formatProgress(file.bytesDownloaded, file.fileSize)
-                          : formatBytes(file.fileSize)}
+                          : file.status === 'partial'
+                            ? formatProgress(
+                                file.bytesDownloaded,
+                                file.fileSize,
+                              )
+                            : formatBytes(file.fileSize)}
                       </span>
                     </div>
                     {file.status === 'downloading' && (
@@ -218,10 +225,12 @@ export default function BatchDetailPage({
 }) {
   const { batch_code } = use(params)
   const router = useRouter()
-  const runningRef = useRef(false)
   const [verifying, setVerifying] = useState<'download' | 'extract' | null>(
     null,
   )
+  const [optimisticActiveStep, setOptimisticActiveStep] = useState<
+    string | null
+  >(null)
   const [verifyResult, setVerifyResult] = useState<{
     type: 'download' | 'extract'
     passed: boolean
@@ -239,11 +248,16 @@ export default function BatchDetailPage({
     success: boolean
     data: { batch: SyncBatch; logs: SyncLog[] }
   }>(`/api/batches/${batch_code}`, fetcher, {
-    refreshInterval: runningRef.current ? 3000 : 0,
+    refreshInterval: 0,
   })
 
-  // 下载进度实时轮询（仅下载中激活，1 秒间隔）
-  const [isDownloading, setIsDownloading] = useState(false)
+  const dbBatch = data?.data?.batch
+  const dbStatusActive =
+    dbBatch &&
+    ['downloading', 'processing', 'importing'].includes(dbBatch.status)
+  const shouldPollStatus = !!dbStatusActive || optimisticActiveStep !== null
+
+  // 活跃任务实时轮询：下载阶段带文件进度，导入阶段带已导入计数。
   const { data: statusData } = useSWR<{
     success: boolean
     data: {
@@ -254,42 +268,30 @@ export default function BatchDetailPage({
       file_list: FileDownloadItem[] | null
     }
   }>(
-    isDownloading ? `/api/sync/status?batch_code=${batch_code}` : null,
+    shouldPollStatus ? `/api/sync/status?batch_code=${batch_code}` : null,
     fetcher,
-    { refreshInterval: 1000 },
+    {
+      refreshInterval: 1000,
+      onSuccess: (latestData) => {
+        const status = latestData.data.batch.status
+        if (!['downloading', 'processing', 'importing'].includes(status)) {
+          setOptimisticActiveStep(null)
+          mutate()
+        }
+      },
+    },
   )
 
-  // 额外轮询：当数据库状态为活跃时，检查任务是否真正在运行（检测孤儿状态）
-  const [needStatusCheck, setNeedStatusCheck] = useState(false)
-  const { data: orphanCheckData } = useSWR<{
-    success: boolean
-    data: { is_running: boolean }
-  }>(
-    needStatusCheck && !isDownloading
-      ? `/api/sync/status?batch_code=${batch_code}`
-      : null,
-    fetcher,
-    { refreshInterval: 3000 },
-  )
-
-  const batch = data?.data?.batch
+  const batch = statusData?.data?.batch ?? dbBatch
   const logs = data?.data?.logs || []
   const isLoading = !data && !error
   const statusActive =
     batch && ['downloading', 'processing', 'importing'].includes(batch.status)
-  const actuallyRunning = isDownloading
-    ? (statusData?.data?.is_running ?? false)
-    : (orphanCheckData?.data?.is_running ?? !!statusActive)
+  const actuallyRunning = statusData?.data?.is_running ?? !!statusActive
   const isRunning = !!statusActive && actuallyRunning
   const isOrphaned = !!statusActive && !actuallyRunning
-  runningRef.current = !!statusActive
-
-  // 同步下载状态到第二个 SWR hook 的条件 key
-  if (batch?.status === 'downloading' && !isDownloading) setIsDownloading(true)
-  if (batch?.status !== 'downloading' && isDownloading) setIsDownloading(false)
-  // 活跃状态时启用孤儿检测轮询
-  if (statusActive && !needStatusCheck) setNeedStatusCheck(true)
-  if (!statusActive && needStatusCheck) setNeedStatusCheck(false)
+  const isDownloading = batch?.status === 'downloading'
+  const isImporting = batch?.status === 'importing'
 
   const handleDelete = async () => {
     if (!confirm('确定要删除这个批次吗？相关的专利数据也将被删除。')) return
@@ -343,9 +345,10 @@ export default function BatchDetailPage({
 
       if (result.success) {
         toast.success(result.message || '步骤已启动')
-        if (step === 'download') setIsDownloading(true)
+        setOptimisticActiveStep(step)
         mutate()
       } else {
+        setOptimisticActiveStep(null)
         toast.error(result.error || '启动失败')
       }
     } catch {
@@ -556,6 +559,12 @@ export default function BatchDetailPage({
                   </span>
                 </div>
                 <Progress value={getProgress(batch)} className="h-2" />
+                {isImporting && (
+                  <p className="text-muted-foreground mt-2 text-xs">
+                    已导入 {batch.imported_patents.toLocaleString()} /{' '}
+                    {batch.total_patents.toLocaleString()} 条专利
+                  </p>
+                )}
               </div>
             )}
 

@@ -8,17 +8,20 @@ import { NewBatchDialog } from '@/components/batches/new-batch-dialog'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import type { SyncBatch, PaginatedResponse, BatchStatus } from '@/types'
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json())
+const hasRunningBatch = (batches: SyncBatch[]) =>
+  batches.some((b) =>
+    ['downloading', 'processing', 'importing'].includes(b.status),
+  )
 
 type FilterValue = BatchStatus | 'all' | 'active'
 
 export default function BatchesPage() {
   const [statusFilter, setStatusFilter] = useState<FilterValue>('all')
   const [page, setPage] = useState(1)
-  const hasRunningRef = useRef(false)
 
   const url =
     statusFilter === 'all'
@@ -30,7 +33,10 @@ export default function BatchesPage() {
   const { data, error, mutate } = useSWR<{
     success: boolean
     data: PaginatedResponse<SyncBatch>
-  }>(url, fetcher, { refreshInterval: hasRunningRef.current ? 3000 : 0 })
+  }>(url, fetcher, {
+    refreshInterval: (latestData) =>
+      hasRunningBatch(latestData?.data?.items ?? []) ? 3000 : 0,
+  })
 
   const handleRefresh = () => {
     mutate()
@@ -38,9 +44,6 @@ export default function BatchesPage() {
 
   const batches = data?.data?.items || []
   const pagination = data?.data
-  hasRunningRef.current = batches.some((b) =>
-    ['downloading', 'processing', 'importing'].includes(b.status),
-  )
   const isLoading = !data && !error
 
   return (

@@ -347,6 +347,26 @@ export async function updateBatchProgress(
   }
 }
 
+export async function countImportedPatentsByBatch(
+  batchCode: string,
+): Promise<number> {
+  const result = await pool.query(
+    'SELECT COUNT(*) FROM cnipa.patent WHERE batch_id = $1',
+    [batchCode],
+  )
+  return parseInt(result.rows[0].count)
+}
+
+export async function getImportedPatentKeysByBatch(
+  batchCode: string,
+): Promise<Set<string>> {
+  const result = await pool.query<{ doc_number: string; kind: string }>(
+    'SELECT doc_number, kind FROM cnipa.patent WHERE batch_id = $1',
+    [batchCode],
+  )
+  return new Set(result.rows.map((row) => `${row.doc_number}\u0000${row.kind}`))
+}
+
 export async function deleteBatch(batchCode: string): Promise<void> {
   await pool.query('DELETE FROM sync_batches WHERE batch_code = $1', [
     batchCode,
@@ -403,6 +423,8 @@ export async function insertPatents(
             claims = EXCLUDED.claims,
             grant_number = EXCLUDED.grant_number,
             grant_date = EXCLUDED.grant_date,
+            batch_id = EXCLUDED.batch_id,
+            source_file = EXCLUDED.source_file,
             updated_at = CURRENT_TIMESTAMP
           RETURNING id`,
           [

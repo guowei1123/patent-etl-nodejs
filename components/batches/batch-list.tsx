@@ -133,6 +133,10 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
           const isRunning = ['downloading', 'processing', 'importing'].includes(
             batch.status,
           )
+          const hasImportProgress =
+            batch.total_patents > 0 &&
+            (batch.status === 'importing' ||
+              (batch.status === 'failed' && batch.imported_patents > 0))
 
           return (
             <Link
@@ -191,10 +195,21 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
                 {isRunning && (
                   <div className="mt-3">
                     <div className="text-muted-foreground mb-1 flex items-center justify-between text-xs">
-                      <span>进度</span>
+                      <span>
+                        {batch.status === 'importing'
+                          ? `已导入 ${batch.imported_patents.toLocaleString()} / ${batch.total_patents.toLocaleString()}`
+                          : '进度'}
+                      </span>
                       <span>{Math.round(progress)}%</span>
                     </div>
                     <Progress value={progress} className="h-1" />
+                  </div>
+                )}
+
+                {hasImportProgress && !isRunning && (
+                  <div className="text-muted-foreground mt-3 text-xs">
+                    已导入 {batch.imported_patents.toLocaleString()} /{' '}
+                    {batch.total_patents.toLocaleString()} 条专利
                   </div>
                 )}
 

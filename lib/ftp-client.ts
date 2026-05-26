@@ -320,13 +320,35 @@ export interface PoolDownloadOptions {
     skipped: boolean,
   ) => void
   onFileProgress?: (fileName: string, bytes: number, total: number) => void
+  onFileRetry?: (
+    fileName: string,
+    attempt: number,
+    maxAttempts: number,
+    error: string,
+    localBytes: number,
+    remoteBytes: number,
+  ) => void
   resume?: boolean
   cancelled?: () => boolean
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function getLocalFileSize(localPath: string): number {
+  try {
+    if (fs.existsSync(localPath)) {
+      return fs.statSync(localPath).size
+    }
+  } catch {}
+  return 0
 }
 
 export class FtpConnectionPool {
   private config: FtpConfig
   private concurrency: number
+  private timeout: number
   private clients: ftp.Client[] = []
 
   constructor(config?: Partial<FtpConfig>, concurrency?: number) {
@@ -335,6 +357,7 @@ export class FtpConnectionPool {
 
     const timeout =
       config?.timeout || parseInt(process.env.FTP_TIMEOUT || '120000')
+    this.timeout = timeout
     this.config = {
       host:
         config?.host ||
@@ -368,19 +391,27 @@ export class FtpConnectionPool {
     })
   }
 
+  getConcurrency(): number {
+    return this.concurrency
+  }
+
+  getTimeout(): number {
+    return this.timeout
+  }
+
+  private async accessClient(client: ftp.Client): Promise<void> {
+    await client.access({
+      host: this.config.host,
+      port: this.config.port,
+      user: this.config.user,
+      password: this.config.password,
+      secure: this.config.secure,
+      secureOptions: { rejectUnauthorized: false },
+    })
+  }
+
   async connect(): Promise<void> {
-    await Promise.all(
-      this.clients.map(async (client) => {
-        await client.access({
-          host: this.config.host,
-          port: this.config.port,
-          user: this.config.user,
-          password: this.config.password,
-          secure: this.config.secure,
-          secureOptions: { rejectUnauthorized: false },
-        })
-      }),
-    )
+    await Promise.all(this.clients.map((client) => this.accessClient(client)))
   }
 
   disconnect(): void {
@@ -414,6 +445,14 @@ export class FtpConnectionPool {
     let completedCount = 0
 
     const isCancelled = options?.cancelled ?? (() => false)
+    const retryAttempts = Math.max(
+      1,
+      parseInt(process.env.FTP_RETRY_ATTEMPTS || '3'),
+    )
+    const retryDelayMs = Math.max(
+      0,
+      parseInt(process.env.FTP_RETRY_DELAY_MS || '3000'),
+    )
 
     const worker = async (client: ftp.Client) => {
       while (true) {
@@ -434,81 +473,114 @@ export class FtpConnectionPool {
         const remoteSize = entry.size
         const resume = options?.resume ?? false
 
-        try {
-          // 断点续传：检查本地文件
-          if (resume && remoteSize > 0) {
-            let localSize = 0
-            try {
-              if (fs.existsSync(localPath)) {
-                localSize = fs.statSync(localPath).size
-              }
-            } catch {
-              localSize = 0
+        for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+          try {
+            if (client.closed) {
+              await this.accessClient(client)
             }
 
-            // 文件已完整下载，跳过
-            if (localSize === remoteSize) {
-              results.push({ entry, localPath, skipped: true })
-              completedCount++
-              options?.onFileDownloaded?.(
+            // 断点续传：检查本地文件
+            if (resume && remoteSize > 0) {
+              const localSize = getLocalFileSize(localPath)
+
+              // 文件已完整下载，跳过
+              if (localSize === remoteSize) {
+                results.push({ entry, localPath, skipped: true })
+                completedCount++
+                options?.onFileDownloaded?.(
+                  entry.name,
+                  completedCount,
+                  total,
+                  true,
+                )
+                break
+              }
+
+              // 部分文件存在，从断点续传
+              if (localSize > 0 && localSize < remoteSize) {
+                if (options?.onFileProgress) {
+                  client.trackProgress((info) => {
+                    options.onFileProgress!(
+                      entry.name,
+                      localSize + info.bytesOverall,
+                      remoteSize,
+                    )
+                  })
+                }
+                await client.downloadTo(localPath, entry.path, localSize)
+                client.trackProgress()
+                results.push({ entry, localPath, skipped: false })
+                completedCount++
+                options?.onFileDownloaded?.(
+                  entry.name,
+                  completedCount,
+                  total,
+                  false,
+                )
+                break
+              }
+
+              // 本地文件比远程大，删除重新下载
+              if (localSize > remoteSize) {
+                fs.unlinkSync(localPath)
+              }
+            }
+
+            // 全新下载
+            if (options?.onFileProgress && remoteSize > 0) {
+              client.trackProgress((info) => {
+                options.onFileProgress!(
+                  entry.name,
+                  info.bytesOverall,
+                  remoteSize,
+                )
+              })
+            }
+
+            await client.downloadTo(localPath, entry.path)
+            client.trackProgress()
+
+            results.push({ entry, localPath, skipped: false })
+            completedCount++
+            options?.onFileDownloaded?.(
+              entry.name,
+              completedCount,
+              total,
+              false,
+            )
+            break
+          } catch (error) {
+            client.trackProgress()
+
+            const errorMessage =
+              error instanceof Error ? error.message : 'Unknown error'
+            const localBytes = getLocalFileSize(localPath)
+            const shouldRetry = attempt < retryAttempts && !isCancelled()
+
+            if (shouldRetry) {
+              options?.onFileRetry?.(
                 entry.name,
-                completedCount,
-                total,
-                true,
+                attempt + 1,
+                retryAttempts,
+                errorMessage,
+                localBytes,
+                remoteSize,
               )
+
+              if (!client.closed) {
+                client.close()
+              }
+              await sleep(retryDelayMs)
               continue
             }
 
-            // 部分文件存在，从断点续传
-            if (localSize > 0 && localSize < remoteSize) {
-              if (options?.onFileProgress) {
-                client.trackProgress((info) => {
-                  options.onFileProgress!(
-                    entry.name,
-                    localSize + info.bytesOverall,
-                    remoteSize,
-                  )
-                })
-              }
-              await client.downloadTo(localPath, entry.path, localSize)
-              client.trackProgress()
-              results.push({ entry, localPath, skipped: false })
-              completedCount++
-              options?.onFileDownloaded?.(
-                entry.name,
-                completedCount,
-                total,
-                false,
-              )
-              continue
-            }
-
-            // 本地文件比远程大，删除重新下载
-            if (localSize > remoteSize) {
+            if (!resume && fs.existsSync(localPath)) {
               fs.unlinkSync(localPath)
             }
+            throw new Error(
+              `下载文件失败 ${entry.path}: ${errorMessage} (local=${localBytes}, remote=${remoteSize}, attempts=${attempt})`,
+            )
           }
-
-          // 全新下载
-          if (options?.onFileProgress && remoteSize > 0) {
-            client.trackProgress((info) => {
-              options.onFileProgress!(entry.name, info.bytesOverall, remoteSize)
-            })
-          }
-
-          await client.downloadTo(localPath, entry.path)
-          client.trackProgress()
-
-          results.push({ entry, localPath, skipped: false })
-          completedCount++
-          options?.onFileDownloaded?.(entry.name, completedCount, total, false)
-        } catch (error) {
-          if (!resume && fs.existsSync(localPath)) {
-            fs.unlinkSync(localPath)
-          }
-          throw new Error(
-            `下载文件失败 ${entry.path}: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          )
         }
       }
     }

@@ -25,6 +25,8 @@ import {
 import {
   updateBatchStatus,
   updateBatchProgress,
+  countImportedPatentsByBatch,
+  getImportedPatentKeysByBatch,
   insertPatents,
   addLog,
   getBatchByCode,
@@ -130,6 +132,20 @@ export async function getBatchStatus(batchCode: string): Promise<{
   }
 }
 
+export function getPatentImportKey(patent: ParsedPatent): string {
+  const kind = patent.kind || (patent.patent_type === 'invention' ? 'B' : 'U')
+  return `${patent.patent_number}\u0000${kind}`
+}
+
+export function filterRemainingPatentsForImport(
+  patents: ParsedPatent[],
+  importedKeys: Set<string>,
+): ParsedPatent[] {
+  return patents.filter(
+    (patent) => !importedKeys.has(getPatentImportKey(patent)),
+  )
+}
+
 // ============ 独立步骤函数 ============
 
 // 步骤 1：从 FTP 下载数据
@@ -178,11 +194,6 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
     // 获取文件列表以设置 total_files
     const allEntries = await ftpClient.listDirectory(ftpFolder)
     const fileEntries = allEntries.filter((e) => e.type === 'file')
-    await updateBatchProgress(
-      batchCode,
-      fileEntries.length,
-      batch.processed_files,
-    )
 
     // 文件名过滤器
     const fileFilter = (entry: { name: string }) => {
@@ -203,12 +214,35 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
 
     // 初始化文件列表状态
     const filteredEntries = fileEntries.filter(fileFilter)
-    const fileList: FileDownloadItem[] = filteredEntries.map((e) => ({
-      fileName: e.name,
-      fileSize: e.size,
-      status: 'pending' as const,
-      bytesDownloaded: 0,
-    }))
+    await updateBatchProgress(batchCode, filteredEntries.length)
+
+    const fileList: FileDownloadItem[] = filteredEntries.map((e) => {
+      const localPath = path.join(tempPath, e.name)
+      let localSize = 0
+      try {
+        if (fs.existsSync(localPath)) {
+          localSize = fs.statSync(localPath).size
+        }
+      } catch {
+        localSize = 0
+      }
+
+      const bytesDownloaded =
+        e.size > 0 ? Math.min(Math.max(localSize, 0), e.size) : 0
+      const status =
+        e.size > 0 && localSize === e.size
+          ? ('skipped' as const)
+          : bytesDownloaded > 0
+            ? ('partial' as const)
+            : ('pending' as const)
+
+      return {
+        fileName: e.name,
+        fileSize: e.size,
+        status,
+        bytesDownloaded,
+      }
+    })
     downloadFileList.set(batchCode, fileList)
 
     // O(1) 文件名查找
@@ -220,7 +254,20 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
 
     pool = createFtpPool()
     await pool.connect()
-    await addLog(batchCode, 'info', `FTP 连接池已建立，并发下载已启用`)
+    const totalBytes = filteredEntries.reduce((sum, e) => sum + e.size, 0)
+    const retryAttempts = Math.max(
+      1,
+      parseInt(process.env.FTP_RETRY_ATTEMPTS || '3'),
+    )
+    const retryDelayMs = Math.max(
+      0,
+      parseInt(process.env.FTP_RETRY_DELAY_MS || '3000'),
+    )
+    await addLog(
+      batchCode,
+      'info',
+      `FTP 连接池已建立，并发下载已启用: ${pool.getConcurrency()} 个连接, 超时 ${pool.getTimeout()}ms, 重试 ${retryAttempts} 次, 重试间隔 ${retryDelayMs}ms, 文件 ${filteredEntries.length} 个, 总大小 ${totalBytes} bytes`,
+    )
 
     const downloadResult = await pool.downloadFiles(filteredEntries, tempPath, {
       cancelled: () => cancelled,
@@ -317,6 +364,32 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
           fileEtaSeconds: fileEta,
           batchEtaSeconds: batchEta,
         })
+      },
+      onFileRetry: (
+        fileName,
+        attempt,
+        maxAttempts,
+        error,
+        localBytes,
+        remoteBytes,
+      ) => {
+        const item = fileListMap.get(fileName)
+        if (item) {
+          item.status = localBytes > 0 ? 'partial' : 'pending'
+          item.bytesDownloaded =
+            remoteBytes > 0 ? Math.min(localBytes, remoteBytes) : localBytes
+        }
+
+        void addLog(
+          batchCode,
+          'warn',
+          `下载重试 ${attempt}/${maxAttempts}: ${fileName}`,
+          {
+            error,
+            localBytes,
+            remoteBytes,
+          },
+        )
       },
       resume: true,
     })
@@ -573,25 +646,60 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
   })
 
   try {
-    await updateBatchStatus(batchCode, 'importing')
-    await addLog(batchCode, 'info', '开始导入步骤')
-
     const parsedPath = path.join(getTempPath(batchCode), 'parsed.json')
     if (!fs.existsSync(parsedPath)) {
       throw new Error('parsed.json 不存在，请先执行处理步骤')
     }
 
-    const patents = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
+    const patents = JSON.parse(
+      fs.readFileSync(parsedPath, 'utf-8'),
+    ) as ParsedPatent[]
+    const totalPatents = patents.length
+    let importedCount = await countImportedPatentsByBatch(batchCode)
 
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedCount,
+    )
+
+    if (importedCount >= totalPatents) {
+      await updateBatchStatus(batchCode, 'completed')
+      cleanTempDir(batchCode)
+      await addLog(
+        batchCode,
+        'info',
+        `导入已完成: ${importedCount} / ${totalPatents} 条记录`,
+      )
+      return {
+        success: true,
+        batchCode,
+        details: { importedPatents: importedCount, totalPatents },
+      }
+    }
+
+    await updateBatchStatus(batchCode, 'importing')
+    await addLog(
+      batchCode,
+      'info',
+      `开始导入步骤: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+    )
+
+    const importedKeys = await getImportedPatentKeysByBatch(batchCode)
+    const remainingPatents = filterRemainingPatentsForImport(
+      patents,
+      importedKeys,
+    )
     const BATCH_SIZE = 100
-    let importedCount = 0
 
-    for (let i = 0; i < patents.length; i += BATCH_SIZE) {
+    for (let i = 0; i < remainingPatents.length; i += BATCH_SIZE) {
       if (cancelled) throw new Error('任务已取消')
 
-      const batchPatents = patents.slice(i, i + BATCH_SIZE)
-      const inserted = await insertPatents(batchCode, batchPatents)
-      importedCount += inserted
+      const batchPatents = remainingPatents.slice(i, i + BATCH_SIZE)
+      await insertPatents(batchCode, batchPatents)
+      importedCount = await countImportedPatentsByBatch(batchCode)
 
       await updateBatchProgress(
         batchCode,
@@ -602,10 +710,24 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       )
     }
 
-    await addLog(batchCode, 'info', `导入完成: ${importedCount} 条记录`)
+    importedCount = await countImportedPatentsByBatch(batchCode)
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedCount,
+    )
+    await addLog(
+      batchCode,
+      'info',
+      `导入完成: ${importedCount} / ${totalPatents} 条记录`,
+    )
 
-    if (importedCount === 0) {
-      throw new Error('所有专利均导入失败')
+    if (importedCount < totalPatents) {
+      throw new Error(
+        `导入未完成: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+      )
     }
 
     await updateBatchStatus(batchCode, 'completed')
@@ -613,7 +735,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       batchCode,
       undefined,
       undefined,
-      patents.length,
+      totalPatents,
       importedCount,
     )
 
@@ -625,7 +747,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     return {
       success: true,
       batchCode,
-      details: { importedPatents: importedCount },
+      details: { importedPatents: importedCount, totalPatents },
     }
   } catch (error) {
     const errorMessage =
@@ -707,13 +829,39 @@ export async function syncBatchRecord(batchCode: string): Promise<{
 
   let newStatus: string = previousStatus
   let details = ''
+  let progressUpdate: {
+    totalPatents: number
+    importedPatents: number
+    remainingPatents: number
+  } | null = null
 
   if (!fs.existsSync(tempPath)) {
     newStatus = 'pending'
     details = '本地数据目录不存在，重置为待处理'
   } else if (fs.existsSync(parsedPath)) {
-    newStatus = 'processed'
-    details = '发现 parsed.json，可执行导入步骤'
+    const patents = JSON.parse(
+      fs.readFileSync(parsedPath, 'utf-8'),
+    ) as ParsedPatent[]
+    const totalPatents = patents.length
+    const importedPatents = await countImportedPatentsByBatch(batchCode)
+    const remainingPatents = Math.max(totalPatents - importedPatents, 0)
+
+    progressUpdate = { totalPatents, importedPatents, remainingPatents }
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedPatents,
+    )
+
+    if (totalPatents > 0 && importedPatents >= totalPatents) {
+      newStatus = 'completed'
+      details = `发现 parsed.json，数据库中已有 ${importedPatents}/${totalPatents} 条专利，标记为已完成`
+    } else {
+      newStatus = 'processed'
+      details = `发现 parsed.json，已导入 ${importedPatents}/${totalPatents} 条，可继续导入`
+    }
   } else if (fs.existsSync(extractDir)) {
     const innerZips = fs
       .readdirSync(extractDir)
@@ -749,7 +897,12 @@ export async function syncBatchRecord(batchCode: string): Promise<{
   if (newStatus !== previousStatus) {
     const pool = getPool()
     await pool.query(
-      `UPDATE sync_batches SET status = $1, started_at = NULL, completed_at = NULL, error_message = NULL WHERE batch_code = $2`,
+      `UPDATE sync_batches
+       SET status = $1::varchar,
+           started_at = NULL,
+           completed_at = CASE WHEN $1::varchar = 'completed' THEN CURRENT_TIMESTAMP ELSE NULL END,
+           error_message = NULL
+       WHERE batch_code = $2`,
       [newStatus, batchCode],
     )
 
@@ -761,6 +914,7 @@ export async function syncBatchRecord(batchCode: string): Promise<{
         previousStatus,
         newStatus,
         details,
+        ...(progressUpdate ?? {}),
       },
     )
   }

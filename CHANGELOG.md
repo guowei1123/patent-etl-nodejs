@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.5.2 - 2026-05-26
+
+### 新增
+
+- FTP 下载重试机制：可配置重试次数（`FTP_RETRY_ATTEMPTS`）和重试间隔（`FTP_RETRY_DELAY_MS`），下载失败自动重连重试
+- 导入步骤断点续跑：导入前查询已入库专利，跳过已导入记录继续未完成批次，避免重复导入
+- 下载步骤断点续跑：检测本地已有文件大小，区分 pending/partial/skipped 状态，支持从中断处继续下载
+- `syncBatchRecord` 增量同步：根据数据库已导入数量智能判断批次状态，已完成导入的自动标记为 completed
+- 导入进度实时显示：批次列表和详情页展示「已导入 N / M 条专利」进度信息
+- 新增 `lib/__tests__/etl-pipeline.test.ts`，导入续跑过滤逻辑单元测试
+
+### 变更
+
+- 详情页轮询逻辑重构：用 `optimisticActiveStep` + SWR 函数式 `refreshInterval` 替代 `useRef` 状态同步，消除 React 渲染闭环问题
+- 列表页和仪表盘 SWR `refreshInterval` 改为基于最新数据的函数式判断，不再依赖 `useRef`
+- FTP 连接池 `downloadFiles` 内部重构：重试循环封装在单文件 worker 内，失败时关闭连接并重连
+- `insertPatents` UPSERT 冲突时同时更新 `batch_id` 和 `source_file` 字段
+
 ## 0.5.1 - 2026-05-20
 
 ### 修复
