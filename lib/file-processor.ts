@@ -45,6 +45,23 @@ export function cleanTempDir(subdir?: string): void {
   }
 }
 
+export function getTempDirState(subdir: string): {
+  path: string
+  exists: boolean
+  hasFiles: boolean
+} {
+  const targetPath = path.join(TEMP_DIR, subdir)
+  if (!fs.existsSync(targetPath)) {
+    return { path: targetPath, exists: false, hasFiles: false }
+  }
+
+  return {
+    path: targetPath,
+    exists: true,
+    hasFiles: fs.readdirSync(targetPath).length > 0,
+  }
+}
+
 // 解压 .gz 文件
 export async function extractGzip(
   inputPath: string,

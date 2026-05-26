@@ -11,6 +11,17 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { toast } from 'sonner'
 import {
   ArrowLeft,
@@ -228,6 +239,7 @@ export default function BatchDetailPage({
   const [verifying, setVerifying] = useState<'download' | 'extract' | null>(
     null,
   )
+  const [cleaning, setCleaning] = useState(false)
   const [optimisticActiveStep, setOptimisticActiveStep] = useState<
     string | null
   >(null)
@@ -246,7 +258,20 @@ export default function BatchDetailPage({
 
   const { data, error, mutate } = useSWR<{
     success: boolean
-    data: { batch: SyncBatch; logs: SyncLog[] }
+    data: {
+      batch: SyncBatch
+      logs: SyncLog[]
+      localTemp: {
+        path: string
+        exists: boolean
+        hasFiles: boolean
+      }
+      localExtract: {
+        path: string
+        exists: boolean
+        hasFiles: boolean
+      }
+    }
   }>(`/api/batches/${batch_code}`, fetcher, {
     refreshInterval: 0,
   })
@@ -284,6 +309,8 @@ export default function BatchDetailPage({
 
   const batch = statusData?.data?.batch ?? dbBatch
   const logs = data?.data?.logs || []
+  const localTemp = data?.data?.localTemp
+  const localExtract = data?.data?.localExtract
   const isLoading = !data && !error
   const statusActive =
     batch && ['downloading', 'processing', 'importing'].includes(batch.status)
@@ -405,6 +432,30 @@ export default function BatchDetailPage({
     }
   }
 
+  const handleCleanup = async () => {
+    setCleaning(true)
+    try {
+      const response = await fetch('/api/sync/cleanup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code, confirm: true }),
+      })
+      const result = await response.json()
+
+      if (result.success) {
+        setVerifyResult(null)
+        toast.success(result.message || '本地文件已清理')
+        mutate()
+      } else {
+        toast.error(result.error || '清理失败')
+      }
+    } catch {
+      toast.error('请求失败')
+    } finally {
+      setCleaning(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <AppShell>
@@ -436,20 +487,17 @@ export default function BatchDetailPage({
     bgColor: 'bg-secondary',
   }
   const nextStep = getNextStep(batch.status)
-  const canVerifyDownload = [
-    'downloaded',
-    'processing',
-    'processed',
-    'completed',
-    'failed',
-  ].includes(batch.status)
-  const canVerifyExtract = [
-    'downloaded',
-    'processing',
-    'processed',
-    'completed',
-    'failed',
-  ].includes(batch.status)
+  const hasLocalTempFiles = localTemp?.hasFiles ?? false
+  const hasLocalExtractFiles = localExtract?.hasFiles ?? false
+  const canVerifyDownload =
+    ['downloaded', 'processing', 'processed', 'failed'].includes(
+      batch.status,
+    ) && hasLocalTempFiles
+  const canVerifyExtract =
+    ['downloaded', 'processing', 'processed', 'failed'].includes(
+      batch.status,
+    ) && hasLocalExtractFiles
+  const canCleanupLocal = batch.status === 'completed' && hasLocalTempFiles
 
   return (
     <AppShell>
@@ -582,6 +630,7 @@ export default function BatchDetailPage({
               (nextStep ||
                 canVerifyDownload ||
                 canVerifyExtract ||
+                canCleanupLocal ||
                 batch.status === 'failed' ||
                 isOrphaned) && (
                 <div className="mt-6 space-y-4">
@@ -625,6 +674,38 @@ export default function BatchDetailPage({
                         )}
                         校验解压文件
                       </Button>
+                    )}
+
+                    {canCleanupLocal && (
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="outline" disabled={cleaning}>
+                            {cleaning ? (
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="mr-2 h-4 w-4" />
+                            )}
+                            清理本地文件
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              确认清理本地文件？
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              将删除该批次的本地下载压缩包、解压目录和
+                              parsed.json。数据库中已导入的数据不会被删除。
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>取消</AlertDialogCancel>
+                            <AlertDialogAction onClick={handleCleanup}>
+                              确认清理
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     )}
 
                     {(batch.status === 'failed' || isOrphaned) && (

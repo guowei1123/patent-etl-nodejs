@@ -414,6 +414,34 @@ async function multiRowInsert(
   }
 }
 
+function uniqueRows(rows: unknown[][]): unknown[][] {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    const key = JSON.stringify(row)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function getPatentKind(p: ParsedPatent): string {
+  return p.kind || (p.patent_type === 'invention' ? 'B' : 'U')
+}
+
+function getPatentDescriptionJson(p: ParsedPatent): string | null {
+  const descJson: Record<string, string> = {}
+  if (p.description_structured) {
+    const d = p.description_structured
+    if (d.technical_field) descJson.technical_field = d.technical_field
+    if (d.background_art) descJson.background_art = d.background_art
+    if (d.disclosure) descJson.disclosure = d.disclosure
+    if (d.drawings_description)
+      descJson.drawings_description = d.drawings_description
+    if (d.embodiment) descJson.embodiment = d.embodiment
+  }
+  return Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null
+}
+
 // 将 ParsedPatent 写入 cnipa.patent + 子表
 export async function insertPatents(
   batchCode: string,
@@ -422,247 +450,253 @@ export async function insertPatents(
   if (patents.length === 0) return 0
 
   const client = await pool.connect()
-  let inserted = 0
 
   try {
     await client.query('BEGIN')
+    const mainColumns = [
+      'doc_number',
+      'kind',
+      'pub_country',
+      'pub_date',
+      'app_number',
+      'app_date',
+      'app_country',
+      'app_type',
+      'title',
+      'abstract',
+      'description',
+      'claims',
+      'status',
+      'abstract_fig_key',
+      'batch_id',
+      'source_file',
+      'grant_number',
+      'grant_date',
+      'priority_info',
+      'raw_xml',
+    ]
+    const mainRows = patents.map((p) => [
+      p.patent_number,
+      getPatentKind(p),
+      p.pub_country || null,
+      p.publication_date || null,
+      p.application_number || null,
+      p.application_date || null,
+      p.app_country || null,
+      p.app_type || null,
+      p.title,
+      p.abstract || null,
+      getPatentDescriptionJson(p),
+      p.claims ? JSON.stringify(p.claims) : null,
+      p.doc_status || null,
+      p.abstract_figure || null,
+      batchCode,
+      p.source_file || null,
+      p.grant_number || null,
+      p.grant_date || null,
+      p.priority_info ? JSON.stringify(p.priority_info) : null,
+      p.raw_xml || null,
+    ])
+    const mainInsert = buildMultiRowInsert(
+      'cnipa.patent',
+      mainColumns,
+      mainRows,
+    )
 
+    if (!mainInsert) {
+      await client.query('COMMIT')
+      return 0
+    }
+
+    const mainResult = await client.query<{
+      id: string
+      doc_number: string
+      kind: string
+      is_new: boolean
+    }>(
+      `${mainInsert.sql}
+       ON CONFLICT (doc_number, kind) DO UPDATE SET
+         title = EXCLUDED.title,
+         abstract = EXCLUDED.abstract,
+         description = COALESCE(EXCLUDED.description, cnipa.patent.description),
+         claims = EXCLUDED.claims,
+         grant_number = EXCLUDED.grant_number,
+         grant_date = EXCLUDED.grant_date,
+         batch_id = EXCLUDED.batch_id,
+         source_file = EXCLUDED.source_file,
+         updated_at = CURRENT_TIMESTAMP
+       RETURNING id, doc_number, kind, (xmax = 0) AS is_new`,
+      mainInsert.params,
+    )
+
+    const patentsByKey = new Map<string, ParsedPatent>()
     for (const p of patents) {
-      const spName = `sp_${inserted}`
-      try {
-        await client.query(`SAVEPOINT ${spName}`)
+      patentsByKey.set(`${p.patent_number}\u0000${getPatentKind(p)}`, p)
+    }
 
-        // 1. INSERT 主表
-        const descJson: Record<string, string> = {}
-        if (p.description_structured) {
-          const d = p.description_structured
-          if (d.technical_field) descJson.technical_field = d.technical_field
-          if (d.background_art) descJson.background_art = d.background_art
-          if (d.disclosure) descJson.disclosure = d.disclosure
-          if (d.drawings_description)
-            descJson.drawings_description = d.drawings_description
-          if (d.embodiment) descJson.embodiment = d.embodiment
-        }
+    const patentIdsByKey = new Map<string, string>()
+    const updatedPatentIds: string[] = []
+    for (const row of mainResult.rows) {
+      patentIdsByKey.set(`${row.doc_number}\u0000${row.kind}`, row.id)
+      if (!row.is_new) updatedPatentIds.push(row.id)
+    }
 
-        const claimsValue = p.claims ? JSON.stringify(p.claims) : null
-
-        const mainResult = await client.query(
-          `INSERT INTO cnipa.patent (
-            doc_number, kind, pub_country, pub_date,
-            app_number, app_date, app_country, app_type,
-            title, abstract, description, claims,
-            status, abstract_fig_key,
-            batch_id, source_file,
-            grant_number, grant_date, priority_info, raw_xml
-          ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-          ON CONFLICT (doc_number, kind) DO UPDATE SET
-            title = EXCLUDED.title,
-            abstract = EXCLUDED.abstract,
-            description = COALESCE(EXCLUDED.description, cnipa.patent.description),
-            claims = EXCLUDED.claims,
-            grant_number = EXCLUDED.grant_number,
-            grant_date = EXCLUDED.grant_date,
-            batch_id = EXCLUDED.batch_id,
-            source_file = EXCLUDED.source_file,
-            updated_at = CURRENT_TIMESTAMP
-          RETURNING id, (xmax = 0) AS is_new`,
-          [
-            p.patent_number,
-            p.kind || (p.patent_type === 'invention' ? 'B' : 'U'),
-            p.pub_country || null,
-            p.publication_date || null,
-            p.application_number || null,
-            p.application_date || null,
-            p.app_country || null,
-            p.app_type || null,
-            p.title,
-            p.abstract || null,
-            Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null,
-            claimsValue,
-            p.doc_status || null,
-            p.abstract_figure || null,
-            batchCode,
-            p.source_file || null,
-            p.grant_number || null,
-            p.grant_date || null,
-            p.priority_info ? JSON.stringify(p.priority_info) : null,
-            p.raw_xml || null,
-          ],
+    if (updatedPatentIds.length > 0) {
+      const childTables = [
+        'cnipa.patent_applicant',
+        'cnipa.patent_inventor',
+        'cnipa.patent_agent',
+        'cnipa.patent_ipc',
+        'cnipa.patent_citation',
+        'cnipa.patent_examiner',
+        'cnipa.patent_assignee',
+        'cnipa.patent_claim',
+      ]
+      for (const table of childTables) {
+        await client.query(
+          `DELETE FROM ${table} WHERE patent_id = ANY($1::uuid[])`,
+          [updatedPatentIds],
         )
-
-        const patentId: string = mainResult.rows[0].id
-        const isNew: boolean = mainResult.rows[0].is_new
-
-        // 2. DELETE 子表旧数据 — 仅在更新已有专利时执行
-        if (!isNew) {
-          await client.query(
-            'DELETE FROM cnipa.patent_applicant WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_inventor WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_agent WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_ipc WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_citation WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_examiner WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_assignee WHERE patent_id = $1',
-            [patentId],
-          )
-          await client.query(
-            'DELETE FROM cnipa.patent_claim WHERE patent_id = $1',
-            [patentId],
-          )
-        }
-
-        // 申请人
-        if (p.applicants_structured?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_applicant',
-            [
-              'patent_id',
-              'name',
-              'address',
-              'province',
-              'city',
-              'county',
-              'postcode',
-            ],
-            p.applicants_structured.map((a) => [
-              patentId,
-              a.name,
-              a.address || null,
-              a.province || null,
-              a.city || null,
-              a.county || null,
-              a.postcode || null,
-            ]),
-          )
-        }
-
-        // 发明人
-        if (p.inventors_structured?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_inventor',
-            ['patent_id', 'name'],
-            p.inventors_structured.map((name) => [patentId, name]),
-          )
-        }
-
-        // 代理人/机构
-        if (p.agents_structured?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_agent',
-            ['patent_id', 'agency', 'agent'],
-            p.agents_structured.map((a) => [
-              patentId,
-              a.agency_name || null,
-              a.agent_name || null,
-            ]),
-          )
-        }
-
-        // IPC 分类
-        if (p.ipc_codes?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_ipc',
-            ['patent_id', 'ipc_code'],
-            p.ipc_codes.map((code) => [patentId, code]),
-          )
-        }
-
-        // 引用文献
-        if (p.citations?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_citation',
-            ['patent_id', 'country', 'doc_number', 'kind', 'pub_date'],
-            p.citations.map((c) => [
-              patentId,
-              c.country || null,
-              c.doc_number || null,
-              c.kind || null,
-              c.pub_date || null,
-            ]),
-          )
-        }
-
-        // 审查员
-        if (p.examiners?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_examiner',
-            ['patent_id', 'name'],
-            p.examiners.map((name) => [patentId, name]),
-          )
-        }
-
-        // 受让人
-        if (p.assignees?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_assignee',
-            ['patent_id', 'name', 'address', 'province', 'city', 'postcode'],
-            p.assignees.map((a) => [
-              patentId,
-              a.name,
-              a.address || null,
-              a.province || null,
-              a.city || null,
-              a.postcode || null,
-            ]),
-          )
-        }
-
-        // 结构化权利要求
-        if (p.claims_structured?.length) {
-          await multiRowInsert(
-            client,
-            'cnipa.patent_claim',
-            ['patent_id', 'claim_num', 'claim_text'],
-            p.claims_structured.map((claim, ci) => [
-              patentId,
-              ci + 1,
-              claim.texts.join('\n'),
-            ]),
-          )
-        }
-
-        await client.query(`RELEASE SAVEPOINT ${spName}`)
-        inserted++
-      } catch (err) {
-        console.error(`Failed to insert patent ${p.patent_number}:`, err)
-        await client.query(`ROLLBACK TO SAVEPOINT ${spName}`)
       }
     }
 
+    const applicantRows: unknown[][] = []
+    const inventorRows: unknown[][] = []
+    const agentRows: unknown[][] = []
+    const ipcRows: unknown[][] = []
+    const citationRows: unknown[][] = []
+    const examinerRows: unknown[][] = []
+    const assigneeRows: unknown[][] = []
+    const claimRows: unknown[][] = []
+
+    for (const [key, p] of patentsByKey) {
+      const patentId = patentIdsByKey.get(key)
+      if (!patentId) continue
+
+      for (const a of p.applicants_structured || []) {
+        applicantRows.push([
+          patentId,
+          a.name,
+          a.address || null,
+          a.province || null,
+          a.city || null,
+          a.county || null,
+          a.postcode || null,
+        ])
+      }
+      for (const name of p.inventors_structured || []) {
+        inventorRows.push([patentId, name])
+      }
+      for (const a of p.agents_structured || []) {
+        agentRows.push([patentId, a.agency_name || null, a.agent_name || null])
+      }
+      for (const code of p.ipc_codes || []) {
+        ipcRows.push([patentId, code])
+      }
+      for (const c of p.citations || []) {
+        citationRows.push([
+          patentId,
+          c.country || null,
+          c.doc_number || null,
+          c.kind || null,
+          c.pub_date || null,
+        ])
+      }
+      for (const name of p.examiners || []) {
+        examinerRows.push([patentId, name])
+      }
+      for (const a of p.assignees || []) {
+        assigneeRows.push([
+          patentId,
+          a.name,
+          a.address || null,
+          a.province || null,
+          a.city || null,
+          a.postcode || null,
+        ])
+      }
+      for (let ci = 0; ci < (p.claims_structured || []).length; ci++) {
+        const claim = p.claims_structured?.[ci]
+        if (claim) claimRows.push([patentId, ci + 1, claim.texts.join('\n')])
+      }
+    }
+
+    await multiRowInsert(
+      client,
+      'cnipa.patent_applicant',
+      [
+        'patent_id',
+        'name',
+        'address',
+        'province',
+        'city',
+        'county',
+        'postcode',
+      ],
+      uniqueRows(applicantRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_inventor',
+      ['patent_id', 'name'],
+      uniqueRows(inventorRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_agent',
+      ['patent_id', 'agency', 'agent'],
+      uniqueRows(agentRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_ipc',
+      ['patent_id', 'ipc_code'],
+      uniqueRows(ipcRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_citation',
+      ['patent_id', 'country', 'doc_number', 'kind', 'pub_date'],
+      uniqueRows(citationRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_examiner',
+      ['patent_id', 'name'],
+      uniqueRows(examinerRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_assignee',
+      ['patent_id', 'name', 'address', 'province', 'city', 'postcode'],
+      uniqueRows(assigneeRows),
+    )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_claim',
+      ['patent_id', 'claim_num', 'claim_text'],
+      uniqueRows(claimRows),
+    )
+
     await client.query('COMMIT')
+    return mainResult.rowCount || 0
   } catch (error) {
     await client.query('ROLLBACK')
-    throw error
+    if (patents.length === 1) {
+      console.error(
+        `Failed to insert patent ${patents[0].patent_number}:`,
+        error,
+      )
+      return 0
+    }
+
+    const mid = Math.floor(patents.length / 2)
+    const left = await insertPatents(batchCode, patents.slice(0, mid))
+    const right = await insertPatents(batchCode, patents.slice(mid))
+    return left + right
   } finally {
     client.release()
   }
-
-  return inserted
 }
 
 // 将数据库行转为 Patent 对象（主表 + 子表聚合）

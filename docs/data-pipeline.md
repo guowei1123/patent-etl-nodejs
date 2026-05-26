@@ -57,7 +57,7 @@
 
 - 读取 `parsed.json`，分批（每批 100 条）插入 PostgreSQL
 - 使用 upsert 策略（按专利号去重）
-- 完成后清理 `data/<batch_code>/` 临时文件
+- 完成后保留 `data/<batch_code>/` 临时文件，可在批次详情页手动确认后清理
 - 前置状态：`processed`
 - 完成后状态：`completed`
 

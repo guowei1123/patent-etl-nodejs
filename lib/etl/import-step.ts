@@ -1,6 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
-import { cleanTempDir, getTempPath } from '../file-processor'
+import { getTempPath } from '../file-processor'
 import {
   addLog,
   countImportedPatentsByBatch,
@@ -83,7 +83,6 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
 
     if (importedCount >= totalPatents) {
       await updateBatchStatus(batchCode, 'completed')
-      cleanTempDir(batchCode)
       await addLog(
         batchCode,
         'info',
@@ -186,10 +185,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       importedCount,
     )
 
-    // 清理临时文件
-    cleanTempDir(batchCode)
-
-    await addLog(batchCode, 'info', 'ETL 任务全部完成')
+    await addLog(batchCode, 'info', 'ETL 任务全部完成，可手动清理本地文件')
 
     return {
       success: true,
