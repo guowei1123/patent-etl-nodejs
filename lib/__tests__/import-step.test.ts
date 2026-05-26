@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  dedupePatentsForImport,
   filterRemainingPatentsForImport,
   getPatentImportKey,
-} from '../etl-pipeline'
+} from '../etl/import-step'
 import type { ParsedPatent } from '@/types'
 
 function patent(
@@ -45,5 +46,19 @@ describe('导入续跑过滤', () => {
     expect(filterRemainingPatentsForImport(patents, importedKeys)).toEqual([
       patents[1],
     ])
+  })
+
+  it('deduplicates parsed patents by the same import key', () => {
+    const first = patent('100001', 'invention')
+    const replacement = {
+      ...patent('100001', 'invention'),
+      title: 'Updated patent 100001',
+    }
+    const differentKind = patent('100001', 'utility_model', 'U')
+    const unique = patent('100002', 'invention')
+
+    expect(
+      dedupePatentsForImport([first, differentKind, replacement, unique]),
+    ).toEqual([replacement, differentKind, unique])
   })
 })

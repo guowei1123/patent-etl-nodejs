@@ -1,0 +1,184 @@
+import * as fs from 'fs'
+import * as path from 'path'
+import { cleanTempDir, getTempPath } from '../file-processor'
+import {
+  addLog,
+  countImportedPatentsByBatch,
+  getBatchByCode,
+  getImportedPatentKeysByBatch,
+  insertPatents,
+  updateBatchProgress,
+  updateBatchStatus,
+} from '../db'
+import type { ParsedPatent } from '@/types'
+import type { StepResult } from './types'
+import { runningTasks } from './task-state'
+
+export function getPatentImportKey(patent: ParsedPatent): string {
+  const kind = patent.kind || (patent.patent_type === 'invention' ? 'B' : 'U')
+  return `${patent.patent_number}\u0000${kind}`
+}
+
+export function filterRemainingPatentsForImport(
+  patents: ParsedPatent[],
+  importedKeys: Set<string>,
+): ParsedPatent[] {
+  return patents.filter(
+    (patent) => !importedKeys.has(getPatentImportKey(patent)),
+  )
+}
+
+export function dedupePatentsForImport(
+  patents: ParsedPatent[],
+): ParsedPatent[] {
+  const uniquePatents = new Map<string, ParsedPatent>()
+
+  for (const patent of patents) {
+    uniquePatents.set(getPatentImportKey(patent), patent)
+  }
+
+  return Array.from(uniquePatents.values())
+}
+
+// 步骤 3：导入数据库
+export async function runImportStep(batchCode: string): Promise<StepResult> {
+  const batch = await getBatchByCode(batchCode)
+  if (!batch) return { success: false, batchCode, error: '批次不存在' }
+  if (batch.status !== 'processed') {
+    return {
+      success: false,
+      batchCode,
+      error: `当前状态 ${batch.status} 不可执行导入，需要 processed`,
+    }
+  }
+
+  let cancelled = false
+  runningTasks.set(batchCode, {
+    cancel: () => {
+      cancelled = true
+    },
+    cancelling: false,
+  })
+
+  try {
+    const parsedPath = path.join(getTempPath(batchCode), 'parsed.json')
+    if (!fs.existsSync(parsedPath)) {
+      throw new Error('parsed.json 不存在，请先执行处理步骤')
+    }
+
+    const parsedPatents = JSON.parse(
+      fs.readFileSync(parsedPath, 'utf-8'),
+    ) as ParsedPatent[]
+    const patents = dedupePatentsForImport(parsedPatents)
+    const totalPatents = patents.length
+    let importedCount = await countImportedPatentsByBatch(batchCode)
+
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedCount,
+    )
+
+    if (importedCount >= totalPatents) {
+      await updateBatchStatus(batchCode, 'completed')
+      cleanTempDir(batchCode)
+      await addLog(
+        batchCode,
+        'info',
+        `导入已完成: ${importedCount} / ${totalPatents} 条记录`,
+      )
+      return {
+        success: true,
+        batchCode,
+        details: { importedPatents: importedCount, totalPatents },
+      }
+    }
+
+    await updateBatchStatus(batchCode, 'importing')
+    if (parsedPatents.length !== patents.length) {
+      await addLog(
+        batchCode,
+        'warn',
+        `导入前去重: parsed.json ${parsedPatents.length} 条，唯一专利 ${patents.length} 条`,
+      )
+    }
+    await addLog(
+      batchCode,
+      'info',
+      `开始导入步骤: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+    )
+
+    const importedKeys = await getImportedPatentKeysByBatch(batchCode)
+    const remainingPatents = filterRemainingPatentsForImport(
+      patents,
+      importedKeys,
+    )
+    const BATCH_SIZE = 100
+
+    for (let i = 0; i < remainingPatents.length; i += BATCH_SIZE) {
+      if (cancelled) throw new Error('任务已取消')
+
+      const batchPatents = remainingPatents.slice(i, i + BATCH_SIZE)
+      await insertPatents(batchCode, batchPatents)
+      importedCount = await countImportedPatentsByBatch(batchCode)
+
+      await updateBatchProgress(
+        batchCode,
+        undefined,
+        undefined,
+        undefined,
+        importedCount,
+      )
+    }
+
+    importedCount = await countImportedPatentsByBatch(batchCode)
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedCount,
+    )
+    await addLog(
+      batchCode,
+      'info',
+      `导入完成: ${importedCount} / ${totalPatents} 条记录`,
+    )
+
+    if (importedCount < totalPatents) {
+      throw new Error(
+        `导入未完成: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+      )
+    }
+
+    await updateBatchStatus(batchCode, 'completed')
+    await updateBatchProgress(
+      batchCode,
+      undefined,
+      undefined,
+      totalPatents,
+      importedCount,
+    )
+
+    // 清理临时文件
+    cleanTempDir(batchCode)
+
+    await addLog(batchCode, 'info', 'ETL 任务全部完成')
+
+    return {
+      success: true,
+      batchCode,
+      details: { importedPatents: importedCount, totalPatents },
+    }
+  } catch (error) {
+    const errorMessage =
+      error instanceof Error ? error.message : 'Unknown error'
+    await updateBatchStatus(batchCode, 'failed', errorMessage)
+    await addLog(batchCode, 'error', `导入失败: ${errorMessage}`)
+    return { success: false, batchCode, error: errorMessage }
+  } finally {
+    runningTasks.delete(batchCode)
+  }
+}

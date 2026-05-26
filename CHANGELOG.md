@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.5.3 - 2026-05-26
+
+### 变更
+
+- 将 ETL 流程按下载、处理、导入 3 个环节拆分为独立模块，`lib/etl-pipeline.ts` 保留为对外门面
+- 将导入续跑和去重测试移动到 `import-step` 对应测试文件
+- 将 shadcn/ui 固定组件目录排除在 TypeScript 检查之外，保持与 lint/format 忽略规则一致
+
+### 修复
+
+- 导入前按 `(patent_number, kind)` 去重，并用唯一专利数更新导入总量，避免同批重复专利导致进度总量和入库数量不一致
+
 ## 0.5.2 - 2026-05-26
 
 ### 新增
