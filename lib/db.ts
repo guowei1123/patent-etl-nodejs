@@ -375,6 +375,45 @@ export async function deleteBatch(batchCode: string): Promise<void> {
 
 // ============ Patent 操作（cnipa schema） ============
 
+function buildMultiRowInsert(
+  table: string,
+  columns: string[],
+  rows: unknown[][],
+): { sql: string; params: unknown[] } | null {
+  if (rows.length === 0) return null
+  const colCount = columns.length
+  const MAX_PARAMS = 30000
+  if (rows.length * colCount > MAX_PARAMS) {
+    const chunkSize = Math.floor(MAX_PARAMS / colCount)
+    const chunk = rows.slice(0, chunkSize)
+    return buildMultiRowInsert(table, columns, chunk)
+  }
+  const placeholders = rows.map((_, ri) => {
+    const base = ri * colCount
+    return '(' + columns.map((_, ci) => `$${base + ci + 1}`).join(',') + ')'
+  })
+  return {
+    sql: `INSERT INTO ${table} (${columns.join(',')}) VALUES ${placeholders.join(',')}`,
+    params: rows.flat(),
+  }
+}
+
+async function multiRowInsert(
+  client: PoolClient,
+  table: string,
+  columns: string[],
+  rows: unknown[][],
+): Promise<void> {
+  const colCount = columns.length
+  const MAX_PARAMS = 30000
+  const chunkSize = Math.max(1, Math.floor(MAX_PARAMS / colCount))
+  for (let offset = 0; offset < rows.length; offset += chunkSize) {
+    const chunk = rows.slice(offset, offset + chunkSize)
+    const q = buildMultiRowInsert(table, columns, chunk)
+    if (q) await client.query(q.sql, q.params)
+  }
+}
+
 // 将 ParsedPatent 写入 cnipa.patent + 子表
 export async function insertPatents(
   batchCode: string,
@@ -426,7 +465,7 @@ export async function insertPatents(
             batch_id = EXCLUDED.batch_id,
             source_file = EXCLUDED.source_file,
             updated_at = CURRENT_TIMESTAMP
-          RETURNING id`,
+          RETURNING id, (xmax = 0) AS is_new`,
           [
             p.patent_number,
             p.kind || (p.patent_type === 'invention' ? 'B' : 'U'),
@@ -452,146 +491,159 @@ export async function insertPatents(
         )
 
         const patentId: string = mainResult.rows[0].id
+        const isNew: boolean = mainResult.rows[0].is_new
 
-        // 2. INSERT 子表 — 先删除旧数据（ON CONFLICT 时更新）
-        await client.query(
-          'DELETE FROM cnipa.patent_applicant WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_inventor WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_agent WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_ipc WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_citation WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_examiner WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_assignee WHERE patent_id = $1',
-          [patentId],
-        )
-        await client.query(
-          'DELETE FROM cnipa.patent_claim WHERE patent_id = $1',
-          [patentId],
-        )
+        // 2. DELETE 子表旧数据 — 仅在更新已有专利时执行
+        if (!isNew) {
+          await client.query(
+            'DELETE FROM cnipa.patent_applicant WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_inventor WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_agent WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_ipc WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_citation WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_examiner WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_assignee WHERE patent_id = $1',
+            [patentId],
+          )
+          await client.query(
+            'DELETE FROM cnipa.patent_claim WHERE patent_id = $1',
+            [patentId],
+          )
+        }
 
         // 申请人
-        if (p.applicants_structured) {
-          for (const a of p.applicants_structured) {
-            await client.query(
-              `INSERT INTO cnipa.patent_applicant (patent_id, name, address, province, city, county, postcode)
-               VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-              [
-                patentId,
-                a.name,
-                a.address || null,
-                a.province || null,
-                a.city || null,
-                a.county || null,
-                a.postcode || null,
-              ],
-            )
-          }
+        if (p.applicants_structured?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_applicant',
+            [
+              'patent_id',
+              'name',
+              'address',
+              'province',
+              'city',
+              'county',
+              'postcode',
+            ],
+            p.applicants_structured.map((a) => [
+              patentId,
+              a.name,
+              a.address || null,
+              a.province || null,
+              a.city || null,
+              a.county || null,
+              a.postcode || null,
+            ]),
+          )
         }
 
         // 发明人
-        if (p.inventors_structured) {
-          for (const name of p.inventors_structured) {
-            await client.query(
-              'INSERT INTO cnipa.patent_inventor (patent_id, name) VALUES ($1,$2)',
-              [patentId, name],
-            )
-          }
+        if (p.inventors_structured?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_inventor',
+            ['patent_id', 'name'],
+            p.inventors_structured.map((name) => [patentId, name]),
+          )
         }
 
         // 代理人/机构
-        if (p.agents_structured) {
-          for (const a of p.agents_structured) {
-            await client.query(
-              `INSERT INTO cnipa.patent_agent (patent_id, agency, agent)
-               VALUES ($1,$2,$3)`,
-              [patentId, a.agency_name || null, a.agent_name || null],
-            )
-          }
+        if (p.agents_structured?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_agent',
+            ['patent_id', 'agency', 'agent'],
+            p.agents_structured.map((a) => [
+              patentId,
+              a.agency_name || null,
+              a.agent_name || null,
+            ]),
+          )
         }
 
         // IPC 分类
-        if (p.ipc_codes) {
-          for (const code of p.ipc_codes) {
-            await client.query(
-              'INSERT INTO cnipa.patent_ipc (patent_id, ipc_code) VALUES ($1,$2)',
-              [patentId, code],
-            )
-          }
+        if (p.ipc_codes?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_ipc',
+            ['patent_id', 'ipc_code'],
+            p.ipc_codes.map((code) => [patentId, code]),
+          )
         }
 
         // 引用文献
-        if (p.citations) {
-          for (const c of p.citations) {
-            await client.query(
-              `INSERT INTO cnipa.patent_citation (patent_id, country, doc_number, kind, pub_date)
-               VALUES ($1,$2,$3,$4,$5)`,
-              [
-                patentId,
-                c.country || null,
-                c.doc_number || null,
-                c.kind || null,
-                c.pub_date || null,
-              ],
-            )
-          }
+        if (p.citations?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_citation',
+            ['patent_id', 'country', 'doc_number', 'kind', 'pub_date'],
+            p.citations.map((c) => [
+              patentId,
+              c.country || null,
+              c.doc_number || null,
+              c.kind || null,
+              c.pub_date || null,
+            ]),
+          )
         }
 
         // 审查员
-        if (p.examiners) {
-          for (const name of p.examiners) {
-            await client.query(
-              'INSERT INTO cnipa.patent_examiner (patent_id, name) VALUES ($1,$2)',
-              [patentId, name],
-            )
-          }
+        if (p.examiners?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_examiner',
+            ['patent_id', 'name'],
+            p.examiners.map((name) => [patentId, name]),
+          )
         }
 
         // 受让人
-        if (p.assignees) {
-          for (const a of p.assignees) {
-            await client.query(
-              `INSERT INTO cnipa.patent_assignee (patent_id, name, address, province, city, postcode)
-               VALUES ($1,$2,$3,$4,$5,$6)`,
-              [
-                patentId,
-                a.name,
-                a.address || null,
-                a.province || null,
-                a.city || null,
-                a.postcode || null,
-              ],
-            )
-          }
+        if (p.assignees?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_assignee',
+            ['patent_id', 'name', 'address', 'province', 'city', 'postcode'],
+            p.assignees.map((a) => [
+              patentId,
+              a.name,
+              a.address || null,
+              a.province || null,
+              a.city || null,
+              a.postcode || null,
+            ]),
+          )
         }
 
         // 结构化权利要求
-        if (p.claims_structured) {
-          for (let ci = 0; ci < p.claims_structured.length; ci++) {
-            const claim = p.claims_structured[ci]
-            const text = claim.texts.join('\n')
-            await client.query(
-              'INSERT INTO cnipa.patent_claim (patent_id, claim_num, claim_text) VALUES ($1,$2,$3)',
-              [patentId, ci + 1, text],
-            )
-          }
+        if (p.claims_structured?.length) {
+          await multiRowInsert(
+            client,
+            'cnipa.patent_claim',
+            ['patent_id', 'claim_num', 'claim_text'],
+            p.claims_structured.map((claim, ci) => [
+              patentId,
+              ci + 1,
+              claim.texts.join('\n'),
+            ]),
+          )
         }
 
         await client.query(`RELEASE SAVEPOINT ${spName}`)

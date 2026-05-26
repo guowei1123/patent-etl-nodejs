@@ -116,13 +116,37 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       importedKeys,
     )
     const BATCH_SIZE = 100
+    const CONCURRENCY = Math.max(
+      1,
+      parseInt(process.env.IMPORT_CONCURRENCY || '3', 10) || 3,
+    )
 
+    // 将剩余专利分块
+    const chunks: ParsedPatent[][] = []
     for (let i = 0; i < remainingPatents.length; i += BATCH_SIZE) {
+      chunks.push(remainingPatents.slice(i, i + BATCH_SIZE))
+    }
+
+    // 受控并发导入
+    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
       if (cancelled) throw new Error('任务已取消')
 
-      const batchPatents = remainingPatents.slice(i, i + BATCH_SIZE)
-      await insertPatents(batchCode, batchPatents)
-      importedCount = await countImportedPatentsByBatch(batchCode)
+      const activeChunks = chunks.slice(i, i + CONCURRENCY)
+      const results = await Promise.allSettled(
+        activeChunks.map((chunk) => insertPatents(batchCode, chunk)),
+      )
+      const errors = results
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => r.reason)
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          `${errors.length}/${activeChunks.length} 个导入块失败`,
+        )
+      }
+      for (const r of results) {
+        importedCount += (r as PromiseFulfilledResult<number>).value
+      }
 
       await updateBatchProgress(
         batchCode,

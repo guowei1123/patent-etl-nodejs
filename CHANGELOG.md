@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.5.4 - 2026-05-27
+
+### 修复
+
+- `multiRowInsert` 超过参数上限时分批写入，不再静默丢弃多余行
+- `IMPORT_CONCURRENCY` 环境变量增加最小值校验，避免 0 / 负数 / NaN 导致死循环
+- 并发导入块失败时立即以 `AggregateError` 抛出，保留根因而非静默跳过
+
 ## 0.5.3 - 2026-05-26
 
 ### 变更
