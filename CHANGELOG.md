@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker 容器化部署：多阶段 Dockerfile（deps → build → standalone runner），输出 `output: 'standalone'` 精简镜像体积
 - `.dockerignore` 排除无关文件（node_modules、.env、data、.git 等）
 - GitHub Actions CI 工作流：手动触发构建并推送 Docker 镜像到 GHCR，自动清理旧版本保留最近 3 个
+- `package.json` 声明 `packageManager` 字段，Dockerfile 通过 `corepack prepare` 锁定 pnpm 版本确保构建一致
 
 ## 0.5.6 - 2026-05-27
 
