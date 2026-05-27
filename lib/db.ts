@@ -62,6 +62,29 @@ export async function testConnection(): Promise<{
   }
 }
 
+// 仅在列类型不是 text 时才 ALTER，避免每次请求重复 DDL
+async function alterColumnsToTextIfNeeded(
+  client: PoolClient,
+  tableFqcn: string,
+  columns: string[],
+): Promise<void> {
+  const [schema, table] = tableFqcn.split('.')
+  const { rows } = await client.query(
+    `SELECT column_name FROM information_schema.columns
+     WHERE table_schema = $1 AND table_name = $2 AND column_name = ANY($3) AND data_type = 'text'`,
+    [schema, table, columns],
+  )
+  const alreadyText = new Set(
+    rows.map((r: { column_name: string }) => r.column_name),
+  )
+  const needsAlter = columns.filter((c) => !alreadyText.has(c))
+  if (needsAlter.length === 0) return
+  const alters = needsAlter.map(
+    (c) => `ALTER COLUMN ${c} TYPE TEXT USING ${c}::TEXT`,
+  )
+  await client.query(`ALTER TABLE ${tableFqcn} ${alters.join(', ')}`)
+}
+
 // 初始化数据库表（public: sync_batches + sync_logs; cnipa: patent + 子表）
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect()
@@ -116,6 +139,14 @@ export async function initializeDatabase(): Promise<void> {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pa_patent_id ON cnipa.patent_applicant(patent_id)',
     )
+    await alterColumnsToTextIfNeeded(client, 'cnipa.patent_applicant', [
+      'name',
+      'address',
+      'province',
+      'city',
+      'county',
+      'postcode',
+    ])
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_inventor (
@@ -161,6 +192,8 @@ export async function initializeDatabase(): Promise<void> {
         pub_date    DATE
       )
     `)
+    // 发明授权引用文献可能包含 A1、B2 等多字符 kind；兼容旧库的 CHAR(1) 列。
+    await alterColumnsToTextIfNeeded(client, 'cnipa.patent_citation', ['kind'])
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pc_patent_id ON cnipa.patent_citation(patent_id)',
     )
@@ -190,6 +223,13 @@ export async function initializeDatabase(): Promise<void> {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pas_patent_id ON cnipa.patent_assignee(patent_id)',
     )
+    await alterColumnsToTextIfNeeded(client, 'cnipa.patent_assignee', [
+      'name',
+      'address',
+      'province',
+      'city',
+      'postcode',
+    ])
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_claim (

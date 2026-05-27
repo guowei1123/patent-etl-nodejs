@@ -1,6 +1,6 @@
 'use client'
 
-import { use, useState } from 'react'
+import { use, useEffect, useState } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
@@ -100,6 +100,19 @@ const logIcons = {
   info: Info,
   warn: AlertCircle,
   error: XCircle,
+}
+
+const activeStatuses: BatchStatus[] = ['downloading', 'processing', 'importing']
+const optimisticGraceMs = 5000
+
+const stepStatusMap: Record<string, BatchStatus> = {
+  download: 'downloading',
+  process: 'processing',
+  import: 'importing',
+}
+
+function isActiveStatus(status?: BatchStatus | null): boolean {
+  return !!status && activeStatuses.includes(status)
 }
 
 function getNextStep(status: BatchStatus): string | null {
@@ -243,6 +256,8 @@ export default function BatchDetailPage({
   const [optimisticActiveStep, setOptimisticActiveStep] = useState<
     string | null
   >(null)
+  const [optimisticSetAt, setOptimisticSetAt] = useState<number>(0)
+  const [trustOptimisticStatus, setTrustOptimisticStatus] = useState(false)
   const [verifyResult, setVerifyResult] = useState<{
     type: 'download' | 'extract'
     passed: boolean
@@ -276,10 +291,20 @@ export default function BatchDetailPage({
     refreshInterval: 0,
   })
 
+  useEffect(() => {
+    if (!optimisticActiveStep) return
+    const remainingMs = Math.max(
+      optimisticGraceMs - (Date.now() - optimisticSetAt),
+      0,
+    )
+    const timer = window.setTimeout(() => {
+      setTrustOptimisticStatus(false)
+    }, remainingMs)
+    return () => window.clearTimeout(timer)
+  }, [optimisticActiveStep, optimisticSetAt])
+
   const dbBatch = data?.data?.batch
-  const dbStatusActive =
-    dbBatch &&
-    ['downloading', 'processing', 'importing'].includes(dbBatch.status)
+  const dbStatusActive = isActiveStatus(dbBatch?.status)
   const shouldPollStatus = !!dbStatusActive || optimisticActiveStep !== null
 
   // 活跃任务实时轮询：下载阶段带文件进度，导入阶段带已导入计数。
@@ -298,23 +323,44 @@ export default function BatchDetailPage({
     {
       refreshInterval: 1000,
       onSuccess: (latestData) => {
-        const status = latestData.data.batch.status
-        if (!['downloading', 'processing', 'importing'].includes(status)) {
+        const { batch: latestBatch, is_running: isTaskStillRunning } =
+          latestData.data
+        // 宽限期：乐观状态刚设置 5 秒内，不信任 is_running=false，避免启动竞态
+        const inGrace =
+          optimisticActiveStep !== null &&
+          Date.now() - optimisticSetAt < optimisticGraceMs
+        if (
+          !isTaskStillRunning &&
+          !isActiveStatus(latestBatch.status) &&
+          !inGrace
+        ) {
           setOptimisticActiveStep(null)
+          setTrustOptimisticStatus(false)
           mutate()
         }
       },
     },
   )
 
-  const batch = statusData?.data?.batch ?? dbBatch
+  const reportedBatch = statusData?.data?.batch ?? dbBatch
+  const optimisticStatus =
+    optimisticActiveStep && stepStatusMap[optimisticActiveStep]
+  const shouldUseOptimisticStatus =
+    reportedBatch &&
+    optimisticStatus &&
+    !isActiveStatus(reportedBatch.status) &&
+    (statusData ? statusData.data.is_running || trustOptimisticStatus : true)
+  const batch = shouldUseOptimisticStatus
+    ? { ...reportedBatch, status: optimisticStatus }
+    : reportedBatch
   const logs = data?.data?.logs || []
   const localTemp = data?.data?.localTemp
   const localExtract = data?.data?.localExtract
   const isLoading = !data && !error
-  const statusActive =
-    batch && ['downloading', 'processing', 'importing'].includes(batch.status)
-  const actuallyRunning = statusData?.data?.is_running ?? !!statusActive
+  const statusActive = isActiveStatus(batch?.status)
+  const actuallyRunning = statusData
+    ? statusData.data.is_running || trustOptimisticStatus
+    : !!statusActive
   const isRunning = !!statusActive && actuallyRunning
   const isOrphaned = !!statusActive && !actuallyRunning
   const isDownloading = batch?.status === 'downloading'
@@ -373,12 +419,19 @@ export default function BatchDetailPage({
       if (result.success) {
         toast.success(result.message || '步骤已启动')
         setOptimisticActiveStep(step)
+        setOptimisticSetAt(Date.now())
+        setTrustOptimisticStatus(true)
         mutate()
       } else {
         setOptimisticActiveStep(null)
+        setOptimisticSetAt(0)
+        setTrustOptimisticStatus(false)
         toast.error(result.error || '启动失败')
       }
     } catch {
+      setOptimisticActiveStep(null)
+      setOptimisticSetAt(0)
+      setTrustOptimisticStatus(false)
       toast.error('请求失败')
     }
   }

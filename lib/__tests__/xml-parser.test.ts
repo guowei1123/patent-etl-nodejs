@@ -66,7 +66,7 @@ const inventionXml = `
             <DocumentID>
               <WIPOST3Code>TW</WIPOST3Code>
               <DocNumber>M391159</DocNumber>
-              <Kind>U</Kind>
+              <Kind>A1</Kind>
               <Date>20101021</Date>
             </DocumentID>
           </PublicationReference>
@@ -323,6 +323,7 @@ describe('xml-parser — 完整字段解析', () => {
       })
       expect(p.citations![1]!.country).toBe('TW')
       expect(p.citations![1]!.doc_number).toBe('M391159')
+      expect(p.citations![1]!.kind).toBe('A1')
     })
 
     it('提取受让人', () => {

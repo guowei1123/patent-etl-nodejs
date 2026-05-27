@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.5.6 - 2026-05-27
+
+### 修复
+
+- 批次详情页乐观状态增加 5 秒宽限期，防止启动竞态导致状态闪断；轮询根据 `is_running` 与宽限期联合判断是否清除乐观状态
+- `patent_citation.kind` 从 `CHAR(1)` 迁移为 `TEXT`，兼容发明授权引用文献的多字符 kind（A1、B2 等）
+- `patent_applicant` / `patent_assignee` 的字符串列自动检测并迁移为 `TEXT`，避免 `VARCHAR(n)` 截断
+- XML 解析测试用例修正引用文献 kind 为 `A1`，并增加 kind 字段断言
+
+### 变更
+
+- 移除未使用的 placeholder 图片资源
+
 ## 0.5.5 - 2026-05-27
 
 ### 变更
