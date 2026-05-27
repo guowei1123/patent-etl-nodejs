@@ -1,0 +1,14 @@
+node_modules
+.next
+.env
+.env.*
+!.env.example
+data
+.git
+.github
+.claude
+.codex
+coverage
+docs
+.vercel
+*.md
