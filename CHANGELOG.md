@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.6.1 - 2026-05-28
+
+### 新增
+
+- 批次编号自动生成：提取 `generateBatchCode` 到独立模块 `lib/batch-code.ts`，批次编号由数据类型 + FTP 文件夹路径自动推导，用户无需手动输入
+- FTP 目录浏览缓存：`/api/ftp/browse` 接口支持服务端缓存（默认 3 天），减少重复 FTP 请求；支持 `?refresh=true` 强制刷新
+- 批次创建去重：新增 `getBatchByFtpFolder` 查询，同一 FTP 文件夹不可重复创建批次；返回 409 状态码并附带已有批次信息
+- FTP 浏览器刷新按钮与缓存时间展示
+
+### 变更
+
+- `new-batch-dialog` 批次编号字段改为只读自动展示，移除手动输入和"自动生成"按钮
+- `lib/cache.ts` 新增 `getCacheEntry` / `bustCache` 方法，支持获取含过期时间的缓存条目和主动清除
+- `/api/batches` 和 `/api/sync/start` 的 POST 接口不再要求 `batch_code` 参数，改为后端自动生成
+
 ## 0.6.0 - 2026-05-27
 
 ### 新增

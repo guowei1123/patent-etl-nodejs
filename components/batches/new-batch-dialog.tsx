@@ -25,6 +25,7 @@ import {
 import { toast } from 'sonner'
 import { Plus, Loader2, FolderOpen } from 'lucide-react'
 import { FtpBrowser } from '@/components/ftp/folder-browser'
+import { generateBatchCode } from '@/lib/batch-code'
 
 interface NewBatchDialogProps {
   onSuccess?: () => void
@@ -59,25 +60,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
         : dataPaths.utility_model) || '/'
     : '/'
 
-  // 根据 FTP 文件夹路径生成批次编号
-  const generateBatchCode = (dataType: string, ftpFolder: string): string => {
-    const prefix =
-      dataType === 'invention' ? 'CN-PA-TXTS-10-B' : 'CN-PA-TXTS-20-U'
-    const folderName = ftpFolder.split('/').filter(Boolean).pop() || ''
-    const match = folderName.match(/^(\d{8})(rawdata)?$/i)
-    if (match) {
-      const date = match[1]
-      const suffix = match[2] ? '-Raw' : ''
-      return `${prefix}-${date}${suffix}`
-    }
-    return `${prefix}-${folderName}`
-  }
-
   const handleSubmit = async () => {
-    if (!formData.batch_code) {
-      toast.error('请输入批次编号')
-      return
-    }
     if (!formData.ftp_folder) {
       toast.error('请选择 FTP 文件夹')
       return
@@ -98,7 +81,10 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
       const response = await fetch('/api/sync/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify({
+          data_type: formData.data_type,
+          ftp_folder: formData.ftp_folder,
+        }),
       })
 
       const result = await response.json()
@@ -108,7 +94,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
         setOpen(false)
         setFormData({ batch_code: '', data_type: 'invention', ftp_folder: '' })
         onSuccess?.()
-        router.push(`/batches/${formData.batch_code}`)
+        router.push(`/batches/${result.data.batch_code}`)
       } else {
         toast.error(result.error || '启动失败')
       }
@@ -169,36 +155,17 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
             </div>
 
             <div className="grid gap-2">
-              <div className="flex items-center justify-between">
-                <Label htmlFor="batch_code">批次编号</Label>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="text-muted-foreground h-auto py-1 text-xs"
-                  onClick={() =>
-                    setFormData((prev) => ({
-                      ...prev,
-                      batch_code: generateBatchCode(
-                        prev.data_type,
-                        prev.ftp_folder,
-                      ),
-                    }))
-                  }
-                >
-                  自动生成
-                </Button>
-              </div>
+              <Label htmlFor="batch_code">批次编号</Label>
               <Input
                 id="batch_code"
-                placeholder="例如: CN-PA-TXTS-10-B-20231003"
-                value={formData.batch_code}
-                onChange={(e) =>
-                  setFormData((prev) => ({
-                    ...prev,
-                    batch_code: e.target.value,
-                  }))
+                readOnly
+                placeholder="选择 FTP 文件夹后自动生成"
+                value={
+                  formData.ftp_folder
+                    ? generateBatchCode(formData.data_type, formData.ftp_folder)
+                    : ''
                 }
+                className="bg-muted/50"
               />
             </div>
 
@@ -213,6 +180,10 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                     setFormData((prev) => ({
                       ...prev,
                       ftp_folder: e.target.value,
+                      batch_code: generateBatchCode(
+                        prev.data_type,
+                        e.target.value,
+                      ),
                     }))
                   }
                   className="flex-1"

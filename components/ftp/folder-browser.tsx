@@ -11,6 +11,7 @@ import {
   Loader2,
   AlertCircle,
   Check,
+  RefreshCw,
 } from 'lucide-react'
 import type { FtpEntry } from '@/types'
 import { cn } from '@/lib/utils'
@@ -26,20 +27,30 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [cacheInfo, setCacheInfo] = useState<{
+    cached: boolean
+    cachedAt: number
+  } | null>(null)
 
-  const loadDirectory = async (path: string) => {
+  const loadDirectory = async (path: string, refresh = false) => {
     setLoading(true)
     setError(null)
 
     try {
       const response = await fetch(
-        `/api/ftp/browse?path=${encodeURIComponent(path)}`,
+        `/api/ftp/browse?path=${encodeURIComponent(path)}${
+          refresh ? '&refresh=true' : ''
+        }`,
       )
       const result = await response.json()
 
       if (result.success) {
         setEntries(result.data.entries)
         setCurrentPath(path)
+        setCacheInfo({
+          cached: Boolean(result.data.cached),
+          cachedAt: result.data.cachedAt,
+        })
       } else {
         setError(result.error || '加载失败')
       }
@@ -66,6 +77,10 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
           setEntries(result.data.entries)
           setCurrentPath(initialPath)
           setSelectedPath(null)
+          setCacheInfo({
+            cached: Boolean(result.data.cached),
+            cachedAt: result.data.cachedAt,
+          })
         } else {
           setError(result.error || '加载失败')
         }
@@ -105,6 +120,16 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
     }
   }
 
+  const formatCacheTime = (timestamp?: number) => {
+    if (!timestamp) return ''
+    return new Date(timestamp).toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    })
+  }
+
   const formatSize = (bytes: number) => {
     if (bytes === 0) return '-'
     const units = ['B', 'KB', 'MB', 'GB']
@@ -133,7 +158,23 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
         <code className="text-muted-foreground flex-1 text-sm">
           {currentPath}
         </code>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-6 w-6"
+          onClick={() => loadDirectory(currentPath, true)}
+          disabled={loading}
+          title="刷新缓存"
+        >
+          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+        </Button>
       </div>
+      {cacheInfo?.cachedAt && (
+        <p className="text-muted-foreground text-xs">
+          {cacheInfo.cached ? '已使用缓存' : '已刷新远程数据'} ·{' '}
+          {formatCacheTime(cacheInfo.cachedAt)}
+        </p>
+      )}
 
       {/* Content */}
       <ScrollArea className="border-border h-[300px] rounded-lg border">

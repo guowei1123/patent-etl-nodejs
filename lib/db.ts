@@ -271,6 +271,16 @@ export async function getBatchByCode(code: string): Promise<SyncBatch | null> {
   return result.rows[0] || null
 }
 
+export async function getBatchByFtpFolder(
+  ftpFolder: string,
+): Promise<SyncBatch | null> {
+  const result = await pool.query<SyncBatch>(
+    'SELECT * FROM sync_batches WHERE ftp_folder = $1 ORDER BY created_at DESC LIMIT 1',
+    [ftpFolder],
+  )
+  return result.rows[0] || null
+}
+
 export async function getAllBatches(
   page = 1,
   limit = 20,

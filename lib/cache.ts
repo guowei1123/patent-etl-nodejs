@@ -1,13 +1,23 @@
 const store = new Map<string, { data: unknown; expireAt: number }>()
 
+export interface CacheEntry<T> {
+  data: T
+  expireAt: number
+}
+
 export function getCached<T>(key: string): T | null {
+  const entry = getCacheEntry<T>(key)
+  return entry?.data ?? null
+}
+
+export function getCacheEntry<T>(key: string): CacheEntry<T> | null {
   const entry = store.get(key)
   if (!entry) return null
   if (Date.now() > entry.expireAt) {
     store.delete(key)
     return null
   }
-  return entry.data as T
+  return entry as CacheEntry<T>
 }
 
 export function setCache(key: string, data: unknown, ttlMs: number) {
