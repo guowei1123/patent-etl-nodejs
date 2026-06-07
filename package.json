@@ -1,6 +1,6 @@
 {
   "name": "patent-etl-nodejs",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "scripts": {

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.6.4 - 2026-06-07
+
+### 修复
+
+- `cnipa.patent.kind` 迁移为 `TEXT` 时自动临时重建依赖视图，避免 `cnipa.v_patent_stats_by_type` 等视图阻止字段类型变更导致批次列表和统计接口返回 500
+
 ## 0.6.3 - 2026-06-07
 
 ### 修复

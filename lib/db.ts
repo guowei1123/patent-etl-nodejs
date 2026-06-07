@@ -46,6 +46,12 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 })
 
+type DependentView = {
+  schema_name: string
+  view_name: string
+  definition: string
+}
+
 // 测试数据库连接
 export async function testConnection(): Promise<{
   success: boolean
@@ -62,6 +68,42 @@ export async function testConnection(): Promise<{
       error: error instanceof Error ? error.message : 'Unknown error',
     }
   }
+}
+
+function quoteIdentifier(identifier: string): string {
+  return `"${identifier.replaceAll('"', '""')}"`
+}
+
+function getQualifiedName(schema: string, name: string): string {
+  return `${quoteIdentifier(schema)}.${quoteIdentifier(name)}`
+}
+
+async function getDependentViewsForColumns(
+  client: PoolClient,
+  schema: string,
+  table: string,
+  columns: string[],
+): Promise<DependentView[]> {
+  const { rows } = await client.query<DependentView>(
+    `SELECT DISTINCT view_ns.nspname AS schema_name,
+            view_cls.relname AS view_name,
+            pg_get_viewdef(view_cls.oid, true) AS definition
+       FROM pg_depend dep
+       JOIN pg_rewrite rewrite ON rewrite.oid = dep.objid
+       JOIN pg_class view_cls ON view_cls.oid = rewrite.ev_class
+       JOIN pg_namespace view_ns ON view_ns.oid = view_cls.relnamespace
+       JOIN pg_class table_cls ON table_cls.oid = dep.refobjid
+       JOIN pg_namespace table_ns ON table_ns.oid = table_cls.relnamespace
+       JOIN pg_attribute attr
+         ON attr.attrelid = table_cls.oid AND attr.attnum = dep.refobjsubid
+      WHERE table_ns.nspname = $1
+        AND table_cls.relname = $2
+        AND attr.attname = ANY($3)
+        AND view_cls.relkind = 'v'
+      ORDER BY view_ns.nspname, view_cls.relname`,
+    [schema, table, columns],
+  )
+  return rows
 }
 
 // 仅在列存在且类型不是 text 时才 ALTER，避免每次请求重复 DDL
@@ -85,7 +127,30 @@ async function alterColumnsToTextIfNeeded(
   const alters = needsAlter.map(
     (c) => `ALTER COLUMN ${c} TYPE TEXT USING ${c}::TEXT`,
   )
-  await client.query(`ALTER TABLE ${tableFqcn} ${alters.join(', ')}`)
+  const dependentViews = await getDependentViewsForColumns(
+    client,
+    schema,
+    table,
+    needsAlter,
+  )
+
+  const droppedViews: DependentView[] = []
+  try {
+    for (const view of dependentViews) {
+      await client.query(
+        `DROP VIEW ${getQualifiedName(view.schema_name, view.view_name)}`,
+      )
+      droppedViews.push(view)
+    }
+
+    await client.query(`ALTER TABLE ${tableFqcn} ${alters.join(', ')}`)
+  } finally {
+    for (const view of droppedViews) {
+      await client.query(
+        `CREATE VIEW ${getQualifiedName(view.schema_name, view.view_name)} AS ${view.definition}`,
+      )
+    }
+  }
 }
 
 // 初始化数据库表（public: sync_batches + sync_logs; cnipa: patent + 子表）

@@ -169,4 +169,58 @@ describe('initializeDatabase schema compatibility', () => {
       'ALTER TABLE cnipa.patent ALTER COLUMN kind TYPE TEXT USING kind::TEXT',
     )
   })
+
+  it('recreates dependent views around patent kind column migration', async () => {
+    const client = createClient((sql, params = []) => {
+      if (sql.includes('information_schema.columns')) {
+        const table = params[1]
+        const columns = params[2] as string[]
+        return {
+          rows: columns.map((column_name) => ({
+            column_name,
+            data_type:
+              table === 'patent' && column_name === 'kind'
+                ? 'character'
+                : 'text',
+          })),
+          rowCount: columns.length,
+        }
+      }
+
+      if (sql.includes('pg_get_viewdef')) {
+        return {
+          rows: [
+            {
+              schema_name: 'cnipa',
+              view_name: 'v_patent_stats_by_type',
+              definition:
+                'SELECT kind, count(*) AS total FROM cnipa.patent GROUP BY kind;',
+            },
+          ],
+          rowCount: 1,
+        }
+      }
+
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const { initializeDatabase } = await import('../db')
+    await initializeDatabase()
+
+    const queries = client.query.mock.calls.map(([sql]) => sql)
+    const dropIndex = queries.indexOf(
+      'DROP VIEW "cnipa"."v_patent_stats_by_type"',
+    )
+    const alterIndex = queries.indexOf(
+      'ALTER TABLE cnipa.patent ALTER COLUMN kind TYPE TEXT USING kind::TEXT',
+    )
+    const createIndex = queries.indexOf(
+      'CREATE VIEW "cnipa"."v_patent_stats_by_type" AS SELECT kind, count(*) AS total FROM cnipa.patent GROUP BY kind;',
+    )
+
+    expect(dropIndex).toBeGreaterThanOrEqual(0)
+    expect(alterIndex).toBeGreaterThan(dropIndex)
+    expect(createIndex).toBeGreaterThan(alterIndex)
+  })
 })
