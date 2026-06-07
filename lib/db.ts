@@ -15,6 +15,8 @@ import type {
   PatentAgentRow,
   PatentCitationRow,
   PatentClaimRow,
+  PatentImportFailure,
+  PatentImportResult,
 } from '@/types'
 
 function getConnectionString(): string {
@@ -478,6 +480,23 @@ function getPatentKind(p: ParsedPatent): string {
   return p.kind || (p.patent_type === 'invention' ? 'B' : 'U')
 }
 
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'Unknown error'
+}
+
+function getPatentImportFailure(
+  patent: ParsedPatent,
+  error: unknown,
+): PatentImportFailure {
+  return {
+    patent_number: patent.patent_number,
+    kind: getPatentKind(patent),
+    title: patent.title,
+    source_file: patent.source_file || null,
+    error: getErrorMessage(error),
+  }
+}
+
 function getPatentDescriptionJson(p: ParsedPatent): string | null {
   const descJson: Record<string, string> = {}
   if (p.description_structured) {
@@ -496,8 +515,8 @@ function getPatentDescriptionJson(p: ParsedPatent): string | null {
 export async function insertPatents(
   batchCode: string,
   patents: ParsedPatent[],
-): Promise<number> {
-  if (patents.length === 0) return 0
+): Promise<PatentImportResult> {
+  if (patents.length === 0) return { insertedCount: 0, failures: [] }
 
   const client = await pool.connect()
 
@@ -555,7 +574,7 @@ export async function insertPatents(
 
     if (!mainInsert) {
       await client.query('COMMIT')
-      return 0
+      return { insertedCount: 0, failures: [] }
     }
 
     const mainResult = await client.query<{
@@ -729,21 +748,23 @@ export async function insertPatents(
     )
 
     await client.query('COMMIT')
-    return mainResult.rowCount || 0
+    return { insertedCount: mainResult.rowCount || 0, failures: [] }
   } catch (error) {
     await client.query('ROLLBACK')
     if (patents.length === 1) {
-      console.error(
-        `Failed to insert patent ${patents[0].patent_number}:`,
-        error,
-      )
-      return 0
+      return {
+        insertedCount: 0,
+        failures: [getPatentImportFailure(patents[0], error)],
+      }
     }
 
     const mid = Math.floor(patents.length / 2)
     const left = await insertPatents(batchCode, patents.slice(0, mid))
     const right = await insertPatents(batchCode, patents.slice(mid))
-    return left + right
+    return {
+      insertedCount: left.insertedCount + right.insertedCount,
+      failures: [...left.failures, ...right.failures],
+    }
   } finally {
     client.release()
   }

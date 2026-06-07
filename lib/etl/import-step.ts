@@ -10,7 +10,11 @@ import {
   updateBatchProgress,
   updateBatchStatus,
 } from '../db'
-import type { ParsedPatent } from '@/types'
+import type {
+  ParsedPatent,
+  PatentImportFailure,
+  PatentImportResult,
+} from '@/types'
 import type { StepResult } from './types'
 import { runningTasks } from './task-state'
 
@@ -38,6 +42,15 @@ export function dedupePatentsForImport(
   }
 
   return Array.from(uniquePatents.values())
+}
+
+function formatImportFailureMessage(
+  importedCount: number,
+  totalPatents: number,
+  failures: PatentImportFailure[],
+): string {
+  const base = `导入未完成: 已导入 ${importedCount} / ${totalPatents} 条记录`
+  return failures.length > 0 ? `${base}，失败 ${failures.length} 条` : base
 }
 
 // 步骤 3：导入数据库
@@ -143,8 +156,11 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
           `${errors.length}/${activeChunks.length} 个导入块失败`,
         )
       }
+      const failures: PatentImportFailure[] = []
       for (const r of results) {
-        importedCount += (r as PromiseFulfilledResult<number>).value
+        const result = r as PromiseFulfilledResult<PatentImportResult>
+        importedCount += result.value.insertedCount
+        failures.push(...result.value.failures)
       }
 
       await updateBatchProgress(
@@ -154,6 +170,38 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
         undefined,
         importedCount,
       )
+
+      if (failures.length > 0) {
+        const latestImportedCount = await countImportedPatentsByBatch(batchCode)
+        const errorMessage = formatImportFailureMessage(
+          latestImportedCount,
+          totalPatents,
+          failures,
+        )
+        await updateBatchProgress(
+          batchCode,
+          undefined,
+          undefined,
+          totalPatents,
+          latestImportedCount,
+        )
+        await updateBatchStatus(batchCode, 'failed', errorMessage)
+        await addLog(batchCode, 'error', errorMessage, {
+          failures,
+          importedPatents: latestImportedCount,
+          totalPatents,
+        })
+        return {
+          success: false,
+          batchCode,
+          error: errorMessage,
+          details: {
+            importedPatents: latestImportedCount,
+            totalPatents,
+            failures,
+          },
+        }
+      }
     }
 
     importedCount = await countImportedPatentsByBatch(batchCode)
@@ -172,7 +220,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
 
     if (importedCount < totalPatents) {
       throw new Error(
-        `导入未完成: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+        formatImportFailureMessage(importedCount, totalPatents, []),
       )
     }
 

@@ -103,6 +103,19 @@ export interface PatentClaimRow {
   claim_text: string
 }
 
+export interface PatentImportFailure {
+  patent_number: string
+  kind: string
+  title: string
+  source_file: string | null
+  error: string
+}
+
+export interface PatentImportResult {
+  insertedCount: number
+  failures: PatentImportFailure[]
+}
+
 // 同步日志
 export interface SyncLog {
   id: number

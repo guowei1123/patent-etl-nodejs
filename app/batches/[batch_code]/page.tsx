@@ -45,6 +45,7 @@ import type {
   BatchStatus,
   FileDownloadProgress,
   FileDownloadItem,
+  PatentImportFailure,
 } from '@/types'
 import { cn } from '@/lib/utils'
 import {
@@ -122,6 +123,62 @@ function getNextStep(status: BatchStatus): string | null {
     processed: 'import',
   }
   return map[status] || null
+}
+
+function isPatentImportFailure(value: unknown): value is PatentImportFailure {
+  if (!value || typeof value !== 'object') return false
+  const failure = value as Record<string, unknown>
+  return (
+    typeof failure.patent_number === 'string' &&
+    typeof failure.kind === 'string' &&
+    typeof failure.title === 'string' &&
+    typeof failure.error === 'string'
+  )
+}
+
+function getImportFailures(log: SyncLog): PatentImportFailure[] {
+  const failures = log.details?.failures
+  if (!Array.isArray(failures)) return []
+  return failures.filter(isPatentImportFailure)
+}
+
+function ImportFailureList({
+  failures,
+}: {
+  failures: PatentImportFailure[]
+}) {
+  if (failures.length === 0) return null
+
+  return (
+    <div className="mt-3 space-y-2">
+      {failures.map((failure, index) => (
+        <div
+          key={`${failure.patent_number}-${failure.kind}-${index}`}
+          className="border-destructive/20 bg-background/60 rounded-md border p-3"
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="text-foreground text-sm font-medium">
+              {failure.patent_number}
+            </span>
+            <Badge variant="outline" className="h-5 px-1.5 text-[11px]">
+              {failure.kind}
+            </Badge>
+            {failure.source_file && (
+              <span className="text-muted-foreground min-w-0 text-xs break-all">
+                {failure.source_file}
+              </span>
+            )}
+          </div>
+          <p className="text-foreground mt-1 text-xs break-words">
+            {failure.title}
+          </p>
+          <p className="text-destructive mt-2 text-xs whitespace-pre-wrap break-words">
+            {failure.error}
+          </p>
+        </div>
+      ))}
+    </div>
+  )
 }
 
 function DownloadFileList({
@@ -354,6 +411,8 @@ export default function BatchDetailPage({
     ? { ...reportedBatch, status: optimisticStatus }
     : reportedBatch
   const logs = data?.data?.logs || []
+  const latestImportFailures =
+    logs.map(getImportFailures).find((failures) => failures.length > 0) || []
   const localTemp = data?.data?.localTemp
   const localExtract = data?.data?.localExtract
   const isLoading = !data && !error
@@ -675,6 +734,7 @@ export default function BatchDetailPage({
                 <p className="text-destructive text-sm whitespace-pre-wrap">
                   {batch.error_message}
                 </p>
+                <ImportFailureList failures={latestImportFailures} />
               </div>
             )}
 
@@ -924,6 +984,7 @@ export default function BatchDetailPage({
                           <p className="text-muted-foreground mt-1 text-xs">
                             {new Date(log.created_at).toLocaleString('zh-CN')}
                           </p>
+                          <ImportFailureList failures={getImportFailures(log)} />
                         </div>
                       </div>
                     )
