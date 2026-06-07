@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.6.5 - 2026-06-07
+
+### 修复
+
+- `chk_patent_kind` 自动从旧的固定枚举约束放宽为 1 到 4 位字母数字 kind，兼容 `B8`、`B9` 等 CNIPA 多字符授权公告 kind
+
 ## 0.6.4 - 2026-06-07
 
 ### 修复

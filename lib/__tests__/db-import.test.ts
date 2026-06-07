@@ -223,4 +223,39 @@ describe('initializeDatabase schema compatibility', () => {
     expect(alterIndex).toBeGreaterThan(dropIndex)
     expect(createIndex).toBeGreaterThan(alterIndex)
   })
+
+  it('relaxes the legacy patent kind check constraint for multi-character kind codes', async () => {
+    const client = createClient((sql) => {
+      if (sql.includes('information_schema.columns')) {
+        return { rows: [{ column_name: 'kind', data_type: 'text' }], rowCount: 1 }
+      }
+
+      if (sql.includes('pg_get_constraintdef')) {
+        return {
+          rows: [
+            {
+              definition:
+                "CHECK (kind = ANY (ARRAY['B'::bpchar::text, 'U'::bpchar::text]))",
+            },
+          ],
+          rowCount: 1,
+        }
+      }
+
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const { initializeDatabase } = await import('../db')
+    await initializeDatabase()
+
+    expect(client.query).toHaveBeenCalledWith(
+      'ALTER TABLE cnipa.patent DROP CONSTRAINT chk_patent_kind',
+    )
+    expect(client.query).toHaveBeenCalledWith(
+      `ALTER TABLE cnipa.patent
+       ADD CONSTRAINT chk_patent_kind
+       CHECK (kind ~ '^[A-Za-z0-9]{1,4}$')`,
+    )
+  })
 })

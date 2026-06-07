@@ -153,6 +153,29 @@ async function alterColumnsToTextIfNeeded(
   }
 }
 
+async function relaxPatentKindConstraintIfNeeded(
+  client: PoolClient,
+): Promise<void> {
+  const { rows } = await client.query<{ definition: string }>(
+    `SELECT pg_get_constraintdef(oid, true) AS definition
+       FROM pg_constraint
+      WHERE conrelid = to_regclass('cnipa.patent')
+        AND conname = 'chk_patent_kind'
+        AND contype = 'c'`,
+  )
+  if (rows.length === 0) return
+
+  const definition = rows[0]?.definition ?? ''
+  if (definition.includes('kind ~')) return
+
+  await client.query('ALTER TABLE cnipa.patent DROP CONSTRAINT chk_patent_kind')
+  await client.query(
+    `ALTER TABLE cnipa.patent
+       ADD CONSTRAINT chk_patent_kind
+       CHECK (kind ~ '^[A-Za-z0-9]{1,4}$')`,
+  )
+}
+
 // 初始化数据库表（public: sync_batches + sync_logs; cnipa: patent + 子表）
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect()
@@ -194,6 +217,7 @@ export async function initializeDatabase(): Promise<void> {
     // 主表已由外部系统创建，这里兼容旧库的 CHAR(1) kind 列。
     // CNIPA 授权公告可能出现 B8、B9 等多字符 kind，不能截断为 B。
     await alterColumnsToTextIfNeeded(client, 'cnipa.patent', ['kind'])
+    await relaxPatentKindConstraintIfNeeded(client)
 
     // 主表已由外部系统创建，这里仅确保子表存在
     await client.query(`
