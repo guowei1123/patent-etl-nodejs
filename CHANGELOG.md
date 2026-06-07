@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.6.3 - 2026-06-07
+
+### 修复
+
+- `cnipa.patent.kind` 自动从 `CHAR(1)` 迁移为 `TEXT`，兼容 `B8`、`B9` 等多字符授权公告 kind，避免导入时报 `value too long for type character(1)`
+- 数据库兼容迁移逻辑仅对存在且非 `TEXT` 的列执行 `ALTER`，避免误处理不存在列
+
 ## 0.6.2 - 2026-06-07
 
 ### 新增

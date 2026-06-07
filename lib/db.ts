@@ -64,7 +64,7 @@ export async function testConnection(): Promise<{
   }
 }
 
-// 仅在列类型不是 text 时才 ALTER，避免每次请求重复 DDL
+// 仅在列存在且类型不是 text 时才 ALTER，避免每次请求重复 DDL
 async function alterColumnsToTextIfNeeded(
   client: PoolClient,
   tableFqcn: string,
@@ -72,14 +72,15 @@ async function alterColumnsToTextIfNeeded(
 ): Promise<void> {
   const [schema, table] = tableFqcn.split('.')
   const { rows } = await client.query(
-    `SELECT column_name FROM information_schema.columns
-     WHERE table_schema = $1 AND table_name = $2 AND column_name = ANY($3) AND data_type = 'text'`,
+    `SELECT column_name, data_type FROM information_schema.columns
+     WHERE table_schema = $1 AND table_name = $2 AND column_name = ANY($3)`,
     [schema, table, columns],
   )
-  const alreadyText = new Set(
-    rows.map((r: { column_name: string }) => r.column_name),
-  )
-  const needsAlter = columns.filter((c) => !alreadyText.has(c))
+  const needsAlter = rows
+    .filter(
+      (r: { column_name: string; data_type: string }) => r.data_type !== 'text',
+    )
+    .map((r: { column_name: string }) => r.column_name)
   if (needsAlter.length === 0) return
   const alters = needsAlter.map(
     (c) => `ALTER COLUMN ${c} TYPE TEXT USING ${c}::TEXT`,
@@ -125,6 +126,10 @@ export async function initializeDatabase(): Promise<void> {
     )
 
     // === cnipa schema: patent 主表 + 子表 ===
+    // 主表已由外部系统创建，这里兼容旧库的 CHAR(1) kind 列。
+    // CNIPA 授权公告可能出现 B8、B9 等多字符 kind，不能截断为 B。
+    await alterColumnsToTextIfNeeded(client, 'cnipa.patent', ['kind'])
+
     // 主表已由外部系统创建，这里仅确保子表存在
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_applicant (

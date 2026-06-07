@@ -133,3 +133,40 @@ describe('insertPatents import result', () => {
     ])
   })
 })
+
+describe('initializeDatabase schema compatibility', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    pgMock.connect.mockReset()
+    pgMock.query.mockReset()
+  })
+
+  it('migrates the main patent kind column for multi-character CNIPA kind codes', async () => {
+    const client = createClient((sql, params = []) => {
+      if (!sql.includes('information_schema.columns')) {
+        return { rows: [], rowCount: 0 }
+      }
+
+      const table = params[1]
+      const columns = params[2] as string[]
+      return {
+        rows: columns.map((column_name) => ({
+          column_name,
+          data_type:
+            table === 'patent' && column_name === 'kind'
+              ? 'character'
+              : 'text',
+        })),
+        rowCount: columns.length,
+      }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const { initializeDatabase } = await import('../db')
+    await initializeDatabase()
+
+    expect(client.query).toHaveBeenCalledWith(
+      'ALTER TABLE cnipa.patent ALTER COLUMN kind TYPE TEXT USING kind::TEXT',
+    )
+  })
+})
