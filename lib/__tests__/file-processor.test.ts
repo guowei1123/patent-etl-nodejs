@@ -1,7 +1,7 @@
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   groupArchiveFiles,
   mergeSplitZip,
@@ -107,6 +107,46 @@ describe('groupArchiveFiles', () => {
   })
 })
 
+describe('temp directory cleanup', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+
+  it('removes only the requested batch directory', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-clean-test-'))
+    vi.stubEnv('TEMP_DIR', tempRoot)
+    vi.resetModules()
+    const { cleanTempDir } = await import('../file-processor')
+
+    fs.mkdirSync(path.join(tempRoot, 'batch-a'), { recursive: true })
+    fs.mkdirSync(path.join(tempRoot, 'batch-b'), { recursive: true })
+    fs.writeFileSync(path.join(tempRoot, 'batch-a', 'data.zip'), 'a')
+    fs.writeFileSync(path.join(tempRoot, 'batch-b', 'data.zip'), 'b')
+
+    cleanTempDir('batch-a')
+
+    expect(fs.existsSync(path.join(tempRoot, 'batch-a'))).toBe(false)
+    expect(fs.existsSync(path.join(tempRoot, 'batch-b', 'data.zip'))).toBe(true)
+
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  it('rejects cleanup paths outside the temp directory', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-clean-test-'))
+    vi.stubEnv('TEMP_DIR', tempRoot)
+    vi.resetModules()
+    const { cleanTempDir } = await import('../file-processor')
+
+    expect(() => cleanTempDir('../outside')).toThrow('超出允许范围')
+    expect(() => cleanTempDir(path.join(tempRoot, 'batch-a'))).toThrow(
+      '不能是绝对路径',
+    )
+
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+})
+
 describe('mergeSplitZip', () => {
   it('concatenates parts in correct order', async () => {
     // Write distinct content per part so order is verifiable
@@ -206,6 +246,45 @@ describe('withPreparedArchiveFiles', () => {
         throw new Error('boom')
       }),
     ).rejects.toThrow('boom')
+
+    expect(fs.existsSync(mergedPath)).toBe(false)
+  })
+
+  it('cleans partial merged temp files when merging fails', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'data.z01'), Buffer.from('AAAA'))
+    fs.writeFileSync(path.join(tmpDir, 'data.zip'), makeEocd(5))
+
+    const mergedPath = path.join(tmpDir, 'data.merged.zip')
+
+    await expect(
+      withPreparedArchiveFiles(
+        tmpDir,
+        async () => {
+          throw new Error('handler should not run')
+        },
+        {
+          mergeArchive: async (_group, outputPath) => {
+            fs.writeFileSync(outputPath, Buffer.from('PARTIAL'))
+            throw new Error('merge failed')
+          },
+        },
+      ),
+    ).rejects.toThrow('merge failed')
+
+    expect(fs.existsSync(mergedPath)).toBe(false)
+  })
+
+  it('cleans merged temp files when merged ZIP patching fails', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'data.z01'), Buffer.from('AAAA'))
+    fs.writeFileSync(path.join(tmpDir, 'data.zip'), Buffer.from('not-a-zip'))
+
+    const mergedPath = path.join(tmpDir, 'data.merged.zip')
+
+    await expect(
+      withPreparedArchiveFiles(tmpDir, async () => {
+        throw new Error('handler should not run')
+      }),
+    ).rejects.toThrow('EOCD signature not found')
 
     expect(fs.existsSync(mergedPath)).toBe(false)
   })

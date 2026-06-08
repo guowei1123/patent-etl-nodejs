@@ -119,7 +119,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     // === 阶段 2：CRC 校验（验证内层 ZIP 完整性） ===
 
-    await runCrcCheck(batchCode, extractDir)
+    await runExtractedFilesVerification(batchCode, extractDir)
 
     if (innerZips.length === 0) {
       throw new Error('未找到内层 ZIP 文件')
@@ -190,8 +190,8 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
   }
 }
 
-// 完整性检测辅助函数
-async function runCrcCheck(
+// 解压完成后自动校验内层 ZIP 的 CRC 和结构完整性。
+export async function runExtractedFilesVerification(
   batchCode: string,
   extractDir: string,
 ): Promise<void> {
@@ -200,8 +200,8 @@ async function runCrcCheck(
     batchCode,
     extractCheck.passed ? 'info' : 'error',
     extractCheck.passed
-      ? `CRC 完整性检测通过: ${extractCheck.checkedFiles} 个文件`
-      : `CRC 完整性检测失败: ${extractCheck.failures.length} 个问题`,
+      ? `[自动校验] 解压文件 CRC 通过: ${extractCheck.checkedFiles} 个文件`
+      : `[自动校验] 解压文件 CRC 失败: ${extractCheck.failures.length} 个问题`,
     extractCheck.passed ? undefined : { failures: extractCheck.failures },
   )
   if (!extractCheck.passed) {

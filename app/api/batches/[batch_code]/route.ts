@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getBatchByCode, deleteBatch, getLogsByBatch } from '@/lib/db'
-import { getTempDirState } from '@/lib/file-processor'
+import { cleanTempDir, getTempDirState } from '@/lib/file-processor'
 
 // GET /api/batches/[batch_code] - 获取批次详情
 export async function GET(
@@ -82,11 +82,17 @@ export async function DELETE(
       )
     }
 
+    const localTempBeforeDelete = getTempDirState(batch_code)
     await deleteBatch(batch_code)
+    cleanTempDir(batch_code)
 
     return NextResponse.json({
       success: true,
       message: '批次已删除',
+      data: {
+        localTempBeforeDelete,
+        localTemp: getTempDirState(batch_code),
+      },
     })
   } catch (error) {
     console.error('删除批次失败:', error)

@@ -8,7 +8,10 @@ import yauzl from 'yauzl'
 const gunzip = promisify(zlib.gunzip)
 
 // 临时文件目录
-const TEMP_DIR = process.env.TEMP_DIR || path.join(process.cwd(), 'data')
+function getTempRoot(): string {
+  if (process.env.TEMP_DIR) return path.resolve(process.env.TEMP_DIR)
+  return path.join(process.cwd(), 'data')
+}
 
 // 分卷 ZIP 归档组
 export interface SplitArchiveGroup {
@@ -20,26 +23,39 @@ export interface SplitArchiveGroup {
 }
 
 export function ensureTempDir(): string {
-  if (!fs.existsSync(TEMP_DIR)) {
-    fs.mkdirSync(TEMP_DIR, { recursive: true })
+  const tempDir = getTempRoot()
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true })
   }
-  return TEMP_DIR
+  return tempDir
 }
 
 export function getTempPath(subdir?: string): string {
-  const base = ensureTempDir()
-  if (subdir) {
-    const fullPath = path.join(base, subdir)
-    if (!fs.existsSync(fullPath)) {
-      fs.mkdirSync(fullPath, { recursive: true })
-    }
-    return fullPath
+  const fullPath = resolveTempPath(subdir)
+  if (!fs.existsSync(fullPath)) {
+    fs.mkdirSync(fullPath, { recursive: true })
   }
-  return base
+  return fullPath
+}
+
+export function resolveTempPath(subdir?: string): string {
+  const base = path.resolve(ensureTempDir())
+  if (!subdir) return base
+  if (path.isAbsolute(subdir)) {
+    throw new Error('临时目录子路径不能是绝对路径')
+  }
+
+  const targetPath = path.resolve(base, subdir)
+  const relative = path.relative(base, targetPath)
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('临时目录子路径超出允许范围')
+  }
+
+  return targetPath
 }
 
 export function cleanTempDir(subdir?: string): void {
-  const targetPath = subdir ? path.join(TEMP_DIR, subdir) : TEMP_DIR
+  const targetPath = resolveTempPath(subdir)
   if (fs.existsSync(targetPath)) {
     fs.rmSync(targetPath, { recursive: true, force: true })
   }
@@ -50,7 +66,7 @@ export function getTempDirState(subdir: string): {
   exists: boolean
   hasFiles: boolean
 } {
-  const targetPath = path.join(TEMP_DIR, subdir)
+  const targetPath = resolveTempPath(subdir)
   if (!fs.existsSync(targetPath)) {
     return { path: targetPath, exists: false, hasFiles: false }
   }
@@ -777,6 +793,7 @@ export async function withPreparedArchiveFiles<T>(
     for (const group of groups) {
       if (group.isSplit) {
         const mergedPath = path.join(dirPath, `${group.baseName}.merged.zip`)
+        mergedFiles.push(mergedPath)
         await beforeMerge?.(group, mergedPath)
         await mergeArchive(group, mergedPath)
         // Calculate individual and cumulative sizes of preceding split parts
@@ -784,7 +801,6 @@ export async function withPreparedArchiveFiles<T>(
         const zipDiskOffset = splitPartSizes.reduce((sum, s) => sum + s, 0)
         await patchMergedZipEOCD(mergedPath, zipDiskOffset, splitPartSizes)
         filesToExtract.push(mergedPath)
-        mergedFiles.push(mergedPath)
       } else if (group.mainZip.toLowerCase().endsWith('.zip')) {
         filesToExtract.push(group.mainZip)
       } else if (group.mainZip.toLowerCase().endsWith('.gz')) {
