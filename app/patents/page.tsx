@@ -27,12 +27,14 @@ const fetcher = async (url: string) => {
 export default function PatentsPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
+  const [expression, setExpression] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'B' | 'U'>('all')
 
   const params = new URLSearchParams()
   params.set('page', String(page))
   params.set('limit', '20')
   if (search) params.set('search', search)
+  if (expression) params.set('expression', expression)
   if (typeFilter !== 'all') params.set('kind', typeFilter)
 
   const { data, error, mutate, isLoading, isValidating } = useSWR<{
@@ -41,6 +43,8 @@ export default function PatentsPage() {
   }>(`/api/patents?${params.toString()}`, fetcher, {
     keepPreviousData: true,
   })
+  const expressionErrorMessage =
+    error?.status === 400 ? error.message : undefined
 
   const patents = data?.data || {
     items: [],
@@ -52,6 +56,13 @@ export default function PatentsPage() {
 
   const handleSearch = (newSearch: string) => {
     setSearch(newSearch)
+    setExpression('')
+    setPage(1)
+  }
+
+  const handleExpressionSearch = (newExpression: string) => {
+    setSearch('')
+    setExpression(newExpression)
     setPage(1)
   }
 
@@ -73,12 +84,15 @@ export default function PatentsPage() {
           data={patents}
           onPageChange={setPage}
           onSearch={handleSearch}
+          onExpressionSearch={handleExpressionSearch}
           onTypeFilter={handleTypeFilter}
           search={search}
+          expression={expression}
           typeFilter={typeFilter}
           isLoading={isLoading || isValidating}
           hasError={Boolean(error)}
           errorMessage={error?.message}
+          expressionErrorMessage={expressionErrorMessage}
         />
       </div>
     </AppShell>

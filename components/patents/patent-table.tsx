@@ -13,6 +13,8 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
@@ -37,12 +39,15 @@ interface PatentTableProps {
   data: PaginatedResponse<PatentListItem>
   onPageChange: (page: number) => void
   onSearch: (search: string) => void
+  onExpressionSearch: (expression: string) => void
   onTypeFilter: (type: 'all' | 'B' | 'U') => void
   search: string
+  expression: string
   typeFilter: 'all' | 'B' | 'U'
   isLoading?: boolean
   hasError?: boolean
   errorMessage?: string
+  expressionErrorMessage?: string
 }
 
 const SKELETON_ROW_COUNT = 8
@@ -56,27 +61,43 @@ export function PatentTable({
   data,
   onPageChange,
   onSearch,
+  onExpressionSearch,
   onTypeFilter,
   search,
+  expression,
   typeFilter,
   isLoading = false,
   hasError = false,
   errorMessage,
+  expressionErrorMessage,
 }: PatentTableProps) {
   const [searchInput, setSearchInput] = useState(search)
+  const [expressionInput, setExpressionInput] = useState(expression)
 
   const handleSearch: FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault()
+    setExpressionInput('')
+    onExpressionSearch('')
     onSearch(searchInput.trim())
+  }
+
+  const handleExpressionSearch: FormEventHandler<HTMLFormElement> = (e) => {
+    e.preventDefault()
+    setSearchInput('')
+    onSearch('')
+    onExpressionSearch(expressionInput.trim())
   }
 
   const handleReset = () => {
     setSearchInput('')
+    setExpressionInput('')
     onSearch('')
+    onExpressionSearch('')
     onTypeFilter('all')
   }
 
-  const hasActiveFilters = search.length > 0 || typeFilter !== 'all'
+  const hasActiveFilters =
+    search.length > 0 || expression.length > 0 || typeFilter !== 'all'
   const hasData = data.total > 0
   const rangeStart = hasData ? (data.page - 1) * data.limit + 1 : 0
   const rangeEnd = hasData ? rangeStart + data.items.length - 1 : 0
@@ -84,13 +105,14 @@ export function PatentTable({
   const isLastPage = data.page >= data.total_pages
   const showSkeletonRows = isLoading
   const showEmptyState = !showSkeletonRows && data.items.length === 0
-  const paginationDisabled = isLoading || hasError
+  const hasDataError = hasError && !expressionErrorMessage
+  const paginationDisabled = isLoading || hasDataError
 
   return (
     <div className="space-y-4">
       {/* Toolbar */}
       <div className="bg-card border-border space-y-4 rounded-lg border p-4">
-        {hasError && !isLoading ? (
+        {hasDataError && !isLoading ? (
           <div className="border-destructive/30 bg-destructive/5 rounded-md border px-3 py-2 text-sm">
             <p className="text-foreground">
               数据更新失败，当前显示的是上一次成功加载的结果。
@@ -162,6 +184,45 @@ export function PatentTable({
           </div>
         </div>
 
+        <form onSubmit={handleExpressionSearch} className="flex flex-col gap-2">
+          <div className="space-y-2">
+            <Label htmlFor="patent-expression">专利检索式</Label>
+            <Textarea
+              id="patent-expression"
+              aria-describedby="patent-expression-help patent-expression-error"
+              aria-invalid={Boolean(expressionErrorMessage)}
+              placeholder='TI:"新能源" AND PA:比亚迪 NOT IPC:H01M'
+              value={expressionInput}
+              onChange={(e) => setExpressionInput(e.target.value)}
+              className={cn(
+                'min-h-20 resize-y',
+                expressionErrorMessage
+                  ? 'border-destructive focus-visible:ring-destructive/20'
+                  : '',
+              )}
+              disabled={isLoading}
+            />
+            <p
+              id="patent-expression-help"
+              className="text-muted-foreground text-xs"
+            >
+              字段: TI 标题, PA 申请人, PN 公开号, AN 申请号, IPC 分类号, AB 摘要,
+              CL 权利要求, 公开日; 支持 AND/OR/NOT、括号和引号短语。
+            </p>
+            {expressionErrorMessage ? (
+              <p id="patent-expression-error" className="text-destructive text-xs">
+                {expressionErrorMessage}
+              </p>
+            ) : null}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="submit" variant="outline" disabled={isLoading}>
+              <Search className="mr-2 h-4 w-4" />
+              检索式查询
+            </Button>
+          </div>
+        </form>
+
         <div className="border-border flex flex-col gap-3 border-t pt-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-1">
             {isLoading ? (
@@ -192,6 +253,11 @@ export function PatentTable({
             ) : search ? (
               <Badge variant="secondary" className="px-2 py-1">
                 关键词: {search}
+              </Badge>
+            ) : null}
+            {expression ? (
+              <Badge variant="secondary" className="max-w-full px-2 py-1">
+                <span className="truncate">检索式: {expression}</span>
               </Badge>
             ) : null}
             {typeFilter !== 'all' ? (
@@ -267,7 +333,7 @@ export function PatentTable({
               <TableRow>
                 <TableCell colSpan={6} className="h-32 text-center">
                   <p className="text-muted-foreground">
-                    {hasError
+                    {hasDataError
                       ? errorMessage || '数据加载失败，请稍后重试'
                       : '暂无数据'}
                   </p>

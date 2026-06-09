@@ -297,6 +297,7 @@ export interface PatentFilter {
   kind?: string
   app_type?: string
   search?: string
+  expression?: string
   pub_date_from?: string
   pub_date_to?: string
   batch_id?: string

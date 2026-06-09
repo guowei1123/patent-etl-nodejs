@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getPatentList, initializeDatabase } from '@/lib/db'
+import { PatentSearchExpressionError } from '@/lib/patent-search-expression'
 
 // GET /api/patents - 查询专利数据
 export async function GET(request: NextRequest) {
@@ -9,6 +10,7 @@ export async function GET(request: NextRequest) {
     const page = parseInt(searchParams.get('page') || '1')
     const limit = Math.min(parseInt(searchParams.get('limit') || '50'), 100)
     const search = searchParams.get('search') || undefined
+    const expression = searchParams.get('expression') || undefined
     const kind = searchParams.get('kind') || undefined
     const appType = searchParams.get('app_type') || undefined
     const batchId = searchParams.get('batch_id') || undefined
@@ -22,6 +24,7 @@ export async function GET(request: NextRequest) {
     const result = await getPatentList(
       {
         search,
+        expression,
         kind,
         app_type: appType,
         batch_id: batchId,
@@ -38,6 +41,16 @@ export async function GET(request: NextRequest) {
       data: result,
     })
   } catch (error) {
+    if (error instanceof PatentSearchExpressionError) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: error.message,
+        },
+        { status: 400 },
+      )
+    }
+
     console.error('查询专利失败:', error)
     return NextResponse.json(
       {

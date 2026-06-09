@@ -18,6 +18,7 @@ import type {
   PatentImportFailure,
   PatentImportResult,
 } from '@/types'
+import { buildPatentSearchExpressionCondition } from './patent-search-expression'
 
 function getConnectionString(): string {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL
@@ -948,6 +949,15 @@ export async function getPatentList(
       `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}))`,
     )
     paramIdx++
+  }
+  const expressionCondition = buildPatentSearchExpressionCondition(
+    filter.expression,
+    paramIdx,
+  )
+  if (expressionCondition) {
+    conditions.push(expressionCondition.sql)
+    params.push(...expressionCondition.params)
+    paramIdx = expressionCondition.nextParamIndex
   }
   if (filter.province) {
     params.push(filter.province)
