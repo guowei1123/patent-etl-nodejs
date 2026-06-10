@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { initializeDatabase, getBatchByCode, addLog } from '@/lib/db'
 import { isTaskRunning } from '@/lib/etl-pipeline'
-import { getTempPath } from '@/lib/file-processor'
+import { getTempPath } from '@/lib/temp-dir'
 import {
   verifyDownloadedArchive,
   verifyExtractedFilesCrc,

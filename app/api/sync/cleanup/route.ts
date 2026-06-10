@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { initializeDatabase, getBatchByCode, addLog } from '@/lib/db'
 import { isTaskRunning } from '@/lib/etl-pipeline'
-import { cleanTempDir, getTempDirState } from '@/lib/file-processor'
+import { cleanTempDir, getTempDirState } from '@/lib/temp-dir'
 
 // POST /api/sync/cleanup - 手动清理已完成批次的本地临时文件
 export async function POST(request: NextRequest) {

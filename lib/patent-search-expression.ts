@@ -46,6 +46,7 @@ const FIELD_ALIASES: Record<string, string> = {
   CL: 'claims',
   CLAIM: 'claims',
   CLAIMS: 'claims',
+  CPC: 'ipc',
   DESC: 'description',
   DESCRIPTION: 'description',
   DOC: 'doc_number',
@@ -63,6 +64,7 @@ const FIELD_ALIASES: Record<string, string> = {
   PUB_DATE: 'pub_date',
   TITLE: 'title',
   TI: 'title',
+  TIAB: 'title_abstract',
   TYPE: 'kind',
   公开号: 'doc_number',
   公开日: 'pub_date',
@@ -330,8 +332,13 @@ class Parser {
     return true
   }
 
-  private isOperatorToken(token: Token, operator: 'AND' | 'OR' | 'NOT'): boolean {
-    return token.type === 'operator' && normalizeOperator(token.value) === operator
+  private isOperatorToken(
+    token: Token,
+    operator: 'AND' | 'OR' | 'NOT',
+  ): boolean {
+    return (
+      token.type === 'operator' && normalizeOperator(token.value) === operator
+    )
   }
 
   private expect(type: TokenType, message: string): void {
@@ -355,7 +362,10 @@ class Parser {
 }
 
 function escapeLike(value: string): string {
-  return value.replaceAll('\\', '\\\\').replaceAll('%', '\\%').replaceAll('_', '\\_')
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('%', '\\%')
+    .replaceAll('_', '\\_')
 }
 
 function makeLikePattern(value: string): string {
@@ -367,10 +377,7 @@ function makeLikePattern(value: string): string {
   return `%${escaped}%`
 }
 
-function textFieldCondition(
-  sqlExpression: string,
-  value: string,
-): SqlBuilder {
+function textFieldCondition(sqlExpression: string, value: string): SqlBuilder {
   return (paramIndex) => ({
     sql: `${sqlExpression} ILIKE $${paramIndex} ESCAPE '\\'`,
     params: [makeLikePattern(value)],
@@ -451,7 +458,9 @@ function existsCondition(
   })
 }
 
-function termToSqlBuilder(node: Extract<ExpressionNode, { type: 'term' }>): SqlBuilder {
+function termToSqlBuilder(
+  node: Extract<ExpressionNode, { type: 'term' }>,
+): SqlBuilder {
   const value = node.value.trim()
   if (!value) {
     throw new PatentSearchExpressionError('检索式不能包含空查询值')
@@ -462,6 +471,12 @@ function termToSqlBuilder(node: Extract<ExpressionNode, { type: 'term' }>): SqlB
       return textFieldCondition('p.title', value)
     case 'abstract':
       return textFieldCondition('p.abstract', value)
+    case 'title_abstract':
+      return (paramIndex) => ({
+        sql: `(p.title ILIKE $${paramIndex} ESCAPE '\\' OR p.abstract ILIKE $${paramIndex} ESCAPE '\\')`,
+        params: [makeLikePattern(value)],
+        nextParamIndex: paramIndex + 1,
+      })
     case 'claims':
       return textFieldCondition('p.claims::text', value)
     case 'description':

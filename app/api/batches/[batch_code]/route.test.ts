@@ -13,7 +13,7 @@ const fileMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/db', () => dbMock)
-vi.mock('@/lib/file-processor', () => fileMock)
+vi.mock('@/lib/temp-dir', () => fileMock)
 
 describe('batch DELETE route cleanup ordering', () => {
   beforeEach(() => {

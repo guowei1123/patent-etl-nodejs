@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
-## 0.6.7 - 2026-06-09
+## 0.7.1 - 2026-06-10
+
+### 新增
+
+- 专利列表接入 AI 检索式生成，可根据关键词和 IPC/CPC 分类号生成 IncoPat 风格检索式并直接查询
+- 检索式语法兼容 `TIAB` 标题摘要字段和 `CPC` 分类号字段
+
+### 修复
+
+- 拆分临时目录工具，避免 Turbopack 构建时因动态文件追踪产生 NFT trace warning
+
+## 0.7.0 - 2026-06-09
 
 ### 新增
 

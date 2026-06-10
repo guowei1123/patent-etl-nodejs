@@ -4,14 +4,15 @@ import * as zlib from 'zlib'
 import { promisify } from 'util'
 import { StringDecoder } from 'string_decoder'
 import yauzl from 'yauzl'
+export {
+  cleanTempDir,
+  ensureTempDir,
+  getTempDirState,
+  getTempPath,
+  resolveTempPath,
+} from './temp-dir'
 
 const gunzip = promisify(zlib.gunzip)
-
-// 临时文件目录
-function getTempRoot(): string {
-  if (process.env.TEMP_DIR) return path.resolve(process.env.TEMP_DIR)
-  return path.join(process.cwd(), 'data')
-}
 
 // 分卷 ZIP 归档组
 export interface SplitArchiveGroup {
@@ -20,62 +21,6 @@ export interface SplitArchiveGroup {
   mainZip: string
   splitParts: string[]
   allFiles: string[]
-}
-
-export function ensureTempDir(): string {
-  const tempDir = getTempRoot()
-  if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir, { recursive: true })
-  }
-  return tempDir
-}
-
-export function getTempPath(subdir?: string): string {
-  const fullPath = resolveTempPath(subdir)
-  if (!fs.existsSync(fullPath)) {
-    fs.mkdirSync(fullPath, { recursive: true })
-  }
-  return fullPath
-}
-
-export function resolveTempPath(subdir?: string): string {
-  const base = path.resolve(ensureTempDir())
-  if (!subdir) return base
-  if (path.isAbsolute(subdir)) {
-    throw new Error('临时目录子路径不能是绝对路径')
-  }
-
-  const targetPath = path.resolve(base, subdir)
-  const relative = path.relative(base, targetPath)
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error('临时目录子路径超出允许范围')
-  }
-
-  return targetPath
-}
-
-export function cleanTempDir(subdir?: string): void {
-  const targetPath = resolveTempPath(subdir)
-  if (fs.existsSync(targetPath)) {
-    fs.rmSync(targetPath, { recursive: true, force: true })
-  }
-}
-
-export function getTempDirState(subdir: string): {
-  path: string
-  exists: boolean
-  hasFiles: boolean
-} {
-  const targetPath = resolveTempPath(subdir)
-  if (!fs.existsSync(targetPath)) {
-    return { path: targetPath, exists: false, hasFiles: false }
-  }
-
-  return {
-    path: targetPath,
-    exists: true,
-    hasFiles: fs.readdirSync(targetPath).length > 0,
-  }
 }
 
 // 解压 .gz 文件

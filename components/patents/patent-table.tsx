@@ -12,6 +12,14 @@ import {
 } from '@/components/ui/table'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -26,6 +34,7 @@ import {
 import {
   ChevronLeft,
   ChevronRight,
+  Copy,
   Search,
   ExternalLink,
   Lightbulb,
@@ -52,6 +61,15 @@ interface PatentTableProps {
 
 const SKELETON_ROW_COUNT = 8
 
+type FormulaOutputFormat = 'format1' | 'format2'
+
+function parseListInput(value: string): string[] {
+  return value
+    .split(/[\n,，、;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 function formatApplicants(patent: PatentListItem): string {
   if (!patent.applicants?.length) return '-'
   return patent.applicants.map((a) => a.name).join('; ')
@@ -73,6 +91,16 @@ export function PatentTable({
 }: PatentTableProps) {
   const [searchInput, setSearchInput] = useState(search)
   const [expressionInput, setExpressionInput] = useState(expression)
+  const [isFormulaDialogOpen, setIsFormulaDialogOpen] = useState(false)
+  const [generatedFormulaInput, setGeneratedFormulaInput] = useState('')
+  const [formulaKeywordsInput, setFormulaKeywordsInput] = useState('')
+  const [formulaIpcInput, setFormulaIpcInput] = useState('')
+  const [formulaOutputFormat, setFormulaOutputFormat] =
+    useState<FormulaOutputFormat>('format1')
+  const [isGeneratingFormula, setIsGeneratingFormula] = useState(false)
+  const [formulaGenerationError, setFormulaGenerationError] = useState<
+    string | null
+  >(null)
 
   const handleSearch: FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault()
@@ -86,6 +114,66 @@ export function PatentTable({
     setSearchInput('')
     onSearch('')
     onExpressionSearch(expressionInput.trim())
+  }
+
+  const handleGenerateFormula = async () => {
+    const keywords = parseListInput(formulaKeywordsInput)
+    const ipcCodes = parseListInput(formulaIpcInput)
+
+    if (keywords.length === 0) {
+      setFormulaGenerationError('请至少输入一个关键词')
+      return
+    }
+
+    if (ipcCodes.length === 0) {
+      setFormulaGenerationError('请至少输入一个 IPC/CPC 分类号')
+      return
+    }
+
+    setIsGeneratingFormula(true)
+    setFormulaGenerationError(null)
+
+    try {
+      const response = await fetch('/api/search-formula-generation', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          keywords,
+          ipcCodes,
+          outputFormat: formulaOutputFormat,
+        }),
+      })
+      const result = await response.json().catch(() => ({}))
+
+      if (!response.ok || typeof result.formula !== 'string') {
+        throw new Error(result.error || '检索式生成失败')
+      }
+
+      const nextExpression = result.formula.trim()
+      setGeneratedFormulaInput(nextExpression)
+    } catch (error) {
+      setFormulaGenerationError(
+        error instanceof Error ? error.message : '检索式生成失败',
+      )
+    } finally {
+      setIsGeneratingFormula(false)
+    }
+  }
+
+  const handleCopyFormula = async () => {
+    if (!generatedFormulaInput.trim()) return
+    await navigator.clipboard.writeText(generatedFormulaInput.trim())
+  }
+
+  const handleUseFormula = () => {
+    const nextExpression = generatedFormulaInput.trim()
+    if (!nextExpression) return
+
+    setExpressionInput(nextExpression)
+    setSearchInput('')
+    setIsFormulaDialogOpen(false)
   }
 
   const handleReset = () => {
@@ -185,40 +273,168 @@ export function PatentTable({
         </div>
 
         <form onSubmit={handleExpressionSearch} className="flex flex-col gap-2">
-          <div className="space-y-2">
-            <Label htmlFor="patent-expression">专利检索式</Label>
-            <Textarea
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Dialog
+              open={isFormulaDialogOpen}
+              onOpenChange={setIsFormulaDialogOpen}
+            >
+              <Button
+                type="button"
+                variant="secondary"
+                className="shrink-0"
+                disabled={isLoading}
+                onClick={() => setIsFormulaDialogOpen(true)}
+              >
+                生成
+              </Button>
+              <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>生成专利检索式</DialogTitle>
+                  <DialogDescription>
+                    输入关键词和 IPC/CPC 分类号，生成后会填入主检索框。
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="grid gap-4">
+                  <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="formula-keywords">关键词</Label>
+                      <Input
+                        id="formula-keywords"
+                        placeholder="蓝牙、扭矩扳手"
+                        value={formulaKeywordsInput}
+                        onChange={(e) =>
+                          setFormulaKeywordsInput(e.target.value)
+                        }
+                        disabled={isGeneratingFormula}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="formula-format">生成格式</Label>
+                      <Select
+                        value={formulaOutputFormat}
+                        onValueChange={(value) =>
+                          setFormulaOutputFormat(value as FormulaOutputFormat)
+                        }
+                        disabled={isGeneratingFormula}
+                      >
+                        <SelectTrigger id="formula-format" className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="format1">
+                            关键词 + IPC/CPC
+                          </SelectItem>
+                          <SelectItem value="format2">仅关键词</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="formula-ipc">IPC/CPC 分类号</Label>
+                    <Input
+                      id="formula-ipc"
+                      placeholder="B, F, G, H"
+                      value={formulaIpcInput}
+                      onChange={(e) => setFormulaIpcInput(e.target.value)}
+                      disabled={isGeneratingFormula}
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <Label htmlFor="formula-result">生成结果</Label>
+                    <Textarea
+                      id="formula-result"
+                      placeholder="生成的检索式会显示在这里，可手动编辑"
+                      value={generatedFormulaInput}
+                      onChange={(e) => setGeneratedFormulaInput(e.target.value)}
+                      className="min-h-28 resize-y font-mono text-sm"
+                      disabled={isGeneratingFormula}
+                    />
+                  </div>
+
+                  {formulaGenerationError ? (
+                    <p className="text-destructive text-sm">
+                      {formulaGenerationError}
+                    </p>
+                  ) : null}
+                </div>
+
+                <DialogFooter className="sm:justify-between">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={handleGenerateFormula}
+                    disabled={isGeneratingFormula}
+                  >
+                    {isGeneratingFormula ? '生成中...' : '生成检索式'}
+                  </Button>
+                  <div className="flex flex-col-reverse gap-2 sm:flex-row">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      onClick={handleCopyFormula}
+                      disabled={
+                        !generatedFormulaInput.trim() || isGeneratingFormula
+                      }
+                    >
+                      <Copy className="mr-2 h-4 w-4" />
+                      复制
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={handleUseFormula}
+                      disabled={
+                        !generatedFormulaInput.trim() || isGeneratingFormula
+                      }
+                    >
+                      使用
+                    </Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            <Input
               id="patent-expression"
               aria-describedby="patent-expression-help patent-expression-error"
               aria-invalid={Boolean(expressionErrorMessage)}
-              placeholder='TI:"新能源" AND PA:比亚迪 NOT IPC:H01M'
+              title={
+                expressionErrorMessage ||
+                '字段: TI 标题, TIAB 标题摘要, PA 申请人, PN 公开号, AN 申请号, IPC/CPC 分类号, AB 摘要, CL 权利要求, 公开日'
+              }
+              placeholder="TIAB=(新能源 AND 电池) AND IPC=(H01M OR G06F)"
               value={expressionInput}
               onChange={(e) => setExpressionInput(e.target.value)}
               className={cn(
-                'min-h-20 resize-y',
+                'min-w-0 flex-1 font-mono text-sm',
                 expressionErrorMessage
                   ? 'border-destructive focus-visible:ring-destructive/20'
                   : '',
               )}
               disabled={isLoading}
             />
-            <p
-              id="patent-expression-help"
-              className="text-muted-foreground text-xs"
-            >
-              字段: TI 标题, PA 申请人, PN 公开号, AN 申请号, IPC 分类号, AB 摘要,
-              CL 权利要求, 公开日; 支持 AND/OR/NOT、括号和引号短语。
+
+            <p id="patent-expression-help" className="sr-only">
+              字段: TI 标题, TIAB 标题摘要, PA 申请人, PN 公开号, AN 申请号,
+              IPC/CPC 分类号, AB 摘要, CL 权利要求, 公开日; 支持
+              AND/OR/NOT、括号和引号短语。
             </p>
             {expressionErrorMessage ? (
-              <p id="patent-expression-error" className="text-destructive text-xs">
+              <p id="patent-expression-error" className="sr-only">
                 {expressionErrorMessage}
               </p>
             ) : null}
-          </div>
-          <div className="flex justify-end gap-2">
-            <Button type="submit" variant="outline" disabled={isLoading}>
+
+            <Button
+              type="submit"
+              variant="outline"
+              className="shrink-0"
+              disabled={isLoading}
+            >
               <Search className="mr-2 h-4 w-4" />
-              检索式查询
+              检索
             </Button>
           </div>
         </form>

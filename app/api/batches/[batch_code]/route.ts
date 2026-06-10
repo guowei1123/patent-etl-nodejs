@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getBatchByCode, deleteBatch, getLogsByBatch } from '@/lib/db'
-import { cleanTempDir, getTempDirState } from '@/lib/file-processor'
+import { cleanTempDir, getTempDirState } from '@/lib/temp-dir'
 
 // GET /api/batches/[batch_code] - 获取批次详情
 export async function GET(
