@@ -257,45 +257,81 @@ export async function verifyExtractedFilesCrc(
     return { passed: failures.length === 0, checkedFiles, failures }
   }
 
+  const allFiles = fs
+    .readdirSync(extractDir)
+    .filter((f) => fs.statSync(path.join(extractDir, f)).isFile())
+  const actualZipFiles = allFiles.filter((f) => f.toUpperCase().endsWith('.ZIP'))
+  const actualZipByLowerName = new Map(
+    actualZipFiles.map((f) => [f.toLowerCase(), f]),
+  )
+  const allEntries: CrcEntry[] = []
+  const expectedZipNames = new Set<string>()
+
   for (const crcFile of crcFiles) {
     const crcPath = path.join(extractDir, crcFile)
     const entries = parseCrcFile(crcPath)
 
+    if (entries.length === 0) {
+      failures.push({
+        file: crcFile,
+        reason: 'CRC 文件无有效校验条目',
+      })
+    }
+
     for (const entry of entries) {
-      checkedFiles++
-      const zipPath = path.join(extractDir, entry.relativePath)
-
-      if (!fs.existsSync(zipPath)) {
-        failures.push({
-          file: entry.relativePath,
-          expected: entry.expectedCrc,
-          reason: '文件不存在',
-        })
-        continue
+      allEntries.push(entry)
+      if (entry.relativePath.toUpperCase().endsWith('.ZIP')) {
+        expectedZipNames.add(entry.relativePath.toLowerCase())
       }
+    }
+  }
 
-      // 计算 CRC32
-      const actualCrc = await computeFileCrc32(zipPath)
+  for (const zipFile of actualZipFiles) {
+    if (!expectedZipNames.has(zipFile.toLowerCase())) {
+      failures.push({
+        file: zipFile,
+        reason: 'ZIP 文件未出现在 CRC 清单中',
+      })
+    }
+  }
 
-      if (actualCrc !== entry.expectedCrc) {
-        failures.push({
-          file: entry.relativePath,
-          expected: entry.expectedCrc,
-          actual: actualCrc,
-          reason: 'CRC32 不匹配',
-        })
-        continue
-      }
+  for (const entry of allEntries) {
+    checkedFiles++
+    const actualFileName =
+      actualZipByLowerName.get(entry.relativePath.toLowerCase()) ||
+      entry.relativePath
+    const zipPath = path.join(extractDir, actualFileName)
 
-      // 验证 ZIP 结构完整性
-      try {
-        await openZipForVerify(zipPath)
-      } catch (err) {
-        failures.push({
-          file: entry.relativePath,
-          reason: `ZIP 结构损坏: ${err instanceof Error ? err.message : String(err)}`,
-        })
-      }
+    if (!fs.existsSync(zipPath)) {
+      failures.push({
+        file: entry.relativePath,
+        expected: entry.expectedCrc,
+        reason: '文件不存在',
+      })
+      continue
+    }
+
+    // 计算 CRC32
+    const actualCrc = await computeFileCrc32(zipPath)
+
+    if (actualCrc !== entry.expectedCrc) {
+      failures.push({
+        file: entry.relativePath,
+        expected: entry.expectedCrc,
+        actual: actualCrc,
+        reason: 'CRC32 不匹配',
+      })
+      continue
+    }
+
+    // 验证 ZIP 结构完整性
+    try {
+      await openZipForVerify(zipPath)
+    } catch (err) {
+      failures.push({
+        file: entry.relativePath,
+        reason: `ZIP 结构损坏: ${err instanceof Error ? err.message : String(err)}`,
+      })
     }
   }
 

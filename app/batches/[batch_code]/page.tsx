@@ -127,6 +127,24 @@ function getNextStep(status: BatchStatus): string | null {
   return map[status] || null
 }
 
+type VerificationType = 'download' | 'extract'
+
+interface VerificationFailure {
+  file: string
+  reason: string
+  expected?: string
+  actual?: string
+}
+
+interface VerificationResult {
+  type: VerificationType
+  passed: boolean
+  checkedFiles?: number
+  issueCount?: number
+  failures: VerificationFailure[]
+  report?: string
+}
+
 function isPatentImportFailure(value: unknown): value is PatentImportFailure {
   if (!value || typeof value !== 'object') return false
   const failure = value as Record<string, unknown>
@@ -138,10 +156,87 @@ function isPatentImportFailure(value: unknown): value is PatentImportFailure {
   )
 }
 
+function isVerificationFailure(value: unknown): value is VerificationFailure {
+  if (!value || typeof value !== 'object') return false
+  const failure = value as Record<string, unknown>
+  return typeof failure.file === 'string' && typeof failure.reason === 'string'
+}
+
 function getImportFailures(log: SyncLog): PatentImportFailure[] {
   const failures = log.details?.failures
   if (!Array.isArray(failures)) return []
   return failures.filter(isPatentImportFailure)
+}
+
+function getVerificationFailures(log: SyncLog): VerificationFailure[] {
+  const failures = log.details?.failures
+  if (!Array.isArray(failures)) return []
+  return failures.filter(isVerificationFailure)
+}
+
+function parseVerificationLog(
+  log: SyncLog,
+  type: VerificationType,
+): VerificationResult | null {
+  const message = log.message
+
+  const patterns =
+    type === 'download'
+      ? {
+          passed: [
+            /下载完整性检测通过: (\d+) 个文件/,
+            /\[手动校验\] 下载文件完整性通过: (\d+) 个文件/,
+          ],
+          failed: [
+            /下载完整性检测失败: (\d+) 个问题/,
+            /\[手动校验\] 下载文件完整性失败: (\d+) 个问题/,
+          ],
+        }
+      : {
+          passed: [
+            /\[(?:自动|手动)校验\] 解压文件 CRC 通过: (\d+) 个文件/,
+          ],
+          failed: [
+            /\[(?:自动|手动)校验\] 解压文件 CRC 失败: (\d+) 个问题/,
+          ],
+        }
+
+  for (const pattern of patterns.passed) {
+    const match = message.match(pattern)
+    if (match) {
+      return {
+        type,
+        passed: true,
+        checkedFiles: Number(match[1]),
+        failures: [],
+      }
+    }
+  }
+
+  for (const pattern of patterns.failed) {
+    const match = message.match(pattern)
+    if (match) {
+      return {
+        type,
+        passed: false,
+        issueCount: Number(match[1]),
+        failures: getVerificationFailures(log),
+      }
+    }
+  }
+
+  return null
+}
+
+function getLatestVerificationResult(
+  logs: SyncLog[],
+  type: VerificationType,
+): VerificationResult | null {
+  for (const log of logs) {
+    const result = parseVerificationLog(log, type)
+    if (result) return result
+  }
+  return null
 }
 
 function ImportFailureList({
@@ -320,18 +415,9 @@ export default function BatchDetailPage({
   >(null)
   const [optimisticSetAt, setOptimisticSetAt] = useState<number>(0)
   const [trustOptimisticStatus, setTrustOptimisticStatus] = useState(false)
-  const [verifyResult, setVerifyResult] = useState<{
-    type: 'download' | 'extract'
-    passed: boolean
-    checkedFiles: number
-    failures: {
-      file: string
-      reason: string
-      expected?: string
-      actual?: string
-    }[]
-    report: string
-  } | null>(null)
+  const [verifyResult, setVerifyResult] = useState<VerificationResult | null>(
+    null,
+  )
 
   const { data, error, mutate } = useSWR<{
     success: boolean
@@ -617,14 +703,31 @@ export default function BatchDetailPage({
   const nextStep = getNextStep(batch.status)
   const hasLocalTempFiles = localTemp?.hasFiles ?? false
   const hasLocalExtractFiles = localExtract?.hasFiles ?? false
+  const latestDownloadVerification = getLatestVerificationResult(
+    logs,
+    'download',
+  )
+  const latestExtractVerification = getLatestVerificationResult(logs, 'extract')
+  const currentDownloadVerification =
+    verifyResult?.type === 'download' ? verifyResult : latestDownloadVerification
+  const currentExtractVerification =
+    verifyResult?.type === 'extract' ? verifyResult : latestExtractVerification
+  const visibleVerifyResults = [
+    currentDownloadVerification,
+    currentExtractVerification,
+  ].filter((result): result is VerificationResult => Boolean(result))
   const canVerifyDownload =
     ['downloaded', 'processing', 'processed', 'failed'].includes(
       batch.status,
-    ) && hasLocalTempFiles
+    ) &&
+    hasLocalTempFiles &&
+    currentDownloadVerification?.passed !== true
   const canVerifyExtract =
     ['downloaded', 'processing', 'processed', 'failed'].includes(
       batch.status,
-    ) && hasLocalExtractFiles
+    ) &&
+    hasLocalExtractFiles &&
+    currentExtractVerification?.passed !== true
   const canCleanupLocal = batch.status === 'completed' && hasLocalTempFiles
   const canConfirmDelete = deleteConfirmText === batch.batch_code && !deleting
 
@@ -809,6 +912,7 @@ export default function BatchDetailPage({
               (nextStep ||
                 canVerifyDownload ||
                 canVerifyExtract ||
+                visibleVerifyResults.length > 0 ||
                 canCleanupLocal ||
                 batch.status === 'failed' ||
                 isOrphaned) && (
@@ -896,49 +1000,61 @@ export default function BatchDetailPage({
                   </div>
 
                   {/* Verification Result */}
-                  {verifyResult && (
-                    <div
-                      className={cn(
-                        'rounded-lg p-4',
-                        verifyResult.passed
-                          ? 'bg-success/10'
-                          : 'bg-destructive/10',
-                      )}
-                    >
-                      <div className="flex items-center gap-2">
-                        {verifyResult.passed ? (
-                          <CheckCircle2 className="text-success h-4 w-4" />
-                        ) : (
-                          <XCircle className="text-destructive h-4 w-4" />
-                        )}
-                        <span
+                  {visibleVerifyResults.length > 0 && (
+                    <div className="space-y-2">
+                      {visibleVerifyResults.map((result) => (
+                        <div
+                          key={result.type}
                           className={cn(
-                            'text-sm font-medium',
-                            verifyResult.passed
-                              ? 'text-success'
-                              : 'text-destructive',
+                            'rounded-lg p-4',
+                            result.passed
+                              ? 'bg-success/10'
+                              : 'bg-destructive/10',
                           )}
                         >
-                          {verifyResult.type === 'download'
-                            ? '下载文件'
-                            : '解压文件'}
-                          校验
-                          {verifyResult.passed ? '通过' : '失败'}
-                          ：已检查 {verifyResult.checkedFiles} 个文件
-                        </span>
-                      </div>
-                      {verifyResult.failures.length > 0 && (
-                        <div className="mt-2 space-y-1">
-                          {verifyResult.failures.map((f, i) => (
-                            <p key={i} className="text-destructive text-xs">
-                              {f.file}: {f.reason}
-                              {f.expected && f.actual
-                                ? ` (期望: ${f.expected}, 实际: ${f.actual})`
-                                : ''}
-                            </p>
-                          ))}
+                          <div className="flex items-center gap-2">
+                            {result.passed ? (
+                              <CheckCircle2 className="text-success h-4 w-4" />
+                            ) : (
+                              <XCircle className="text-destructive h-4 w-4" />
+                            )}
+                            <span
+                              className={cn(
+                                'text-sm font-medium',
+                                result.passed
+                                  ? 'text-success'
+                                  : 'text-destructive',
+                              )}
+                            >
+                              {result.type === 'download'
+                                ? '下载文件'
+                                : '解压文件'}
+                              校验
+                              {result.passed ? '通过' : '失败'}
+                              {result.checkedFiles !== undefined
+                                ? `：已检查 ${result.checkedFiles} 个文件`
+                                : result.issueCount !== undefined
+                                  ? `：发现 ${result.issueCount} 个问题`
+                                  : ''}
+                            </span>
+                          </div>
+                          {result.failures.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {result.failures.map((f, i) => (
+                                <p
+                                  key={i}
+                                  className="text-destructive text-xs"
+                                >
+                                  {f.file}: {f.reason}
+                                  {f.expected && f.actual
+                                    ? ` (期望: ${f.expected}, 实际: ${f.actual})`
+                                    : ''}
+                                </p>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      )}
+                      ))}
                     </div>
                   )}
                 </div>
