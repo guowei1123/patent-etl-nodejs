@@ -3,6 +3,7 @@
 import { use } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
+import Image from 'next/image'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
 import {
@@ -18,6 +19,7 @@ import {
   Building,
   Calendar,
   FileText,
+  Images,
   Lightbulb,
   Loader2,
   Tag,
@@ -263,12 +265,21 @@ export default function PatentDetailPage({
   const hasClaims = structuredClaims.length > 0 || Boolean(patent.claims)
   const hasDescription = descriptionSections.length > 0
   const hasCitations = Boolean(patent.citations?.length)
+  const images = patent.images ?? []
+  const abstractImage = images.find((image) => image.is_abstract)
+  const hasImages = images.length > 0
   const contentSections = [
     {
       id: 'section-abstract',
       label: '摘要',
       meta: patent.abstract ? '概览' : '无内容',
       visible: true,
+    },
+    {
+      id: 'section-images',
+      label: '附图',
+      meta: hasImages ? `${images.length} 张` : undefined,
+      visible: hasImages,
     },
     {
       id: 'section-claims',
@@ -313,6 +324,10 @@ export default function PatentDetailPage({
     {
       label: '说明书章节',
       value: hasDescription ? `${descriptionSections.length} 节` : '-',
+    },
+    {
+      label: '附图',
+      value: hasImages ? `${images.length} 张` : '-',
     },
   ]
 
@@ -610,9 +625,28 @@ export default function PatentDetailPage({
                 </CardHeader>
                 <CardContent>
                   {patent.abstract ? (
-                    <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
-                      {patent.abstract}
-                    </p>
+                    <div className="space-y-5">
+                      <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
+                        {patent.abstract}
+                      </p>
+                      {abstractImage && (
+                        <figure className="bg-secondary/30 overflow-hidden rounded-lg border">
+                          <div className="bg-background relative min-h-[220px]">
+                            <Image
+                              src={`/api/patent-images/${abstractImage.id}`}
+                              alt={`${patent.title} 摘要附图`}
+                              fill
+                              unoptimized
+                              sizes="(max-width: 1280px) 100vw, 896px"
+                              className="object-contain"
+                            />
+                          </div>
+                          <figcaption className="text-muted-foreground border-t px-4 py-2 text-xs">
+                            摘要附图 · {abstractImage.file_name}
+                          </figcaption>
+                        </figure>
+                      )}
+                    </div>
                   ) : (
                     <p className="text-muted-foreground text-sm italic">
                       无摘要信息
@@ -620,6 +654,50 @@ export default function PatentDetailPage({
                   )}
                 </CardContent>
               </Card>
+
+              {hasImages && (
+                <Card
+                  id="section-images"
+                  className="bg-card border-border scroll-mt-28"
+                >
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base font-medium">
+                      <Images className="text-muted-foreground h-4 w-4" />
+                      附图
+                    </CardTitle>
+                    <CardDescription>
+                      当前专利 XML 引用的摘要图与说明书附图
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {images.map((image) => (
+                        <figure
+                          key={image.id}
+                          className="bg-secondary/30 overflow-hidden rounded-lg border"
+                        >
+                          <div className="bg-background relative aspect-[4/3]">
+                            <Image
+                              src={`/api/patent-images/${image.id}`}
+                              alt={`${patent.title} ${image.file_name}`}
+                              fill
+                              unoptimized
+                              sizes="(max-width: 768px) 100vw, 50vw"
+                              className="object-contain"
+                            />
+                          </div>
+                          <figcaption className="text-muted-foreground flex items-center justify-between gap-3 border-t px-3 py-2 text-xs">
+                            <span className="truncate">{image.file_name}</span>
+                            {image.is_abstract && (
+                              <Badge variant="secondary">摘要图</Badge>
+                            )}
+                          </figcaption>
+                        </figure>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {hasClaims && (
                 <Card

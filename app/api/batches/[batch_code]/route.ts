@@ -65,6 +65,15 @@ export async function DELETE(
       )
     }
 
+    const body = await request.json().catch(() => ({}))
+    const confirmBatchCode = body.confirm_batch_code
+    if (confirmBatchCode !== batch_code) {
+      return NextResponse.json(
+        { success: false, error: '请输入正确的批次编号后再删除' },
+        { status: 400 },
+      )
+    }
+
     const batch = await getBatchByCode(batch_code)
 
     if (!batch) {
@@ -83,13 +92,14 @@ export async function DELETE(
     }
 
     const localTempBeforeDelete = getTempDirState(batch_code)
-    await deleteBatch(batch_code)
+    const deleteResult = await deleteBatch(batch_code)
     cleanTempDir(batch_code)
 
     return NextResponse.json({
       success: true,
       message: '批次已删除',
       data: {
+        deletedPatents: deleteResult.deletedPatents,
         localTempBeforeDelete,
         localTemp: getTempDirState(batch_code),
       },

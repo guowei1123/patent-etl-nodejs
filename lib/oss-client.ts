@@ -1,4 +1,5 @@
 import OSS from 'ali-oss'
+import * as path from 'path'
 
 export function isOssConfigured(): boolean {
   return !!(
@@ -16,6 +17,55 @@ function createOssClient(): OSS {
     region: process.env.CNIPA_OSS_REGION || 'cn-shenzhen',
     endpoint: process.env.CNIPA_OSS_ENDPOINT,
   })
+}
+
+export function buildPatentImageKey(
+  batchCode: string,
+  docNumber: string,
+  fileName: string,
+): string {
+  const safeBatchCode = batchCode.replace(/[^A-Za-z0-9._-]/g, '_')
+  const safeDocNumber = docNumber.replace(/[^A-Za-z0-9._-]/g, '_')
+  const safeFileName = path.basename(fileName).replace(/[^A-Za-z0-9._-]/g, '_')
+  return `patents/${safeBatchCode}/${safeDocNumber}/${safeFileName}`
+}
+
+export async function putPatentImage(
+  ossKey: string,
+  content: Buffer,
+  contentType: string,
+): Promise<void> {
+  if (!isOssConfigured()) {
+    throw new Error('OSS 配置未设置，无法存储专利附图')
+  }
+
+  const client = createOssClient()
+  await client.put(ossKey, content, {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'private, max-age=86400',
+    },
+  })
+}
+
+export async function getPatentImage(ossKey: string): Promise<{
+  content: Buffer
+  contentType: string
+}> {
+  if (!isOssConfigured()) {
+    throw new Error('OSS 配置未设置，无法读取专利附图')
+  }
+
+  const client = createOssClient()
+  const result = await client.get(ossKey)
+  const rawContentType = result.res?.headers?.['content-type']
+  const contentType = Array.isArray(rawContentType)
+    ? rawContentType[0]
+    : rawContentType
+  return {
+    content: result.content,
+    contentType: contentType || 'image/jpeg',
+  }
 }
 
 export async function testOssConnection(): Promise<{

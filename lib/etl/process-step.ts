@@ -2,8 +2,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import {
   extractFiles,
-  forEachZipEntry,
+  forEachZipEntryBuffer,
   getTempPath,
+  isPatentImageFile,
   isPatentXmlFile,
   withPreparedArchiveFiles,
 } from '../file-processor'
@@ -19,9 +20,172 @@ import {
   updateBatchProgress,
   updateBatchStatus,
 } from '../db'
+import {
+  buildPatentImageKey,
+  isOssConfigured,
+  putPatentImage,
+} from '../oss-client'
 import type { ParsedPatent, PatentType } from '@/types'
 import type { StepResult } from './types'
 import { runningTasks } from './task-state'
+
+type ZipImageEntry = {
+  fileName: string
+  contentType: string
+  size: number
+  width?: number
+  height?: number
+}
+
+type PatentImageReference = {
+  patent: ParsedPatent
+  isAbstract: boolean
+}
+
+function getImageMapKey(fileName: string): string {
+  return path.basename(fileName).toLowerCase()
+}
+
+function getImageContentType(fileName: string): string {
+  return fileName.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/jpeg'
+}
+
+function getJpegDimensions(content: Buffer): {
+  width?: number
+  height?: number
+} {
+  if (content.length < 4 || content[0] !== 0xff || content[1] !== 0xd8) {
+    return {}
+  }
+
+  let offset = 2
+  while (offset + 9 < content.length) {
+    if (content[offset] !== 0xff) {
+      offset++
+      continue
+    }
+
+    const marker = content[offset + 1]
+    if (marker === 0xd9 || marker === 0xda) break
+    const length = content.readUInt16BE(offset + 2)
+    if (length < 2) break
+
+    const isStartOfFrame =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf)
+    if (isStartOfFrame && offset + 8 < content.length) {
+      return {
+        height: content.readUInt16BE(offset + 5),
+        width: content.readUInt16BE(offset + 7),
+      }
+    }
+
+    offset += 2 + length
+  }
+
+  return {}
+}
+
+function getReferencedImageKeys(patent: ParsedPatent): Set<string> {
+  const referencedFiles = new Set<string>()
+  for (const fileName of patent.image_files || []) {
+    referencedFiles.add(getImageMapKey(fileName))
+  }
+  if (patent.abstract_figure) {
+    referencedFiles.add(getImageMapKey(patent.abstract_figure))
+  }
+  return referencedFiles
+}
+
+function addPatentImageReferences(
+  referencesByName: Map<string, PatentImageReference[]>,
+  patent: ParsedPatent,
+): void {
+  const abstractKey = patent.abstract_figure
+    ? getImageMapKey(patent.abstract_figure)
+    : null
+
+  for (const imageKey of getReferencedImageKeys(patent)) {
+    const refs = referencesByName.get(imageKey) || []
+    refs.push({
+      patent,
+      isAbstract: abstractKey === imageKey,
+    })
+    referencesByName.set(imageKey, refs)
+  }
+}
+
+async function attachPatentImage(
+  batchCode: string,
+  reference: PatentImageReference,
+  image: ZipImageEntry,
+  content: Buffer,
+): Promise<void> {
+  const ossKey = buildPatentImageKey(
+    batchCode,
+    reference.patent.patent_number,
+    image.fileName,
+  )
+  await putPatentImage(ossKey, content, image.contentType)
+
+  const patentImages = reference.patent.images || []
+  patentImages.push({
+    file_name: path.basename(image.fileName),
+    oss_key: ossKey,
+    content_type: image.contentType,
+    size: image.size,
+    width: image.width,
+    height: image.height,
+    is_abstract: reference.isAbstract,
+  })
+  reference.patent.images = patentImages
+}
+
+async function uploadReferencedPatentImages(
+  batchCode: string,
+  zipFile: string,
+  referencesByName: Map<string, PatentImageReference[]>,
+): Promise<{ uploadedCount: number; processed: number; skipped: number }> {
+  let uploadedCount = 0
+
+  const result = await forEachZipEntryBuffer(
+    zipFile,
+    async (fileName, content) => {
+      const imageKey = getImageMapKey(fileName)
+      const references = referencesByName.get(imageKey)
+      if (!references || !isPatentImageFile(fileName)) return
+
+      const image: ZipImageEntry = {
+        fileName,
+        contentType: getImageContentType(fileName),
+        size: content.length,
+        ...getJpegDimensions(content),
+      }
+
+      for (const reference of references) {
+        await attachPatentImage(batchCode, reference, image, content)
+        uploadedCount++
+      }
+    },
+    (fileName) =>
+      isPatentImageFile(fileName) &&
+      referencesByName.has(getImageMapKey(fileName)),
+  )
+
+  for (const references of referencesByName.values()) {
+    for (const { patent } of references) {
+      if (!patent.images) continue
+      patent.images.sort((a, b) => {
+        if (a.is_abstract !== b.is_abstract) return a.is_abstract ? -1 : 1
+        return a.file_name.localeCompare(b.file_name)
+      })
+    }
+  }
+
+  return { uploadedCount, ...result }
+}
 
 export async function runProcessStep(batchCode: string): Promise<StepResult> {
   const batch = await getBatchByCode(batchCode)
@@ -129,29 +293,45 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     await addLog(batchCode, 'info', `流式解析 ${innerZips.length} 个内层 ZIP`)
 
+    if (!isOssConfigured()) {
+      throw new Error('OSS 配置未设置，无法存储专利附图')
+    }
+
     const patents: ParsedPatent[] = []
     const patentType = batch.data_type as PatentType
+    let uploadedImageCount = 0
 
     for (let i = 0; i < innerZips.length; i++) {
       if (cancelled) throw new Error('任务已取消')
 
       const zipFile = path.join(extractDir, innerZips[i])
-      const result = await forEachZipEntry(
+      const zipPatents: ParsedPatent[] = []
+      const referencesByName = new Map<string, PatentImageReference[]>()
+      const xmlResult = await forEachZipEntryBuffer(
         zipFile,
         (fileName, content) => {
-          const patent = parsePatentXml(content, patentType)
+          const patent = parsePatentXml(content.toString('utf-8'), patentType)
           if (patent) {
             patent.source_file = fileName
             patents.push(patent)
+            zipPatents.push(patent)
+            addPatentImageReferences(referencesByName, patent)
           }
         },
         isPatentXmlFile,
       )
+      const imageResult = await uploadReferencedPatentImages(
+        batchCode,
+        zipFile,
+        referencesByName,
+      )
+      const zipUploadedCount = imageResult.uploadedCount
+      uploadedImageCount += zipUploadedCount
 
       await addLog(
         batchCode,
         'info',
-        `${innerZips[i]}: ${result.processed} 个 XML 解析, ${patents.length} 条累计专利`,
+        `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${zipPatents.length} 条专利, ${zipUploadedCount} 张附图上传, ${patents.length} 条累计专利`,
       )
       updateBatchProgress(batchCode, undefined, i + 1)
     }
@@ -172,12 +352,20 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     await updateBatchProgress(batchCode, undefined, undefined, patents.length)
     await updateBatchStatus(batchCode, 'processed')
-    await addLog(batchCode, 'info', `处理完成: ${patents.length} 条专利数据`)
+    await addLog(
+      batchCode,
+      'info',
+      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传`,
+    )
 
     return {
       success: true,
       batchCode,
-      details: { totalPatents: patents.length, innerZips: innerZips.length },
+      details: {
+        totalPatents: patents.length,
+        innerZips: innerZips.length,
+        uploadedImages: uploadedImageCount,
+      },
     }
   } catch (error) {
     const errorMessage =

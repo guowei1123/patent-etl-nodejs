@@ -57,7 +57,7 @@ describe('insertPatents import result', () => {
 
   it('returns a single-patent failure instead of silently counting zero', async () => {
     const client = createClient((sql) => {
-      if (sql.includes('INSERT INTO cnipa.patent')) {
+      if (sql.includes('INSERT INTO cnipa.patent (')) {
         throw new Error('value too long for type character varying(1)')
       }
       return { rows: [], rowCount: 0 }
@@ -131,6 +131,98 @@ describe('insertPatents import result', () => {
         error: 'invalid input syntax for type date',
       },
     ])
+  })
+
+  it('stores patent images and refreshes abstract figure on upsert', async () => {
+    const client = createClient((sql, params = []) => {
+      if (sql.includes('INSERT INTO cnipa.patent (')) {
+        expect(sql).toContain('abstract_fig_key = EXCLUDED.abstract_fig_key')
+        expect(params[13]).toBe('100001.jpg')
+        return {
+          rows: [
+            {
+              id: 'patent-id-1',
+              doc_number: '100001',
+              kind: 'B',
+              is_new: false,
+            },
+          ],
+          rowCount: 1,
+        }
+      }
+
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const imagePatent = patent('100001')
+    imagePatent.abstract_figure = '100001.jpg'
+    imagePatent.images = [
+      {
+        file_name: '100001.jpg',
+        oss_key: 'patents/batch-1/100001/100001.jpg',
+        content_type: 'image/jpeg',
+        size: 4,
+        is_abstract: true,
+      },
+    ]
+
+    const { insertPatents } = await import('../db')
+    const result = await insertPatents('batch-1', [imagePatent])
+
+    expect(result.insertedCount).toBe(1)
+    expect(client.query).toHaveBeenCalledWith(
+      'DELETE FROM cnipa.patent_image WHERE patent_id = ANY($1::uuid[])',
+      [['patent-id-1']],
+    )
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO cnipa.patent_image'),
+      [
+        'patent-id-1',
+        '100001.jpg',
+        'patents/batch-1/100001/100001.jpg',
+        'image/jpeg',
+        4,
+        null,
+        null,
+        true,
+      ],
+    )
+  })
+})
+
+describe('deleteBatch', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    pgMock.connect.mockReset()
+    pgMock.query.mockReset()
+  })
+
+  it('deletes imported patents and the batch record in one transaction', async () => {
+    const client = createClient((sql) => {
+      if (sql.includes('DELETE FROM cnipa.patent')) {
+        return { rows: [{ count: '3' }], rowCount: 1 }
+      }
+
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const { deleteBatch } = await import('../db')
+    const result = await deleteBatch('batch-1')
+
+    expect(result.deletedPatents).toBe(3)
+    expect(client.query).toHaveBeenCalledWith('BEGIN')
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM cnipa.patent'),
+      ['batch-1'],
+    )
+    expect(client.query).toHaveBeenCalledWith(
+      'DELETE FROM sync_batches WHERE batch_code = $1',
+      ['batch-1'],
+    )
+    expect(client.query).toHaveBeenCalledWith('COMMIT')
+    expect(client.release).toHaveBeenCalled()
   })
 })
 

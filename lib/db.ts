@@ -15,6 +15,7 @@ import type {
   PatentAgentRow,
   PatentCitationRow,
   PatentClaimRow,
+  PatentImage,
   PatentImportFailure,
   PatentImportResult,
 } from '@/types'
@@ -339,6 +340,27 @@ export async function initializeDatabase(): Promise<void> {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pcl_patent_id ON cnipa.patent_claim(patent_id)',
     )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.patent_image (
+        id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        patent_id    UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        file_name    TEXT NOT NULL,
+        oss_key      TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size         INTEGER NOT NULL,
+        width        INTEGER,
+        height       INTEGER,
+        is_abstract  BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pimg_patent_id ON cnipa.patent_image(patent_id)',
+    )
+    await client.query(
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_pimg_oss_key ON cnipa.patent_image(oss_key)',
+    )
   } finally {
     client.release()
   }
@@ -514,10 +536,40 @@ export async function getImportedPatentKeysByBatch(
   return new Set(result.rows.map((row) => `${row.doc_number}\u0000${row.kind}`))
 }
 
-export async function deleteBatch(batchCode: string): Promise<void> {
-  await pool.query('DELETE FROM sync_batches WHERE batch_code = $1', [
-    batchCode,
-  ])
+async function deletePatentsByBatch(
+  client: PoolClient,
+  batchCode: string,
+): Promise<number> {
+  const result = await client.query<{ count: string }>(
+    `WITH deleted AS (
+       DELETE FROM cnipa.patent
+       WHERE batch_id = $1
+       RETURNING id
+     )
+     SELECT COUNT(*) AS count FROM deleted`,
+    [batchCode],
+  )
+  return parseInt(result.rows[0]?.count || '0')
+}
+
+export async function deleteBatch(batchCode: string): Promise<{
+  deletedPatents: number
+}> {
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    const deletedPatents = await deletePatentsByBatch(client, batchCode)
+    await client.query('DELETE FROM sync_batches WHERE batch_code = $1', [
+      batchCode,
+    ])
+    await client.query('COMMIT')
+    return { deletedPatents }
+  } catch (error) {
+    await client.query('ROLLBACK')
+    throw error
+  } finally {
+    client.release()
+  }
 }
 
 // ============ Patent 操作（cnipa schema） ============
@@ -686,6 +738,7 @@ export async function insertPatents(
          claims = EXCLUDED.claims,
          grant_number = EXCLUDED.grant_number,
          grant_date = EXCLUDED.grant_date,
+         abstract_fig_key = EXCLUDED.abstract_fig_key,
          batch_id = EXCLUDED.batch_id,
          source_file = EXCLUDED.source_file,
          updated_at = CURRENT_TIMESTAMP
@@ -715,6 +768,7 @@ export async function insertPatents(
         'cnipa.patent_examiner',
         'cnipa.patent_assignee',
         'cnipa.patent_claim',
+        'cnipa.patent_image',
       ]
       for (const table of childTables) {
         await client.query(
@@ -732,6 +786,7 @@ export async function insertPatents(
     const examinerRows: unknown[][] = []
     const assigneeRows: unknown[][] = []
     const claimRows: unknown[][] = []
+    const imageRows: unknown[][] = []
 
     for (const [key, p] of patentsByKey) {
       const patentId = patentIdsByKey.get(key)
@@ -782,6 +837,18 @@ export async function insertPatents(
       for (let ci = 0; ci < (p.claims_structured || []).length; ci++) {
         const claim = p.claims_structured?.[ci]
         if (claim) claimRows.push([patentId, ci + 1, claim.texts.join('\n')])
+      }
+      for (const image of p.images || []) {
+        imageRows.push([
+          patentId,
+          image.file_name,
+          image.oss_key,
+          image.content_type,
+          image.size,
+          image.width || null,
+          image.height || null,
+          image.is_abstract,
+        ])
       }
     }
 
@@ -841,6 +908,21 @@ export async function insertPatents(
       ['patent_id', 'claim_num', 'claim_text'],
       uniqueRows(claimRows),
     )
+    await multiRowInsert(
+      client,
+      'cnipa.patent_image',
+      [
+        'patent_id',
+        'file_name',
+        'oss_key',
+        'content_type',
+        'size',
+        'width',
+        'height',
+        'is_abstract',
+      ],
+      uniqueRows(imageRows),
+    )
 
     await client.query('COMMIT')
     return { insertedCount: mainResult.rowCount || 0, failures: [] }
@@ -883,6 +965,10 @@ function rowToPatent(row: Record<string, unknown>): Patent {
     claims: (row.claims_text as string) || (row.claims as string) || null,
     status: (row.status as string) || null,
     abstract_fig_key: (row.abstract_fig_key as string) || null,
+    images: ((row.images as PatentImage[]) || []).sort((a, b) => {
+      if (a.is_abstract !== b.is_abstract) return a.is_abstract ? -1 : 1
+      return a.file_name.localeCompare(b.file_name)
+    }),
     batch_id: (row.batch_id as string) || null,
     source_file: (row.source_file as string) || null,
     grant_number: (row.grant_number as string) || null,
@@ -1031,7 +1117,11 @@ export async function getPatentById(id: string): Promise<Patent | null> {
       COALESCE(
         json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text))
         FILTER (WHERE pcl.id IS NOT NULL), '[]'
-      ) AS claims_structured
+      ) AS claims_structured,
+      COALESCE(
+        json_agg(DISTINCT jsonb_build_object('id', pimg.id, 'patent_id', pimg.patent_id, 'file_name', pimg.file_name, 'oss_key', pimg.oss_key, 'content_type', pimg.content_type, 'size', pimg.size, 'width', pimg.width, 'height', pimg.height, 'is_abstract', pimg.is_abstract, 'created_at', pimg.created_at))
+        FILTER (WHERE pimg.id IS NOT NULL), '[]'
+      ) AS images
     FROM cnipa.patent p
     LEFT JOIN cnipa.patent_applicant pa ON pa.patent_id = p.id
     LEFT JOIN cnipa.patent_inventor pi ON pi.patent_id = p.id
@@ -1041,6 +1131,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
     LEFT JOIN cnipa.patent_examiner pe ON pe.patent_id = p.id
     LEFT JOIN cnipa.patent_assignee pas ON pas.patent_id = p.id
     LEFT JOIN cnipa.patent_claim pcl ON pcl.patent_id = p.id
+    LEFT JOIN cnipa.patent_image pimg ON pimg.patent_id = p.id
     WHERE p.id = $1
     GROUP BY p.id`,
     [id],
@@ -1048,6 +1139,19 @@ export async function getPatentById(id: string): Promise<Patent | null> {
 
   if (result.rows.length === 0) return null
   return rowToPatent(result.rows[0])
+}
+
+export async function getPatentImageById(
+  id: string,
+): Promise<PatentImage | null> {
+  const result = await pool.query<PatentImage>(
+    `SELECT id, patent_id, file_name, oss_key, content_type, size, width, height, is_abstract, created_at
+       FROM cnipa.patent_image
+      WHERE id = $1`,
+    [id],
+  )
+
+  return result.rows[0] || null
 }
 
 // ============ Log 操作（public schema，不变） ============

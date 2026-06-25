@@ -778,10 +778,15 @@ export function isPatentXmlFile(fileName: string): boolean {
   )
 }
 
-// 流式遍历 ZIP 中的文件 entry，将内容收集为字符串后回调，不写磁盘
-export async function forEachZipEntry(
+export function isPatentImageFile(fileName: string): boolean {
+  const lowerName = fileName.toLowerCase()
+  return lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
+}
+
+// 流式遍历 ZIP 中的文件 entry，将内容收集为 Buffer 后回调，不写磁盘
+export async function forEachZipEntryBuffer(
   zipPath: string,
-  handler: (fileName: string, content: string) => void | Promise<void>,
+  handler: (fileName: string, content: Buffer) => void | Promise<void>,
   filter?: (fileName: string) => boolean,
 ): Promise<{ processed: number; skipped: number }> {
   return new Promise((resolve, reject) => {
@@ -822,20 +827,15 @@ export async function forEachZipEntry(
               return
             }
 
-            // 收集流数据为字符串
-            const decoder = new StringDecoder('utf-8')
-            const chunks: string[] = []
+            const chunks: Buffer[] = []
 
             readStream.on('data', (chunk: Buffer) => {
-              chunks.push(decoder.write(chunk))
+              chunks.push(chunk)
             })
 
             readStream.on('end', async () => {
-              chunks.push(decoder.end())
-              const content = chunks.join('')
-
               try {
-                await handler(fileName, content)
+                await handler(fileName, Buffer.concat(chunks))
                 processed++
               } catch {
                 skipped++
@@ -861,4 +861,20 @@ export async function forEachZipEntry(
       },
     )
   })
+}
+
+// 流式遍历 ZIP 中的文件 entry，将内容收集为字符串后回调，不写磁盘
+export async function forEachZipEntry(
+  zipPath: string,
+  handler: (fileName: string, content: string) => void | Promise<void>,
+  filter?: (fileName: string) => boolean,
+): Promise<{ processed: number; skipped: number }> {
+  return forEachZipEntryBuffer(
+    zipPath,
+    (fileName, content) => {
+      const decoder = new StringDecoder('utf-8')
+      return handler(fileName, decoder.write(content) + decoder.end())
+    },
+    filter,
+  )
 }

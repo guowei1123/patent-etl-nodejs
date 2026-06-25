@@ -9,6 +9,8 @@ import { Header } from '@/components/layout/header'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import {
@@ -310,6 +312,9 @@ export default function BatchDetailPage({
     null,
   )
   const [cleaning, setCleaning] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [optimisticActiveStep, setOptimisticActiveStep] = useState<
     string | null
   >(null)
@@ -426,22 +431,33 @@ export default function BatchDetailPage({
   const isImporting = batch?.status === 'importing'
 
   const handleDelete = async () => {
-    if (!confirm('确定要删除这个批次吗？相关的专利数据也将被删除。')) return
+    if (deleteConfirmText !== batch_code) {
+      toast.error('请输入完整批次编号后再删除')
+      return
+    }
 
+    setDeleting(true)
     try {
       const response = await fetch(`/api/batches/${batch_code}`, {
         method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm_batch_code: deleteConfirmText }),
       })
       const result = await response.json()
 
       if (result.success) {
-        toast.success('批次已删除')
+        const deletedPatents = result.data?.deletedPatents ?? 0
+        setDeleteDialogOpen(false)
+        setDeleteConfirmText('')
+        toast.success(`批次已删除，已删除 ${deletedPatents} 条专利数据`)
         router.push('/batches')
       } else {
         toast.error(result.error || '删除失败')
       }
     } catch {
       toast.error('请求失败')
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -610,6 +626,7 @@ export default function BatchDetailPage({
       batch.status,
     ) && hasLocalExtractFiles
   const canCleanupLocal = batch.status === 'completed' && hasLocalTempFiles
+  const canConfirmDelete = deleteConfirmText === batch.batch_code && !deleting
 
   return (
     <AppShell>
@@ -630,14 +647,63 @@ export default function BatchDetailPage({
                 修复状态
               </Button>
             )}
-            <Button
-              variant="destructive"
-              onClick={handleDelete}
-              disabled={!!isRunning}
+            <AlertDialog
+              open={deleteDialogOpen}
+              onOpenChange={(open) => {
+                setDeleteDialogOpen(open)
+                if (!open) setDeleteConfirmText('')
+              }}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
-              删除
-            </Button>
+              <AlertDialogTrigger asChild>
+                <Button variant="destructive" disabled={!!isRunning || deleting}>
+                  {deleting ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-2 h-4 w-4" />
+                  )}
+                  删除
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>确认删除该批次？</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    将删除该批次记录、已导入的数据库专利数据、日志和本地临时文件。删除后如需重新执行
+                    ETL，需要重新创建批次。服务端会再次校验输入的批次编号。
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <div className="space-y-2 py-2">
+                  <Label htmlFor="delete-confirm-batch-code">
+                    输入批次编号以确认
+                  </Label>
+                  <Input
+                    id="delete-confirm-batch-code"
+                    value={deleteConfirmText}
+                    onChange={(event) =>
+                      setDeleteConfirmText(event.target.value)
+                    }
+                    placeholder={batch.batch_code}
+                    autoComplete="off"
+                    disabled={deleting}
+                  />
+                  <p className="text-muted-foreground text-xs break-all">
+                    需要输入：{batch.batch_code}
+                  </p>
+                </div>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>取消</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={(event) => {
+                      event.preventDefault()
+                      handleDelete()
+                    }}
+                    disabled={!canConfirmDelete}
+                  >
+                    确认删除
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         }
       />

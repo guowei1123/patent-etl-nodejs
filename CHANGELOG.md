@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.8.0 - 2026-06-25
+
+### 新增
+
+- 处理步骤解析专利 XML 中引用的 JPG 附图，上传至 OSS，并写入 `cnipa.patent_image` 子表
+- 专利详情页展示摘要附图和说明书附图，并新增 `/api/patent-images/[image_id]` 图片代理接口
+- 删除批次时要求输入批次编号二次确认，并返回已删除专利数量
+
+### 变更
+
+- 附图上传改为先解析 XML 引用，再二次扫描内层 ZIP 只上传被引用图片，避免批量处理时保留整包图片 Buffer
+- 批次删除改为事务内同步删除关联专利数据和批次记录
+
 ## 0.7.1 - 2026-06-10
 
 ### 新增

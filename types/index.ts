@@ -48,6 +48,7 @@ export interface Patent {
   claims: string | null
   status: string | null
   abstract_fig_key: string | null
+  images: PatentImage[]
   batch_id: string | null
   source_file: string | null
   grant_number: string | null
@@ -101,6 +102,29 @@ export interface PatentCitationRow {
 export interface PatentClaimRow {
   claim_num: number
   claim_text: string
+}
+
+export interface PatentImage {
+  id: string
+  patent_id: string
+  file_name: string
+  oss_key: string
+  content_type: string
+  size: number
+  width: number | null
+  height: number | null
+  is_abstract: boolean
+  created_at: Date
+}
+
+export interface ParsedPatentImage {
+  file_name: string
+  oss_key: string
+  content_type: string
+  size: number
+  width?: number
+  height?: number
+  is_abstract: boolean
 }
 
 export interface PatentImportFailure {
@@ -223,6 +247,8 @@ export interface ParsedPatent {
   ipc_structured?: string[]
   claims_structured?: ParsedClaim[]
   abstract_figure?: string
+  image_files?: string[]
+  images?: ParsedPatentImage[]
 }
 
 // ETL 进度回调

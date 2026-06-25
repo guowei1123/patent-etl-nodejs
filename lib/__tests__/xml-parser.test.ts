@@ -351,6 +351,7 @@ describe('xml-parser — 完整字段解析', () => {
     it('提取摘要附图', () => {
       const p = parsePatentXml(inventionXml, 'invention')!
       expect(p.abstract_figure).toBe('201510163325.JPG')
+      expect(p.image_files).toContain('201510163325.JPG')
     })
 
     it('提取结构化权利要求', () => {

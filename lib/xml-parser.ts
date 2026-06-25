@@ -210,6 +210,35 @@ function splitMultiValueText(value: string | undefined): string[] {
     .filter(Boolean)
 }
 
+function uniqueTexts(values: string[]): string[] {
+  return Array.from(new Set(values.map((v) => v.trim()).filter(Boolean)))
+}
+
+function extractImageFiles(root: unknown): string[] {
+  const files: string[] = []
+
+  const visit = (node: unknown, parentKey?: string) => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, parentKey)
+      return
+    }
+
+    const obj = node as Record<string, unknown>
+    if (parentKey === 'Image') {
+      const file = extractText(obj['@_file'])
+      if (file && /\.(jpe?g)$/i.test(file)) files.push(file)
+    }
+
+    for (const [key, value] of Object.entries(obj)) {
+      visit(value, key)
+    }
+  }
+
+  visit(root)
+  return uniqueTexts(files)
+}
+
 function normalizeStructuredAgents(
   agents: ParsedAgent[],
   agentText: string | undefined,
@@ -418,6 +447,7 @@ export function parsePatentXml(
         '@_file',
       ),
     )
+    const imageFiles = extractImageFiles(root)
 
     // 提取权利要求（文本，兼容旧接口）
     const claimEntries = getNestedValue(root, 'Claims', 'Claim')
@@ -779,6 +809,7 @@ export function parsePatentXml(
       claims_structured:
         claimsStructured.length > 0 ? claimsStructured : undefined,
       abstract_figure: abstractFigure,
+      image_files: imageFiles.length > 0 ? imageFiles : undefined,
     }
   } catch (error) {
     console.error('XML解析错误:', error)
