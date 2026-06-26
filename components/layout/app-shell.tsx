@@ -16,7 +16,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       }
     >
       <Sidebar />
-      <SidebarInset className="min-h-svh">{children}</SidebarInset>
+      <SidebarInset className="min-h-svh bg-background/82">
+        {children}
+      </SidebarInset>
     </SidebarProvider>
   )
 }

@@ -21,12 +21,27 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '@/components/ui/input-group'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -40,6 +55,7 @@ import {
   Lightbulb,
   RotateCcw,
   Wrench,
+  FileSearch,
 } from 'lucide-react'
 import type { PatentListItem, PaginatedResponse } from '@/types'
 import { cn } from '@/lib/utils'
@@ -197,20 +213,22 @@ export function PatentTable({
   const paginationDisabled = isLoading || hasDataError
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {/* Toolbar */}
-      <div className="bg-card border-border space-y-4 rounded-lg border p-4">
+      <div className="bg-card border-border flex flex-col gap-4 rounded-lg border p-4">
         {hasDataError && !isLoading ? (
-          <div className="border-destructive/30 bg-destructive/5 rounded-md border px-3 py-2 text-sm">
-            <p className="text-foreground">
-              数据更新失败，当前显示的是上一次成功加载的结果。
-            </p>
+          <Alert variant="destructive">
+            <AlertTitle>数据更新失败</AlertTitle>
             {errorMessage ? (
-              <p className="text-muted-foreground mt-1 text-xs">
-                {errorMessage}
-              </p>
-            ) : null}
-          </div>
+              <AlertDescription>
+                当前显示的是上一次成功加载的结果。{errorMessage}
+              </AlertDescription>
+            ) : (
+              <AlertDescription>
+                当前显示的是上一次成功加载的结果。
+              </AlertDescription>
+            )}
+          </Alert>
         ) : null}
 
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
@@ -218,16 +236,17 @@ export function PatentTable({
             onSubmit={handleSearch}
             className="flex w-full flex-col gap-2 sm:flex-row xl:max-w-2xl"
           >
-            <div className="relative flex-1">
-              <Search className="text-muted-foreground absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2" />
-              <Input
+            <InputGroup className="flex-1">
+              <InputGroupAddon>
+                <Search aria-hidden="true" />
+              </InputGroupAddon>
+              <InputGroupInput
                 placeholder="搜索公开号、名称、申请人..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                className="pl-9"
                 disabled={isLoading}
               />
-            </div>
+            </InputGroup>
             <div className="flex gap-2">
               <Button
                 type="submit"
@@ -245,7 +264,7 @@ export function PatentTable({
                   className="flex-1 sm:flex-none"
                   disabled={isLoading}
                 >
-                  <RotateCcw className="mr-2 h-4 w-4" />
+                  <RotateCcw data-icon="inline-start" aria-hidden="true" />
                   重置
                 </Button>
               ) : null}
@@ -264,9 +283,11 @@ export function PatentTable({
                 <SelectValue placeholder="专利类型" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部类型</SelectItem>
-                <SelectItem value="B">发明授权</SelectItem>
-                <SelectItem value="U">实用新型</SelectItem>
+                <SelectGroup>
+                  <SelectItem value="all">全部类型</SelectItem>
+                  <SelectItem value="B">发明授权</SelectItem>
+                  <SelectItem value="U">实用新型</SelectItem>
+                </SelectGroup>
               </SelectContent>
             </Select>
           </div>
@@ -295,10 +316,10 @@ export function PatentTable({
                   </DialogDescription>
                 </DialogHeader>
 
-                <div className="grid gap-4">
+                <FieldGroup className="gap-4">
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_180px]">
-                    <div className="space-y-1.5">
-                      <Label htmlFor="formula-keywords">关键词</Label>
+                    <Field>
+                      <FieldLabel htmlFor="formula-keywords">关键词</FieldLabel>
                       <Input
                         id="formula-keywords"
                         placeholder="蓝牙、扭矩扳手"
@@ -308,9 +329,9 @@ export function PatentTable({
                         }
                         disabled={isGeneratingFormula}
                       />
-                    </div>
-                    <div className="space-y-1.5">
-                      <Label htmlFor="formula-format">生成格式</Label>
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="formula-format">生成格式</FieldLabel>
                       <Select
                         value={formulaOutputFormat}
                         onValueChange={(value) =>
@@ -322,17 +343,19 @@ export function PatentTable({
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="format1">
-                            关键词 + IPC/CPC
-                          </SelectItem>
-                          <SelectItem value="format2">仅关键词</SelectItem>
+                          <SelectGroup>
+                            <SelectItem value="format1">
+                              关键词 + IPC/CPC
+                            </SelectItem>
+                            <SelectItem value="format2">仅关键词</SelectItem>
+                          </SelectGroup>
                         </SelectContent>
                       </Select>
-                    </div>
+                    </Field>
                   </div>
 
-                  <div className="space-y-1.5">
-                    <Label htmlFor="formula-ipc">IPC/CPC 分类号</Label>
+                  <Field>
+                    <FieldLabel htmlFor="formula-ipc">IPC/CPC 分类号</FieldLabel>
                     <Input
                       id="formula-ipc"
                       placeholder="B, F, G, H"
@@ -340,10 +363,10 @@ export function PatentTable({
                       onChange={(e) => setFormulaIpcInput(e.target.value)}
                       disabled={isGeneratingFormula}
                     />
-                  </div>
+                  </Field>
 
-                  <div className="space-y-1.5">
-                    <Label htmlFor="formula-result">生成结果</Label>
+                  <Field>
+                    <FieldLabel htmlFor="formula-result">生成结果</FieldLabel>
                     <Textarea
                       id="formula-result"
                       placeholder="生成的检索式会显示在这里，可手动编辑"
@@ -352,14 +375,14 @@ export function PatentTable({
                       className="min-h-28 resize-y font-mono text-sm"
                       disabled={isGeneratingFormula}
                     />
-                  </div>
+                  </Field>
 
                   {formulaGenerationError ? (
-                    <p className="text-destructive text-sm">
-                      {formulaGenerationError}
-                    </p>
+                    <Alert variant="destructive">
+                      <AlertDescription>{formulaGenerationError}</AlertDescription>
+                    </Alert>
                   ) : null}
-                </div>
+                </FieldGroup>
 
                 <DialogFooter className="sm:justify-between">
                   <Button
@@ -368,7 +391,8 @@ export function PatentTable({
                     onClick={handleGenerateFormula}
                     disabled={isGeneratingFormula}
                   >
-                    {isGeneratingFormula ? '生成中...' : '生成检索式'}
+                    {isGeneratingFormula && <Spinner data-icon="inline-start" />}
+                    {isGeneratingFormula ? '生成中…' : '生成检索式'}
                   </Button>
                   <div className="flex flex-col-reverse gap-2 sm:flex-row">
                     <Button
@@ -379,7 +403,7 @@ export function PatentTable({
                         !generatedFormulaInput.trim() || isGeneratingFormula
                       }
                     >
-                      <Copy className="mr-2 h-4 w-4" />
+                      <Copy data-icon="inline-start" aria-hidden="true" />
                       复制
                     </Button>
                     <Button
@@ -433,14 +457,14 @@ export function PatentTable({
               className="shrink-0"
               disabled={isLoading}
             >
-              <Search className="mr-2 h-4 w-4" />
+              <Search data-icon="inline-start" aria-hidden="true" />
               检索
             </Button>
           </div>
         </form>
 
         <div className="border-border flex flex-col gap-3 border-t pt-4 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             {isLoading ? (
               <>
                 <Skeleton className="h-5 w-28" />
@@ -490,7 +514,7 @@ export function PatentTable({
               onClick={() => onPageChange(data.page - 1)}
               disabled={paginationDisabled || isFirstPage}
             >
-              <ChevronLeft className="mr-1 h-4 w-4" />
+              <ChevronLeft data-icon="inline-start" aria-hidden="true" />
               上一页
             </Button>
             <Button
@@ -502,7 +526,7 @@ export function PatentTable({
               }
             >
               下一页
-              <ChevronRight className="ml-1 h-4 w-4" />
+              <ChevronRight data-icon="inline-end" aria-hidden="true" />
             </Button>
           </div>
         </div>
@@ -541,18 +565,28 @@ export function PatentTable({
                     <Skeleton className="h-4 w-20" />
                   </TableCell>
                   <TableCell>
-                    <Skeleton className="h-8 w-8" />
+                    <Skeleton className="size-8" />
                   </TableCell>
                 </TableRow>
               ))
             ) : showEmptyState ? (
               <TableRow>
                 <TableCell colSpan={6} className="h-32 text-center">
-                  <p className="text-muted-foreground">
-                    {hasDataError
-                      ? errorMessage || '数据加载失败，请稍后重试'
-                      : '暂无数据'}
-                  </p>
+                  <Empty className="border-0 p-4">
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <FileSearch aria-hidden="true" />
+                      </EmptyMedia>
+                      <EmptyTitle>
+                        {hasDataError ? '数据加载失败' : '暂无数据'}
+                      </EmptyTitle>
+                      <EmptyDescription>
+                        {hasDataError
+                          ? errorMessage || '请稍后重试或调整筛选条件'
+                          : '当前没有匹配的专利数据'}
+                      </EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
                 </TableCell>
               </TableRow>
             ) : (
@@ -572,9 +606,9 @@ export function PatentTable({
                       )}
                     >
                       {patent.kind === 'B' ? (
-                        <Lightbulb className="h-3 w-3" />
+                        <Lightbulb aria-hidden="true" />
                       ) : (
-                        <Wrench className="h-3 w-3" />
+                        <Wrench aria-hidden="true" />
                       )}
                       {patent.kind === 'B' ? '发明' : '实用'}
                     </Badge>
@@ -602,9 +636,10 @@ export function PatentTable({
                       <Button
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 opacity-0 group-hover:opacity-100"
+                        className="size-8 opacity-0 group-hover:opacity-100"
+                        aria-label={`查看专利 ${patent.doc_number}`}
                       >
-                        <ExternalLink className="h-4 w-4" />
+                        <ExternalLink aria-hidden="true" />
                       </Button>
                     </Link>
                   </TableCell>

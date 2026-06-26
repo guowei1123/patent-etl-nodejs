@@ -14,16 +14,24 @@ import {
 } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '@/components/ui/input-group'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
 import { toast } from 'sonner'
-import { Plus, Loader2, FolderOpen } from 'lucide-react'
+import { Plus, FolderOpen } from 'lucide-react'
 import { FtpBrowser } from '@/components/ftp/folder-browser'
 import { generateBatchCode } from '@/lib/batch-code'
 
@@ -119,7 +127,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogTrigger asChild>
           <Button>
-            <Plus className="mr-2 h-4 w-4" />
+            <Plus data-icon="inline-start" aria-hidden="true" />
             新建批次
           </Button>
         </DialogTrigger>
@@ -131,9 +139,9 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="data_type">数据类型</Label>
+          <FieldGroup className="gap-4 py-4">
+            <Field>
+              <FieldLabel htmlFor="data_type">数据类型</FieldLabel>
               <Select
                 value={formData.data_type}
                 onValueChange={(value) => {
@@ -144,18 +152,20 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                   })
                 }}
               >
-                <SelectTrigger>
+                <SelectTrigger id="data_type">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="invention">发明授权</SelectItem>
-                  <SelectItem value="utility_model">实用新型授权</SelectItem>
+                  <SelectGroup>
+                    <SelectItem value="invention">发明授权</SelectItem>
+                    <SelectItem value="utility_model">实用新型授权</SelectItem>
+                  </SelectGroup>
                 </SelectContent>
               </Select>
-            </div>
+            </Field>
 
-            <div className="grid gap-2">
-              <Label htmlFor="batch_code">批次编号</Label>
+            <Field>
+              <FieldLabel htmlFor="batch_code">批次编号</FieldLabel>
               <Input
                 id="batch_code"
                 readOnly
@@ -167,12 +177,12 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                 }
                 className="bg-muted/50"
               />
-            </div>
+            </Field>
 
-            <div className="grid gap-2">
-              <Label htmlFor="ftp_folder">FTP 文件夹</Label>
-              <div className="flex gap-2">
-                <Input
+            <Field>
+              <FieldLabel htmlFor="ftp_folder">FTP 文件夹</FieldLabel>
+              <InputGroup>
+                <InputGroupInput
                   id="ftp_folder"
                   placeholder="选择 FTP 文件夹路径"
                   value={formData.ftp_folder}
@@ -186,25 +196,27 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                       ),
                     }))
                   }
-                  className="flex-1"
                 />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setShowFtpBrowser(true)}
-                >
-                  <FolderOpen className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          </div>
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    variant="outline"
+                    size="icon-sm"
+                    onClick={() => setShowFtpBrowser(true)}
+                    aria-label="选择 FTP 文件夹"
+                  >
+                    <FolderOpen aria-hidden="true" />
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
+            </Field>
+          </FieldGroup>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>
             <Button onClick={handleSubmit} disabled={loading}>
-              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {loading && <Spinner data-icon="inline-start" />}
               开始同步
             </Button>
           </DialogFooter>

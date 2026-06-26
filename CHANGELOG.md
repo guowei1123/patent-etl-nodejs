@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.8.2 - 2026-06-26
+
+### 新增
+
+- 补充 UI 设计规范，明确 shadcn/ui 组件、语义 token、表格筛选和可访问性约束
+- 新增 `pnpm shadcn` 脚本，通过固定兼容的 `zod` 版本运行 shadcn CLI
+
+### 变更
+
+- 重整仪表盘、批次、专利列表、专利详情、设置和登录页视觉层级，统一使用 `Field`、`InputGroup`、`Empty`、`Alert`、`Spinner` 等现有 shadcn/ui 组件
+- 调整全局浅色和暗色主题 token，统一成功、警告、信息等状态色的语义用法
+- 更新 pnpm workspace 运行配置，避免 shadcn 脚本受依赖状态检查和构建脚本拦截影响
+
 ## 0.8.1 - 2026-06-25
 
 ### 变更

@@ -4,7 +4,8 @@ import { useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Card,
   CardContent,
@@ -13,7 +14,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { ThemeToggle } from '@/components/layout/theme-toggle'
-import { FolderSync, Loader2 } from 'lucide-react'
+import { FolderSync } from 'lucide-react'
 import { toast } from 'sonner'
 
 export default function LoginPage() {
@@ -52,23 +53,46 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="bg-background relative flex min-h-screen items-center justify-center px-4">
+    <div className="bg-background relative flex min-h-screen items-center justify-center overflow-hidden px-4">
+      <div className="border-primary/20 bg-card/60 absolute top-10 left-10 hidden h-40 w-64 rounded-lg border p-3 shadow-xs lg:block">
+        <div className="grid h-full grid-cols-4 gap-2">
+          {[...Array(12)].map((_, index) => (
+            <div
+              key={index}
+              className="bg-secondary/80 rounded-sm border"
+              aria-hidden="true"
+            />
+          ))}
+        </div>
+      </div>
+      <div className="border-border/70 bg-card/50 absolute right-12 bottom-12 hidden h-28 w-72 rounded-lg border p-4 shadow-xs lg:block">
+        <div className="mb-3 flex items-center gap-2">
+          <div className="bg-success size-2 rounded-full" />
+          <div className="bg-muted h-2 w-24 rounded-full" />
+        </div>
+        <div className="bg-muted mb-2 h-2 w-full rounded-full" />
+        <div className="bg-muted h-2 w-2/3 rounded-full" />
+      </div>
+
       <div className="absolute top-4 right-4">
         <ThemeToggle />
       </div>
 
-      <Card className="bg-card border-border w-full max-w-sm shadow-sm">
+      <Card className="bg-card/94 border-border/80 w-full max-w-sm shadow-lg shadow-primary/5 backdrop-blur">
         <CardHeader className="text-center">
-          <div className="bg-primary/12 mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-xl">
-            <FolderSync className="text-primary h-6 w-6" />
+          <div className="bg-primary text-primary-foreground relative mx-auto mb-2 flex size-12 items-center justify-center overflow-hidden rounded-xl">
+            <div className="absolute inset-x-2 top-3 h-px bg-primary-foreground/35" />
+            <div className="absolute inset-y-2 left-3 w-px bg-primary-foreground/25" />
+            <FolderSync className="size-6" aria-hidden="true" />
           </div>
           <CardTitle className="text-lg">专利数据湖仓一体化平台</CardTitle>
-          <CardDescription>请登录以继续</CardDescription>
+          <CardDescription>登录后管理同步批次和专利数据</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="username">用户名</Label>
+          <form onSubmit={handleSubmit}>
+            <FieldGroup className="gap-4">
+              <Field>
+                <FieldLabel htmlFor="username">用户名</FieldLabel>
               <Input
                 id="username"
                 placeholder="请输入用户名"
@@ -77,9 +101,9 @@ export default function LoginPage() {
                 autoComplete="username"
                 autoFocus
               />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">密码</Label>
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="password">密码</FieldLabel>
               <Input
                 id="password"
                 type="password"
@@ -88,11 +112,12 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
               />
-            </div>
+              </Field>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {loading && <Spinner data-icon="inline-start" />}
               登录
             </Button>
+            </FieldGroup>
           </form>
         </CardContent>
       </Card>

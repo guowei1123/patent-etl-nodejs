@@ -6,13 +6,22 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Spinner } from '@/components/ui/spinner'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -33,7 +42,6 @@ import {
   XCircle,
   AlertCircle,
   Info,
-  Loader2,
   Play,
   Wrench,
   ShieldCheck,
@@ -247,7 +255,7 @@ function ImportFailureList({
   if (failures.length === 0) return null
 
   return (
-    <div className="mt-3 space-y-2">
+    <div className="mt-3 flex flex-col gap-2">
       {failures.map((failure, index) => (
         <div
           key={`${failure.patent_number}-${failure.kind}-${index}`}
@@ -288,15 +296,24 @@ function DownloadFileList({
   const statusIcon = (status: FileDownloadItem['status']) => {
     switch (status) {
       case 'completed':
-        return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+        return (
+          <CheckCircle2 aria-hidden="true" className="text-success size-3.5" />
+        )
       case 'skipped':
-        return <CheckCircle2 className="h-3.5 w-3.5 text-green-500" />
+        return (
+          <CheckCircle2 aria-hidden="true" className="text-success size-3.5" />
+        )
       case 'partial':
-        return <Clock className="text-warning h-3.5 w-3.5" />
+        return <Clock aria-hidden="true" className="text-warning size-3.5" />
       case 'downloading':
-        return <Loader2 className="text-info h-3.5 w-3.5 animate-spin" />
+        return <Spinner className="text-info size-3.5" />
       default:
-        return <Clock className="text-muted-foreground h-3.5 w-3.5" />
+        return (
+          <Clock
+            aria-hidden="true"
+            className="text-muted-foreground size-3.5"
+          />
+        )
     }
   }
 
@@ -309,13 +326,13 @@ function DownloadFileList({
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center justify-between text-sm font-medium">
           <span className="flex items-center gap-2">
-            <FolderCheck className="text-info h-4 w-4" />
+            <FolderCheck aria-hidden="true" className="text-info size-4" />
             文件列表
           </span>
           <div className="flex items-center gap-3">
             {currentFile?.batchEtaSeconds != null && (
               <span className="text-muted-foreground flex items-center gap-1 text-xs">
-                <Timer className="h-3 w-3" />
+                <Timer aria-hidden="true" className="size-3" />
                 批次剩余 {formatDuration(currentFile.batchEtaSeconds)}
               </span>
             )}
@@ -327,7 +344,7 @@ function DownloadFileList({
       </CardHeader>
       <CardContent>
         <ScrollArea className="max-h-[480px]">
-          <div className="space-y-1">
+          <div className="flex flex-col gap-1">
             {files.map((file) => {
               const percent =
                 file.fileSize > 0
@@ -365,17 +382,17 @@ function DownloadFileList({
                       </span>
                     </div>
                     {file.status === 'downloading' && (
-                      <div className="mt-1.5 space-y-1">
+                      <div className="mt-1.5 flex flex-col gap-1">
                         <Progress value={percent} className="h-1.5" />
                         <div className="text-muted-foreground flex gap-4 text-xs">
                           <span className="flex items-center gap-1">
-                            <Activity className="h-3 w-3" />
+                            <Activity aria-hidden="true" className="size-3" />
                             {isActive && currentFile.speedBytesPerSec > 0
                               ? formatSpeed(currentFile.speedBytesPerSec)
                               : '计算中...'}
                           </span>
                           <span className="flex items-center gap-1">
-                            <Timer className="h-3 w-3" />
+                            <Timer aria-hidden="true" className="size-3" />
                             剩余{' '}
                             {isActive
                               ? (formatDuration(currentFile.fileEtaSeconds) ??
@@ -674,7 +691,7 @@ export default function BatchDetailPage({
     return (
       <AppShell>
         <div className="flex h-screen items-center justify-center">
-          <Loader2 className="text-muted-foreground h-8 w-8 animate-spin" />
+          <Spinner className="text-muted-foreground size-8" />
         </div>
       </AppShell>
     )
@@ -746,7 +763,7 @@ export default function BatchDetailPage({
             )}
             {isOrphaned && (
               <Button variant="outline" onClick={handleFix}>
-                <Wrench className="mr-2 h-4 w-4" />
+                <Wrench data-icon="inline-start" />
                 修复状态
               </Button>
             )}
@@ -760,9 +777,9 @@ export default function BatchDetailPage({
               <AlertDialogTrigger asChild>
                 <Button variant="destructive" disabled={!!isRunning || deleting}>
                   {deleting ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <Spinner data-icon="inline-start" />
                   ) : (
-                    <Trash2 className="mr-2 h-4 w-4" />
+                    <Trash2 data-icon="inline-start" />
                   )}
                   删除
                 </Button>
@@ -775,24 +792,26 @@ export default function BatchDetailPage({
                     ETL，需要重新创建批次。服务端会再次校验输入的批次编号。
                   </AlertDialogDescription>
                 </AlertDialogHeader>
-                <div className="space-y-2 py-2">
-                  <Label htmlFor="delete-confirm-batch-code">
-                    输入批次编号以确认
-                  </Label>
-                  <Input
-                    id="delete-confirm-batch-code"
-                    value={deleteConfirmText}
-                    onChange={(event) =>
-                      setDeleteConfirmText(event.target.value)
-                    }
-                    placeholder={batch.batch_code}
-                    autoComplete="off"
-                    disabled={deleting}
-                  />
-                  <p className="text-muted-foreground text-xs break-all">
-                    需要输入：{batch.batch_code}
-                  </p>
-                </div>
+                <FieldGroup className="py-2">
+                  <Field>
+                    <FieldLabel htmlFor="delete-confirm-batch-code">
+                      输入批次编号以确认
+                    </FieldLabel>
+                    <Input
+                      id="delete-confirm-batch-code"
+                      value={deleteConfirmText}
+                      onChange={(event) =>
+                        setDeleteConfirmText(event.target.value)
+                      }
+                      placeholder={batch.batch_code}
+                      autoComplete="off"
+                      disabled={deleting}
+                    />
+                    <p className="text-muted-foreground text-xs break-all">
+                      需要输入：{batch.batch_code}
+                    </p>
+                  </Field>
+                </FieldGroup>
                 <AlertDialogFooter>
                   <AlertDialogCancel>取消</AlertDialogCancel>
                   <AlertDialogAction
@@ -811,13 +830,13 @@ export default function BatchDetailPage({
         }
       />
 
-      <div className="space-y-6 p-6">
+      <div className="flex flex-col gap-6 p-6">
         {/* Back Link */}
         <Link
           href="/batches"
           className="text-muted-foreground hover:text-foreground inline-flex items-center text-sm"
         >
-          <ArrowLeft className="mr-2 h-4 w-4" />
+          <ArrowLeft aria-hidden="true" className="mr-2 size-4" />
           返回批次列表
         </Link>
 
@@ -827,24 +846,34 @@ export default function BatchDetailPage({
             <div className="flex items-center gap-4">
               <div
                 className={cn(
-                  'flex h-12 w-12 items-center justify-center rounded-lg',
+                  'flex size-12 items-center justify-center rounded-lg',
                   status.bgColor,
                 )}
               >
                 {isOrphaned ? (
-                  <AlertCircle className={cn('text-warning h-6 w-6')} />
-                ) : isRunning ? (
-                  <Loader2
-                    className={cn('h-6 w-6 animate-spin', status.color)}
+                  <AlertCircle
+                    aria-hidden="true"
+                    className="text-warning size-6"
                   />
+                ) : isRunning ? (
+                  <Spinner className={cn('size-6', status.color)} />
                 ) : ['completed', 'downloaded', 'processed'].includes(
                     batch.status,
                   ) ? (
-                  <CheckCircle2 className={cn('h-6 w-6', status.color)} />
+                  <CheckCircle2
+                    aria-hidden="true"
+                    className={cn('size-6', status.color)}
+                  />
                 ) : batch.status === 'failed' ? (
-                  <XCircle className={cn('h-6 w-6', status.color)} />
+                  <XCircle
+                    aria-hidden="true"
+                    className={cn('size-6', status.color)}
+                  />
                 ) : (
-                  <Clock className={cn('h-6 w-6', status.color)} />
+                  <Clock
+                    aria-hidden="true"
+                    className={cn('size-6', status.color)}
+                  />
                 )}
               </div>
               <div className="flex-1">
@@ -864,18 +893,14 @@ export default function BatchDetailPage({
 
             {/* Orphaned State Warning */}
             {isOrphaned && (
-              <div className="bg-warning/10 mt-4 rounded-lg p-4">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="text-warning h-4 w-4" />
-                  <span className="text-warning text-sm font-medium">
-                    任务状态异常
-                  </span>
-                </div>
-                <p className="text-muted-foreground mt-1 text-sm">
+              <Alert className="border-warning/40 bg-warning/10 mt-4">
+                <AlertCircle aria-hidden="true" className="text-warning" />
+                <AlertTitle className="text-warning">任务状态异常</AlertTitle>
+                <AlertDescription>
                   数据库状态为「{status.label}
                   」但进程内无对应任务（可能因服务重启导致）。请点击上方「修复状态」按钮重置批次状态。
-                </p>
-              </div>
+                </AlertDescription>
+              </Alert>
             )}
 
             {/* Progress */}
@@ -899,12 +924,16 @@ export default function BatchDetailPage({
 
             {/* Error Message */}
             {batch.status === 'failed' && batch.error_message && (
-              <div className="bg-destructive/10 mt-4 rounded-lg p-4">
-                <p className="text-destructive text-sm whitespace-pre-wrap">
+              <Alert className="border-destructive/40 bg-destructive/10 mt-4">
+                <XCircle aria-hidden="true" className="text-destructive" />
+                <AlertTitle className="text-destructive">批次执行失败</AlertTitle>
+                <AlertDescription>
+                  <p className="text-sm whitespace-pre-wrap">
                   {batch.error_message}
-                </p>
+                  </p>
+                </AlertDescription>
                 <ImportFailureList failures={latestImportFailures} />
-              </div>
+              </Alert>
             )}
 
             {/* Actions Panel */}
@@ -916,7 +945,7 @@ export default function BatchDetailPage({
                 canCleanupLocal ||
                 batch.status === 'failed' ||
                 isOrphaned) && (
-                <div className="mt-6 space-y-4">
+                <div className="mt-6 flex flex-col gap-4">
                   <div className="text-muted-foreground text-xs font-medium tracking-wider uppercase">
                     操作
                   </div>
@@ -924,7 +953,7 @@ export default function BatchDetailPage({
                   <div className="flex flex-wrap gap-2">
                     {nextStep && (
                       <Button onClick={() => handleRunStep(nextStep)}>
-                        <Play className="mr-2 h-4 w-4" />
+                        <Play data-icon="inline-start" />
                         执行{stepConfig.find((s) => s.key === nextStep)?.label}
                       </Button>
                     )}
@@ -936,9 +965,9 @@ export default function BatchDetailPage({
                         disabled={verifying === 'download'}
                       >
                         {verifying === 'download' ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          <Spinner data-icon="inline-start" />
                         ) : (
-                          <ShieldCheck className="mr-2 h-4 w-4" />
+                          <ShieldCheck data-icon="inline-start" />
                         )}
                         校验下载文件
                       </Button>
@@ -951,9 +980,9 @@ export default function BatchDetailPage({
                         disabled={verifying === 'extract'}
                       >
                         {verifying === 'extract' ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          <Spinner data-icon="inline-start" />
                         ) : (
-                          <FolderCheck className="mr-2 h-4 w-4" />
+                          <FolderCheck data-icon="inline-start" />
                         )}
                         校验解压文件
                       </Button>
@@ -964,9 +993,9 @@ export default function BatchDetailPage({
                         <AlertDialogTrigger asChild>
                           <Button variant="outline" disabled={cleaning}>
                             {cleaning ? (
-                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              <Spinner data-icon="inline-start" />
                             ) : (
-                              <Trash2 className="mr-2 h-4 w-4" />
+                              <Trash2 data-icon="inline-start" />
                             )}
                             清理本地文件
                           </Button>
@@ -993,7 +1022,7 @@ export default function BatchDetailPage({
 
                     {(batch.status === 'failed' || isOrphaned) && (
                       <Button variant="outline" onClick={handleFix}>
-                        <Wrench className="mr-2 h-4 w-4" />
+                        <Wrench data-icon="inline-start" />
                         修复状态
                       </Button>
                     )}
@@ -1001,7 +1030,7 @@ export default function BatchDetailPage({
 
                   {/* Verification Result */}
                   {visibleVerifyResults.length > 0 && (
-                    <div className="space-y-2">
+                    <div className="flex flex-col gap-2">
                       {visibleVerifyResults.map((result) => (
                         <div
                           key={result.type}
@@ -1014,9 +1043,15 @@ export default function BatchDetailPage({
                         >
                           <div className="flex items-center gap-2">
                             {result.passed ? (
-                              <CheckCircle2 className="text-success h-4 w-4" />
+                              <CheckCircle2
+                                aria-hidden="true"
+                                className="text-success size-4"
+                              />
                             ) : (
-                              <XCircle className="text-destructive h-4 w-4" />
+                              <XCircle
+                                aria-hidden="true"
+                                className="text-destructive size-4"
+                              />
                             )}
                             <span
                               className={cn(
@@ -1039,7 +1074,7 @@ export default function BatchDetailPage({
                             </span>
                           </div>
                           {result.failures.length > 0 && (
-                            <div className="mt-2 space-y-1">
+                            <div className="mt-2 flex flex-col gap-1">
                               {result.failures.map((f, i) => (
                                 <p
                                   key={i}
@@ -1129,11 +1164,19 @@ export default function BatchDetailPage({
           <CardContent>
             <ScrollArea className="h-[300px]">
               {logs.length === 0 ? (
-                <p className="text-muted-foreground py-8 text-center text-sm">
-                  暂无日志
-                </p>
+                <Empty className="py-8">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <Info aria-hidden="true" />
+                    </EmptyMedia>
+                    <EmptyTitle>暂无日志</EmptyTitle>
+                    <EmptyDescription>
+                      批次运行后会在这里显示同步记录。
+                    </EmptyDescription>
+                  </EmptyHeader>
+                </Empty>
               ) : (
-                <div className="space-y-2">
+                <div className="flex flex-col gap-2">
                   {logs.map((log) => {
                     const LogIcon =
                       logIcons[log.level as keyof typeof logIcons] || Info
@@ -1151,7 +1194,7 @@ export default function BatchDetailPage({
                       >
                         <LogIcon
                           className={cn(
-                            'mt-0.5 h-4 w-4',
+                            'mt-0.5 size-4',
                             log.level === 'error'
                               ? 'text-destructive'
                               : log.level === 'warn'

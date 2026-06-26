@@ -3,12 +3,20 @@
 import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Spinner } from '@/components/ui/spinner'
 import {
   Folder,
   File,
   ChevronRight,
   ChevronUp,
-  Loader2,
   AlertCircle,
   Check,
   RefreshCw,
@@ -148,25 +156,29 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
       <div className="bg-secondary/50 flex items-center gap-2 rounded-lg px-3 py-2">
         <Button
           variant="ghost"
-          size="icon"
-          className="h-6 w-6"
+          size="icon-sm"
+          className="size-6"
           onClick={navigateUp}
           disabled={currentPath === '/' || loading}
+          aria-label="返回上级目录"
         >
-          <ChevronUp className="h-4 w-4" />
+          <ChevronUp aria-hidden="true" />
         </Button>
         <code className="text-muted-foreground flex-1 text-sm">
           {currentPath}
         </code>
         <Button
           variant="ghost"
-          size="icon"
-          className="h-6 w-6"
+          size="icon-sm"
+          className="size-6"
           onClick={() => loadDirectory(currentPath, true)}
           disabled={loading}
-          title="刷新缓存"
+          aria-label="刷新缓存"
         >
-          <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
+          <RefreshCw
+            className={cn(loading && 'animate-spin')}
+            aria-hidden="true"
+          />
         </Button>
       </div>
       {cacheInfo?.cachedAt && (
@@ -180,12 +192,15 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
       <ScrollArea className="border-border h-[300px] rounded-lg border">
         {loading ? (
           <div className="flex items-center justify-center py-12">
-            <Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
+            <Spinner className="text-muted-foreground size-6" />
           </div>
         ) : error ? (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <AlertCircle className="text-destructive h-8 w-8" />
-            <p className="text-muted-foreground mt-2 text-sm">{error}</p>
+          <div className="p-4">
+            <Alert variant="destructive">
+              <AlertCircle aria-hidden="true" />
+              <AlertTitle>无法加载 FTP 目录</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
             <Button
               variant="outline"
               size="sm"
@@ -196,16 +211,23 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
             </Button>
           </div>
         ) : entries.length === 0 ? (
-          <div className="flex items-center justify-center py-12">
-            <p className="text-muted-foreground text-sm">空文件夹</p>
-          </div>
+          <Empty className="border-0 py-12">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Folder aria-hidden="true" />
+              </EmptyMedia>
+              <EmptyTitle>空文件夹</EmptyTitle>
+              <EmptyDescription>当前目录没有可选择的文件夹。</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <div className="p-2">
             {entries.map((entry) => (
-              <div
+              <button
                 key={entry.path}
+                type="button"
                 className={cn(
-                  'flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 transition-colors',
+                  'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors',
                   selectedPath === entry.path
                     ? 'bg-accent text-accent-foreground'
                     : 'hover:bg-secondary/50',
@@ -218,21 +240,27 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
                 onDoubleClick={() => navigateTo(entry)}
               >
                 {entry.type === 'directory' ? (
-                  <Folder className="text-accent h-4 w-4" />
+                  <Folder className="text-accent size-4" aria-hidden="true" />
                 ) : (
-                  <File className="text-muted-foreground h-4 w-4" />
+                  <File
+                    className="text-muted-foreground size-4"
+                    aria-hidden="true"
+                  />
                 )}
                 <span className="flex-1 truncate text-sm">{entry.name}</span>
                 <span className="text-muted-foreground text-xs">
                   {formatSize(entry.size)}
                 </span>
                 {entry.type === 'directory' && (
-                  <ChevronRight className="text-muted-foreground h-4 w-4" />
+                  <ChevronRight
+                    className="text-muted-foreground size-4"
+                    aria-hidden="true"
+                  />
                 )}
                 {selectedPath === entry.path && (
-                  <Check className="text-accent h-4 w-4" />
+                  <Check className="text-accent size-4" aria-hidden="true" />
                 )}
-              </div>
+              </button>
             ))}
           </div>
         )}

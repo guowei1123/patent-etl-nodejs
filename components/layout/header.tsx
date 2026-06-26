@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { ThemeToggle } from '@/components/layout/theme-toggle'
 import { SidebarTrigger } from '@/components/ui/sidebar'
 import { RefreshCw } from 'lucide-react'
+import { cn } from '@/lib/utils'
 
 interface HeaderProps {
   title: string
@@ -21,9 +22,10 @@ export function Header({
   isRefreshing,
 }: HeaderProps) {
   return (
-    <header className="border-border/80 bg-background/85 supports-backdrop-filter:bg-background/70 sticky top-0 z-40 flex h-16 items-center justify-between border-b px-6 backdrop-blur">
+    <header className="border-border/70 bg-background/88 supports-backdrop-filter:bg-background/72 sticky top-0 z-40 flex h-16 items-center justify-between border-b px-6 backdrop-blur-xl">
       <div className="flex min-w-0 items-center gap-3">
         <SidebarTrigger className="text-muted-foreground hover:text-foreground size-8" />
+        <div className="bg-primary/70 hidden h-8 w-px sm:block" />
         <div className="flex min-w-0 flex-col gap-0.5">
           <h1 className="text-foreground truncate text-lg font-semibold tracking-tight">
             {title}
@@ -44,10 +46,12 @@ export function Header({
             size="icon"
             onClick={onRefresh}
             disabled={isRefreshing}
-            className="h-8 w-8"
+            className="size-8"
+            aria-label="刷新数据"
           >
             <RefreshCw
-              className={cn('h-4 w-4', isRefreshing && 'animate-spin')}
+              className={cn(isRefreshing && 'animate-spin')}
+              data-icon="inline-start"
             />
           </Button>
         )}
@@ -55,8 +59,4 @@ export function Header({
       </div>
     </header>
   )
-}
-
-function cn(...classes: (string | boolean | undefined)[]) {
-  return classes.filter(Boolean).join(' ')
 }

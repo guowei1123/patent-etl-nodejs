@@ -7,6 +7,7 @@ import { BatchList } from '@/components/batches/batch-list'
 import { NewBatchDialog } from '@/components/batches/new-batch-dialog'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { Spinner } from '@/components/ui/spinner'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useState } from 'react'
 import type { SyncBatch, PaginatedResponse, BatchStatus } from '@/types'
@@ -55,7 +56,7 @@ export default function BatchesPage() {
         action={<NewBatchDialog onSuccess={handleRefresh} />}
       />
 
-      <div className="space-y-6 p-6">
+      <div className="flex flex-col gap-6 p-6">
         {/* Filters */}
         <div className="flex items-center justify-between">
           <Tabs
@@ -82,7 +83,7 @@ export default function BatchesPage() {
           <Card className="bg-card border-border">
             <CardContent className="py-12">
               <div className="flex items-center justify-center">
-                <div className="border-primary h-8 w-8 animate-spin rounded-full border-2 border-t-transparent" />
+                <Spinner className="text-primary size-8" />
               </div>
             </CardContent>
           </Card>

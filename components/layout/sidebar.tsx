@@ -43,23 +43,25 @@ export function Sidebar() {
 
   return (
     <SidebarPanel variant="inset" collapsible="icon">
-      <SidebarHeader className="border-sidebar-border border-b p-3">
+      <SidebarHeader className="border-sidebar-border/80 border-b p-3">
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton
               asChild
               size="lg"
               tooltip="专利湖仓平台"
-              className="group-data-[collapsible=icon]:p-0!"
+              className="h-14 rounded-xl group-data-[collapsible=icon]:p-0!"
             >
               <Link href="/">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground flex aspect-square size-8 items-center justify-center rounded-lg">
-                  <FolderSync className="size-4" />
+                <div className="bg-sidebar-primary text-sidebar-primary-foreground relative flex aspect-square size-9 items-center justify-center overflow-hidden rounded-lg">
+                  <div className="absolute inset-x-1 top-2 h-px bg-sidebar-primary-foreground/35" />
+                  <div className="absolute inset-y-1 left-2 w-px bg-sidebar-primary-foreground/25" />
+                  <FolderSync className="size-4" aria-hidden="true" />
                 </div>
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">专利湖仓平台</span>
-                  <span className="text-muted-foreground truncate text-xs">
-                    数据湖仓一体化
+                  <span className="text-sidebar-foreground/62 truncate text-xs">
+                    FTP · XML · PostgreSQL
                   </span>
                 </div>
               </Link>
@@ -86,7 +88,7 @@ export function Sidebar() {
                       tooltip={item.name}
                     >
                       <Link href={item.href}>
-                        <item.icon />
+                        <item.icon aria-hidden="true" />
                         <span>{item.name}</span>
                       </Link>
                     </SidebarMenuButton>
@@ -102,7 +104,7 @@ export function Sidebar() {
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton tooltip="退出登录" onClick={handleLogout}>
-              <LogOut />
+              <LogOut aria-hidden="true" />
               <span>退出登录</span>
             </SidebarMenuButton>
           </SidebarMenuItem>

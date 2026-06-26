@@ -8,7 +8,16 @@ import { BatchList } from '@/components/batches/batch-list'
 import { NewBatchDialog } from '@/components/batches/new-batch-dialog'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { AlertCircle, Database, Settings } from 'lucide-react'
+import { Skeleton } from '@/components/ui/skeleton'
+import {
+  AlertCircle,
+  ArrowRight,
+  Database,
+  FileArchive,
+  FileJson,
+  Server,
+  Settings,
+} from 'lucide-react'
 import Link from 'next/link'
 import type { DashboardStats, SyncBatch, PaginatedResponse } from '@/types'
 
@@ -17,6 +26,12 @@ const hasRunningBatch = (batches: SyncBatch[]) =>
   batches.some((b) =>
     ['downloading', 'processing', 'importing'].includes(b.status),
   )
+const pipelineSteps = [
+  { label: 'FTP 批次目录', description: '断点下载', icon: Server },
+  { label: 'ZIP 数据包', description: '批量校验', icon: FileArchive },
+  { label: 'XML 专利档案', description: '结构解析', icon: FileJson },
+  { label: 'PostgreSQL', description: '入库索引', icon: Database },
+]
 
 export default function DashboardPage() {
   const {
@@ -62,13 +77,42 @@ export default function DashboardPage() {
         action={<NewBatchDialog onSuccess={handleRefresh} />}
       />
 
-      <div className="space-y-6 p-6">
+      <div className="flex flex-col gap-6 p-6">
+        <div className="border-border/80 bg-card/88 overflow-hidden rounded-lg border shadow-xs">
+          <div className="grid gap-0 md:grid-cols-4">
+            {pipelineSteps.map((step, index) => (
+              <div
+                key={step.label}
+                className="border-border/70 relative flex items-center gap-3 border-b p-4 last:border-b-0 md:border-r md:border-b-0 md:last:border-r-0"
+              >
+                <div className="bg-primary/12 text-primary flex size-10 shrink-0 items-center justify-center rounded-lg border border-primary/20">
+                  <step.icon className="size-5" aria-hidden="true" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-foreground truncate text-sm font-medium">
+                    {step.label}
+                  </p>
+                  <p className="text-muted-foreground truncate text-xs">
+                    {step.description}
+                  </p>
+                </div>
+                {index < pipelineSteps.length - 1 && (
+                  <ArrowRight
+                    className="text-muted-foreground/70 absolute top-1/2 right-3 hidden size-4 -translate-y-1/2 md:block"
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* Setup Warning */}
         {showSetupWarning && (
           <Card className="border-warning/50 bg-warning/5">
             <CardContent className="flex items-center gap-4 py-4">
-              <div className="bg-warning/20 flex h-10 w-10 items-center justify-center rounded-lg">
-                <AlertCircle className="text-warning h-5 w-5" />
+              <div className="bg-warning/20 flex size-10 items-center justify-center rounded-lg">
+                <AlertCircle className="text-warning size-5" aria-hidden="true" />
               </div>
               <div className="flex-1">
                 <p className="text-foreground text-sm font-medium">
@@ -82,7 +126,7 @@ export default function DashboardPage() {
               </div>
               <Link href="/settings">
                 <Button variant="outline" size="sm">
-                  <Settings className="mr-2 h-4 w-4" />
+                  <Settings data-icon="inline-start" aria-hidden="true" />
                   前往设置
                 </Button>
               </Link>
@@ -96,7 +140,7 @@ export default function DashboardPage() {
             {[...Array(4)].map((_, i) => (
               <Card key={i} className="bg-card border-border">
                 <CardContent className="p-6">
-                  <div className="bg-secondary h-24 animate-pulse rounded" />
+                  <Skeleton className="h-24 rounded" />
                 </CardContent>
               </Card>
             ))}
@@ -106,7 +150,7 @@ export default function DashboardPage() {
         ) : (
           <Card className="border-destructive/50">
             <CardContent className="flex items-center gap-4 py-6">
-              <Database className="text-destructive h-8 w-8" />
+              <Database className="text-destructive size-8" aria-hidden="true" />
               <div>
                 <p className="text-foreground font-medium">无法加载统计数据</p>
                 <p className="text-muted-foreground text-sm">
@@ -126,11 +170,14 @@ export default function DashboardPage() {
             <CardHeader>
               <CardTitle className="text-base font-medium">快速操作</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="flex flex-col gap-3">
               <Link href="/batches" className="block">
                 <div className="border-border hover:bg-secondary/50 flex items-center gap-4 rounded-lg border p-4 transition-colors">
-                  <div className="bg-secondary flex h-10 w-10 items-center justify-center rounded-lg">
-                    <Database className="text-muted-foreground h-5 w-5" />
+                  <div className="bg-secondary flex size-10 items-center justify-center rounded-lg">
+                    <Database
+                      className="text-muted-foreground size-5"
+                      aria-hidden="true"
+                    />
                   </div>
                   <div className="flex-1">
                     <p className="text-foreground text-sm font-medium">
@@ -145,8 +192,11 @@ export default function DashboardPage() {
 
               <Link href="/patents" className="block">
                 <div className="border-border hover:bg-secondary/50 flex items-center gap-4 rounded-lg border p-4 transition-colors">
-                  <div className="bg-secondary flex h-10 w-10 items-center justify-center rounded-lg">
-                    <Database className="text-muted-foreground h-5 w-5" />
+                  <div className="bg-secondary flex size-10 items-center justify-center rounded-lg">
+                    <Database
+                      className="text-muted-foreground size-5"
+                      aria-hidden="true"
+                    />
                   </div>
                   <div className="flex-1">
                     <p className="text-foreground text-sm font-medium">
@@ -161,8 +211,11 @@ export default function DashboardPage() {
 
               <Link href="/settings" className="block">
                 <div className="border-border hover:bg-secondary/50 flex items-center gap-4 rounded-lg border p-4 transition-colors">
-                  <div className="bg-secondary flex h-10 w-10 items-center justify-center rounded-lg">
-                    <Settings className="text-muted-foreground h-5 w-5" />
+                  <div className="bg-secondary flex size-10 items-center justify-center rounded-lg">
+                    <Settings
+                      className="text-muted-foreground size-5"
+                      aria-hidden="true"
+                    />
                   </div>
                   <div className="flex-1">
                     <p className="text-foreground text-sm font-medium">

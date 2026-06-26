@@ -26,7 +26,7 @@ export function ThemeToggle() {
           className="bg-background/80"
           aria-label="切换主题"
         >
-          <Palette className="h-4 w-4" />
+          <Palette aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
@@ -37,15 +37,15 @@ export function ThemeToggle() {
           onValueChange={(value) => setTheme(value)}
         >
           <DropdownMenuRadioItem value="light">
-            <Sun className="h-4 w-4" />
+            <Sun aria-hidden="true" />
             亮色
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="dark">
-            <Moon className="h-4 w-4" />
+            <Moon aria-hidden="true" />
             暗色
           </DropdownMenuRadioItem>
           <DropdownMenuRadioItem value="system">
-            <Monitor className="h-4 w-4" />
+            <Monitor aria-hidden="true" />
             跟随系统
           </DropdownMenuRadioItem>
         </DropdownMenuRadioGroup>

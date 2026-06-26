@@ -1,15 +1,22 @@
 'use client'
 
 import Link from 'next/link'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
+import { Badge } from '@/components/ui/badge'
+import { Spinner } from '@/components/ui/spinner'
 import {
   ChevronRight,
   Clock,
   CheckCircle2,
   XCircle,
-  Loader2,
   Download,
   FileSearch,
   Database,
@@ -93,10 +100,10 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
 
   if (batches.length === 0) {
     return (
-      <Card className="bg-card border-border">
+      <Card className="bg-card/92 border-border/80 shadow-xs">
         <CardContent className="flex flex-col items-center justify-center py-12">
-          <div className="bg-secondary flex h-12 w-12 items-center justify-center rounded-full">
-            <Clock className="text-muted-foreground h-6 w-6" />
+          <div className="bg-secondary/75 flex size-12 items-center justify-center rounded-full border">
+            <Clock className="text-muted-foreground size-6" aria-hidden="true" />
           </div>
           <p className="text-muted-foreground mt-4 text-sm">暂无批次记录</p>
           <Button className="mt-4" size="sm" asChild>
@@ -108,19 +115,26 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
   }
 
   return (
-    <Card className="bg-card border-border">
-      <CardHeader className="flex flex-row items-center justify-between pb-4">
-        <CardTitle className="text-base font-medium">最近批次</CardTitle>
+    <Card className="bg-card/92 border-border/80 overflow-hidden shadow-xs">
+      <CardHeader className="border-border/70 flex flex-row items-center justify-between border-b pb-4">
+        <div>
+          <CardTitle className="text-base font-medium">
+            {showAll ? '同步批次' : '最近批次'}
+          </CardTitle>
+          <CardDescription className="mt-1">
+            下载、解析、导入三个阶段的流水线状态
+          </CardDescription>
+        </div>
         {!showAll && batches.length > 5 && (
           <Link href="/batches">
             <Button variant="ghost" size="sm" className="text-muted-foreground">
               查看全部
-              <ChevronRight className="ml-1 h-4 w-4" />
+              <ChevronRight data-icon="inline-end" aria-hidden="true" />
             </Button>
           </Link>
         )}
       </CardHeader>
-      <CardContent className="space-y-3 pt-0">
+      <CardContent className="flex flex-col gap-3 p-4">
         {displayBatches.map((batch) => {
           const status = statusConfig[batch.status] ?? {
             label: batch.status,
@@ -144,35 +158,50 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
               href={`/batches/${batch.batch_code}`}
               className="block"
             >
-              <div className="group border-border bg-secondary/30 hover:bg-secondary/50 rounded-lg border p-4 transition-colors">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
+              <div className="group border-border/80 bg-background/72 hover:bg-accent/55 relative overflow-hidden rounded-lg border p-4 transition-colors">
+                <div
+                  className={cn(
+                    'absolute inset-y-0 left-0 w-1',
+                    batch.status === 'completed'
+                      ? 'bg-success'
+                      : batch.status === 'failed'
+                        ? 'bg-destructive'
+                        : isRunning
+                          ? 'bg-info'
+                          : ['downloaded', 'processed'].includes(batch.status)
+                            ? 'bg-warning'
+                            : 'bg-muted',
+                  )}
+                />
+                <div className="flex flex-col gap-3 pl-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                  <div className="flex min-w-0 items-center gap-3">
                     <div
                       className={cn(
-                        'flex h-8 w-8 items-center justify-center rounded-lg',
+                        'flex size-9 shrink-0 items-center justify-center rounded-lg border',
                         batch.status === 'completed'
-                          ? 'bg-success/20'
+                          ? 'border-success/25 bg-success/16'
                           : batch.status === 'failed'
-                            ? 'bg-destructive/20'
+                            ? 'border-destructive/25 bg-destructive/16'
                             : isRunning
-                              ? 'bg-info/20'
+                              ? 'border-info/25 bg-info/16'
                               : ['downloaded', 'processed'].includes(
                                     batch.status,
                                   )
-                                ? 'bg-warning/20'
-                                : 'bg-secondary',
+                                ? 'border-warning/25 bg-warning/16'
+                                : 'bg-secondary/75',
                       )}
                     >
                       {isRunning ? (
-                        <Loader2
-                          className={cn('h-4 w-4 animate-spin', status.color)}
-                        />
+                        <Spinner className={cn('size-4', status.color)} />
                       ) : (
-                        <StatusIcon className={cn('h-4 w-4', status.color)} />
+                        <StatusIcon
+                          className={cn('size-4', status.color)}
+                          aria-hidden="true"
+                        />
                       )}
                     </div>
-                    <div>
-                      <p className="text-foreground text-sm font-medium">
+                    <div className="min-w-0">
+                      <p className="text-foreground truncate text-sm font-medium">
                         {batch.batch_code}
                       </p>
                       <p className="text-muted-foreground text-xs">
@@ -182,18 +211,22 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex w-full shrink-0 items-center justify-between gap-3 sm:w-auto sm:justify-end">
+                    <Badge variant={status.variant}>{status.label}</Badge>
                     <StepProgressIndicator
                       status={batch.status}
                       compact
                       batch={batch}
                     />
-                    <ChevronRight className="text-muted-foreground h-4 w-4 opacity-0 transition-opacity group-hover:opacity-100" />
+                    <ChevronRight
+                      className="text-muted-foreground size-4 opacity-0 transition-opacity group-hover:opacity-100"
+                      aria-hidden="true"
+                    />
                   </div>
                 </div>
 
                 {isRunning && (
-                  <div className="mt-3">
+                  <div className="mt-3 pl-2">
                     <div className="text-muted-foreground mb-1 flex items-center justify-between text-xs">
                       <span>
                         {batch.status === 'importing'
@@ -207,21 +240,21 @@ export function BatchList({ batches, showAll = false }: BatchListProps) {
                 )}
 
                 {hasImportProgress && !isRunning && (
-                  <div className="text-muted-foreground mt-3 text-xs">
+                  <div className="text-muted-foreground mt-3 pl-2 text-xs">
                     已导入 {batch.imported_patents.toLocaleString()} /{' '}
                     {batch.total_patents.toLocaleString()} 条专利
                   </div>
                 )}
 
                 {batch.status === 'completed' && (
-                  <div className="text-muted-foreground mt-3 flex items-center gap-4 text-xs">
+                  <div className="text-muted-foreground mt-3 flex items-center gap-4 pl-2 text-xs">
                     <span>{batch.total_files} 个文件</span>
                     <span>{batch.imported_patents} 条专利</span>
                   </div>
                 )}
 
                 {batch.status === 'failed' && batch.error_message && (
-                  <p className="text-destructive mt-2 line-clamp-1 text-xs">
+                  <p className="text-destructive mt-2 line-clamp-1 pl-2 text-xs">
                     {batch.error_message}
                   </p>
                 )}

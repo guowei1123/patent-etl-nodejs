@@ -1,6 +1,7 @@
 'use client'
 
-import { CheckCircle2, Loader2, XCircle } from 'lucide-react'
+import { CheckCircle2, XCircle } from 'lucide-react'
+import { Spinner } from '@/components/ui/spinner'
 import type { BatchStatus, SyncBatch } from '@/types'
 import { cn } from '@/lib/utils'
 import { stepConfig } from './step-config'
@@ -47,8 +48,8 @@ export function StepProgressIndicator({
   compact,
   batch,
 }: StepProgressIndicatorProps) {
-  const iconSize = compact ? 'h-3 w-3' : 'h-3.5 w-3.5'
-  const circleSize = compact ? 'h-5 w-5' : 'h-7 w-7'
+  const iconSize = compact ? 'size-3' : 'size-3.5'
+  const circleSize = compact ? 'size-5' : 'size-7'
   const lineWidth = compact ? 'w-4' : 'w-8'
   const textSize = compact ? 'text-[10px]' : 'text-xs'
   const states = getStepStates(status, batch)
@@ -89,13 +90,13 @@ export function StepProgressIndicator({
                 )}
               >
                 {isRunning ? (
-                  <Loader2 className={cn(iconSize, 'animate-spin')} />
+                  <Spinner className={iconSize} />
                 ) : isDone ? (
-                  <CheckCircle2 className={iconSize} />
+                  <CheckCircle2 aria-hidden="true" className={iconSize} />
                 ) : isFailed ? (
-                  <XCircle className={iconSize} />
+                  <XCircle aria-hidden="true" className={iconSize} />
                 ) : (
-                  <StepIcon className={iconSize} />
+                  <StepIcon aria-hidden="true" className={iconSize} />
                 )}
               </div>
               <span

@@ -6,6 +6,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { AppShell } from '@/components/layout/app-shell'
 import { Header } from '@/components/layout/header'
+import { Button } from '@/components/ui/button'
 import {
   Card,
   CardContent,
@@ -15,13 +16,20 @@ import {
 } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from '@/components/ui/empty'
+import { Spinner } from '@/components/ui/spinner'
+import {
   ArrowLeft,
   Building,
   Calendar,
   FileText,
   Images,
   Lightbulb,
-  Loader2,
   Tag,
   User,
   Wrench,
@@ -58,7 +66,7 @@ function DescriptionSection({
   return (
     <section
       id={id}
-      className="scroll-mt-28 space-y-2 py-6 first:pt-0 last:pb-0"
+      className="scroll-mt-28 flex flex-col gap-2 py-6 first:pt-0 last:pb-0"
     >
       <h3 className="text-foreground text-base font-medium">{title}</h3>
       <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
@@ -79,8 +87,8 @@ function InfoItem({
 }) {
   return (
     <div className="flex items-start gap-3">
-      <div className="bg-secondary text-muted-foreground flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
-        <Icon className="text-muted-foreground h-4 w-4" />
+      <div className="bg-secondary text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg">
+        <Icon aria-hidden="true" className="text-muted-foreground size-4" />
       </div>
       <div className="min-w-0 flex-1">
         <p className="text-muted-foreground text-xs tracking-wide uppercase">
@@ -175,7 +183,7 @@ export default function PatentDetailPage({
     return (
       <AppShell>
         <div className="flex h-screen items-center justify-center">
-          <Loader2 className="text-muted-foreground h-8 w-8 animate-spin" />
+          <Spinner className="text-muted-foreground size-8" />
         </div>
       </AppShell>
     )
@@ -184,23 +192,25 @@ export default function PatentDetailPage({
   if (error) {
     return (
       <AppShell>
-        <div className="flex h-screen flex-col items-center justify-center">
-          <p className="text-muted-foreground">
-            {(error as RequestError).status === 404
-              ? '专利不存在'
-              : '数据加载失败'}
-          </p>
-          {(error as RequestError).status !== 404 ? (
-            <p className="text-muted-foreground/70 mt-1 text-xs">
-              {error.message}
-            </p>
-          ) : null}
-          <Link
-            href="/patents"
-            className="text-accent mt-4 text-sm hover:underline"
-          >
-            返回列表
-          </Link>
+        <div className="flex h-screen items-center justify-center p-6">
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FileText aria-hidden="true" />
+              </EmptyMedia>
+              <EmptyTitle>
+                {(error as RequestError).status === 404
+                  ? '专利不存在'
+                  : '数据加载失败'}
+              </EmptyTitle>
+              {(error as RequestError).status !== 404 ? (
+                <EmptyDescription>{error.message}</EmptyDescription>
+              ) : null}
+            </EmptyHeader>
+            <Button asChild variant="outline">
+              <Link href="/patents">返回列表</Link>
+            </Button>
+          </Empty>
         </div>
       </AppShell>
     )
@@ -209,14 +219,19 @@ export default function PatentDetailPage({
   if (!patent) {
     return (
       <AppShell>
-        <div className="flex h-screen flex-col items-center justify-center">
-          <p className="text-muted-foreground">专利不存在</p>
-          <Link
-            href="/patents"
-            className="text-accent mt-4 text-sm hover:underline"
-          >
-            返回列表
-          </Link>
+        <div className="flex h-screen items-center justify-center p-6">
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <FileText aria-hidden="true" />
+              </EmptyMedia>
+              <EmptyTitle>专利不存在</EmptyTitle>
+              <EmptyDescription>未找到匹配的专利记录。</EmptyDescription>
+            </EmptyHeader>
+            <Button asChild variant="outline">
+              <Link href="/patents">返回列表</Link>
+            </Button>
+          </Empty>
         </div>
       </AppShell>
     )
@@ -336,12 +351,12 @@ export default function PatentDetailPage({
       <Header title="专利详情" description={patent.doc_number} />
 
       <div className="p-6">
-        <div id="top" className="mx-auto max-w-7xl space-y-6">
+        <div id="top" className="mx-auto flex max-w-7xl flex-col gap-6">
           <Link
             href="/patents"
             className="text-muted-foreground hover:text-foreground inline-flex items-center text-sm"
           >
-            <ArrowLeft className="mr-2 h-4 w-4" />
+            <ArrowLeft aria-hidden="true" className="mr-2 size-4" />
             返回专利列表
           </Link>
 
@@ -351,17 +366,20 @@ export default function PatentDetailPage({
                 <div className="flex min-w-0 items-start gap-4">
                   <div
                     className={cn(
-                      'flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl',
+                      'flex size-14 shrink-0 items-center justify-center rounded-2xl',
                       isInvention ? 'bg-info/15' : 'bg-warning/20',
                     )}
                   >
                     {isInvention ? (
-                      <Lightbulb className="text-info h-7 w-7" />
+                      <Lightbulb aria-hidden="true" className="text-info size-7" />
                     ) : (
-                      <Wrench className="text-warning h-7 w-7" />
+                      <Wrench
+                        aria-hidden="true"
+                        className="text-warning size-7"
+                      />
                     )}
                   </div>
-                  <div className="min-w-0 space-y-3">
+                  <div className="flex min-w-0 flex-col gap-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge
                         variant="outline"
@@ -383,7 +401,7 @@ export default function PatentDetailPage({
                       )}
                     </div>
 
-                    <div className="space-y-2">
+                    <div className="flex flex-col gap-2">
                       <h1 className="text-foreground text-2xl font-semibold text-balance lg:text-3xl">
                         {patent.title}
                       </h1>
@@ -452,7 +470,7 @@ export default function PatentDetailPage({
           </Card>
 
           <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)]">
-            <div className="space-y-6 xl:sticky xl:top-6 xl:self-start">
+            <div className="flex flex-col gap-6 xl:sticky xl:top-6 xl:self-start">
               <Card className="bg-card border-border">
                 <CardHeader>
                   <CardTitle className="text-base font-medium">
@@ -482,7 +500,7 @@ export default function PatentDetailPage({
                     优先展示阅读时最常查看的主体信息
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="flex flex-col gap-4">
                   <InfoItem
                     icon={Building}
                     label="申请人"
@@ -531,7 +549,7 @@ export default function PatentDetailPage({
                   </CardTitle>
                   <CardDescription>归档编号和关键时间节点</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="flex flex-col gap-4">
                   <InfoItem
                     icon={FileText}
                     label="申请号"
@@ -578,7 +596,7 @@ export default function PatentDetailPage({
                   </CardTitle>
                   <CardDescription>分类号与数据归档补充信息</CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="flex flex-col gap-4">
                   <InfoItem
                     icon={Tag}
                     label="专利类型"
@@ -589,9 +607,9 @@ export default function PatentDetailPage({
                     label="批次 ID"
                     value={patent.batch_id}
                   />
-                  <div className="space-y-3">
+                  <div className="flex flex-col gap-3">
                     <div className="text-muted-foreground flex items-center gap-2 text-xs tracking-wide uppercase">
-                      <Tag className="h-4 w-4" />
+                      <Tag aria-hidden="true" className="size-4" />
                       <span>IPC 分类号</span>
                     </div>
                     {patent.ipc_codes?.length ? (
@@ -614,7 +632,7 @@ export default function PatentDetailPage({
               </Card>
             </div>
 
-            <div className="space-y-6">
+            <div className="flex flex-col gap-6">
               <Card
                 id="section-abstract"
                 className="bg-card border-border scroll-mt-28"
@@ -625,7 +643,7 @@ export default function PatentDetailPage({
                 </CardHeader>
                 <CardContent>
                   {patent.abstract ? (
-                    <div className="space-y-5">
+                    <div className="flex flex-col gap-5">
                       <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
                         {patent.abstract}
                       </p>
@@ -662,7 +680,10 @@ export default function PatentDetailPage({
                 >
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2 text-base font-medium">
-                      <Images className="text-muted-foreground h-4 w-4" />
+                      <Images
+                        aria-hidden="true"
+                        className="text-muted-foreground size-4"
+                      />
                       附图
                     </CardTitle>
                     <CardDescription>
@@ -714,7 +735,7 @@ export default function PatentDetailPage({
                   </CardHeader>
                   <CardContent>
                     {structuredClaims.length > 0 ? (
-                      <div className="space-y-4">
+                      <div className="flex flex-col gap-4">
                         {structuredClaims.map((claim) => (
                           <section
                             key={claim.claim_num}
@@ -751,7 +772,7 @@ export default function PatentDetailPage({
                       按章节整理，减少长文本阅读负担
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="flex flex-col gap-4">
                     <div className="flex flex-wrap gap-2">
                       {descriptionSections.map((section) => (
                         <NavChip

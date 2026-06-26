@@ -1,6 +1,6 @@
 {
   "name": "patent-etl-nodejs",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "scripts": {
@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "shadcn": "pnpm dlx --package shadcn@latest --package zod@3.25.76 shadcn",
     "test": "vitest run",
     "format": "prettier . --write",
     "format:check": "prettier . --check"

@@ -12,7 +12,11 @@ import {
 } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Separator } from '@/components/ui/separator'
+import { Spinner } from '@/components/ui/spinner'
 import { toast } from 'sonner'
 import {
   Database,
@@ -20,7 +24,6 @@ import {
   Cloud,
   CheckCircle2,
   XCircle,
-  Loader2,
   RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -35,22 +38,51 @@ function ConnectionStatus({
   status?: { success: boolean; error?: string } | null
 }) {
   if (loading)
-    return <Loader2 className="text-muted-foreground h-4 w-4 animate-spin" />
+    return <Spinner className="text-muted-foreground" />
   if (status?.success)
     return (
-      <>
-        <CheckCircle2 className="text-success h-4 w-4" />
-        <span className="text-success text-sm">已连接</span>
-      </>
+      <Badge variant="outline" className="border-success/50 text-success">
+        <CheckCircle2 aria-hidden="true" />
+        已连接
+      </Badge>
     )
   if (status && !status.success && status.error)
     return (
-      <>
-        <XCircle className="text-destructive h-4 w-4" />
-        <span className="text-destructive text-sm">连接失败</span>
-      </>
+      <Badge variant="destructive">
+        <XCircle aria-hidden="true" />
+        连接失败
+      </Badge>
     )
-  return <span className="text-warning text-sm">未配置</span>
+  return (
+    <Badge variant="outline" className="border-warning/50 text-warning">
+      未配置
+    </Badge>
+  )
+}
+
+function ReadOnlyField({
+  id,
+  label,
+  value,
+  placeholder = '未配置',
+}: {
+  id: string
+  label: string
+  value?: string | number | null
+  placeholder?: string
+}) {
+  return (
+    <Field data-disabled>
+      <FieldLabel htmlFor={id}>{label}</FieldLabel>
+      <Input
+        id={id}
+        value={value ?? ''}
+        placeholder={placeholder}
+        disabled
+        className="font-mono text-sm"
+      />
+    </Field>
+  )
 }
 
 export default function SettingsPage() {
@@ -127,24 +159,25 @@ export default function SettingsPage() {
     <AppShell>
       <Header title="系统设置" description="服务连接状态" />
 
-      <div className="max-w-3xl space-y-6 p-6">
+      <div className="flex max-w-3xl flex-col gap-6 p-6">
         {/* FTP */}
         <Card className="bg-card border-border">
           <CardHeader>
             <div className="flex items-center gap-3">
               <div
                 className={cn(
-                  'flex h-10 w-10 items-center justify-center rounded-lg',
+                  'flex size-10 items-center justify-center rounded-lg',
                   ftpStatus?.success ? 'bg-success/20' : 'bg-secondary',
                 )}
               >
                 <Server
                   className={cn(
-                    'h-5 w-5',
+                    'size-5',
                     ftpStatus?.success
                       ? 'text-success'
                       : 'text-muted-foreground',
                   )}
+                  aria-hidden="true"
                 />
               </div>
               <div className="flex-1">
@@ -159,48 +192,28 @@ export default function SettingsPage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-3">
-              <div className="space-y-2">
-                <Label>主机地址</Label>
-                <Input
-                  value={config?.ftp.host || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>端口</Label>
-                <Input
-                  value={config?.ftp.port || '21'}
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>用户名</Label>
-                <Input
-                  value={config?.ftp.user || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
+              <FieldGroup className="contents">
+                <ReadOnlyField id="ftp-host" label="主机地址" value={config?.ftp.host} />
+                <ReadOnlyField id="ftp-port" label="端口" value={config?.ftp.port || '21'} />
+                <ReadOnlyField id="ftp-user" label="用户名" value={config?.ftp.user} />
+              </FieldGroup>
             </div>
 
             {ftpStatus && !ftpStatus.success && ftpStatus.error && (
-              <div className="bg-destructive/10 rounded-lg p-3">
-                <p className="text-destructive text-sm">{ftpStatus.error}</p>
-              </div>
+              <Alert variant="destructive">
+                <AlertDescription>{ftpStatus.error}</AlertDescription>
+              </Alert>
             )}
 
-            <div className="border-border flex items-center justify-end border-t pt-4">
+            <Separator />
+            <div className="flex items-center justify-end">
               <Button
                 onClick={retestFtp}
                 disabled={loadingFtp || !config?.ftp.configured}
               >
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
                 重新测试
               </Button>
             </div>
@@ -213,17 +226,18 @@ export default function SettingsPage() {
             <div className="flex items-center gap-3">
               <div
                 className={cn(
-                  'flex h-10 w-10 items-center justify-center rounded-lg',
+                  'flex size-10 items-center justify-center rounded-lg',
                   ossStatus?.success ? 'bg-success/20' : 'bg-secondary',
                 )}
               >
                 <Cloud
                   className={cn(
-                    'h-5 w-5',
+                    'size-5',
                     ossStatus?.success
                       ? 'text-success'
                       : 'text-muted-foreground',
                   )}
+                  aria-hidden="true"
                 />
               </div>
               <div className="flex-1">
@@ -238,49 +252,28 @@ export default function SettingsPage() {
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-3">
-              <div className="space-y-2">
-                <Label>Bucket</Label>
-                <Input
-                  value={config?.oss.bucket || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Region</Label>
-                <Input
-                  value={config?.oss.region || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Endpoint</Label>
-                <Input
-                  value={config?.oss.endpoint || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
+              <FieldGroup className="contents">
+                <ReadOnlyField id="oss-bucket" label="Bucket" value={config?.oss.bucket} />
+                <ReadOnlyField id="oss-region" label="Region" value={config?.oss.region} />
+                <ReadOnlyField id="oss-endpoint" label="Endpoint" value={config?.oss.endpoint} />
+              </FieldGroup>
             </div>
 
             {ossStatus && !ossStatus.success && ossStatus.error && (
-              <div className="bg-destructive/10 rounded-lg p-3">
-                <p className="text-destructive text-sm">{ossStatus.error}</p>
-              </div>
+              <Alert variant="destructive">
+                <AlertDescription>{ossStatus.error}</AlertDescription>
+              </Alert>
             )}
 
-            <div className="border-border flex items-center justify-end border-t pt-4">
+            <Separator />
+            <div className="flex items-center justify-end">
               <Button
                 onClick={retestOss}
                 disabled={loadingOss || !config?.oss.configured}
               >
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
                 重新测试
               </Button>
             </div>
@@ -293,17 +286,18 @@ export default function SettingsPage() {
             <div className="flex items-center gap-3">
               <div
                 className={cn(
-                  'flex h-10 w-10 items-center justify-center rounded-lg',
+                  'flex size-10 items-center justify-center rounded-lg',
                   dbStatus?.success ? 'bg-success/20' : 'bg-secondary',
                 )}
               >
                 <Database
                   className={cn(
-                    'h-5 w-5',
+                    'size-5',
                     dbStatus?.success
                       ? 'text-success'
                       : 'text-muted-foreground',
                   )}
+                  aria-hidden="true"
                 />
               </div>
               <div className="flex-1">
@@ -312,71 +306,45 @@ export default function SettingsPage() {
               </div>
               <div className="flex items-center gap-2">
                 {loadingDb ? (
-                  <Loader2 className="text-muted-foreground h-4 w-4 animate-spin" />
+                  <Spinner className="text-muted-foreground" />
                 ) : dbStatus?.success ? (
-                  <>
-                    <CheckCircle2 className="text-success h-4 w-4" />
-                    <span className="text-success text-sm">已连接</span>
-                  </>
+                  <Badge variant="outline" className="border-success/50 text-success">
+                    <CheckCircle2 aria-hidden="true" />
+                    已连接
+                  </Badge>
                 ) : dbStatus?.database_url_set ? (
-                  <>
-                    <XCircle className="text-destructive h-4 w-4" />
-                    <span className="text-destructive text-sm">连接失败</span>
-                  </>
+                  <Badge variant="destructive">
+                    <XCircle aria-hidden="true" />
+                    连接失败
+                  </Badge>
                 ) : (
-                  <span className="text-warning text-sm">未配置</span>
+                  <Badge variant="outline" className="border-warning/50 text-warning">
+                    未配置
+                  </Badge>
                 )}
               </div>
             </div>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="flex flex-col gap-4">
             <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>主机地址</Label>
-                <Input
-                  value={config?.database.host || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>端口</Label>
-                <Input
-                  value={config?.database.port || '5432'}
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>数据库</Label>
-                <Input
-                  value={config?.database.db || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>用户名</Label>
-                <Input
-                  value={config?.database.user || ''}
-                  placeholder="未配置"
-                  disabled
-                  className="font-mono text-sm"
-                />
-              </div>
+              <FieldGroup className="contents">
+                <ReadOnlyField id="db-host" label="主机地址" value={config?.database.host} />
+                <ReadOnlyField id="db-port" label="端口" value={config?.database.port || '5432'} />
+                <ReadOnlyField id="db-name" label="数据库" value={config?.database.db} />
+                <ReadOnlyField id="db-user" label="用户名" value={config?.database.user} />
+              </FieldGroup>
             </div>
 
             {dbStatus?.error && (
-              <div className="bg-destructive/10 rounded-lg p-3">
-                <p className="text-destructive text-sm">{dbStatus.error}</p>
-              </div>
+              <Alert variant="destructive">
+                <AlertDescription>{dbStatus.error}</AlertDescription>
+              </Alert>
             )}
 
-            <div className="border-border flex items-center justify-end border-t pt-4">
+            <Separator />
+            <div className="flex items-center justify-end">
               <Button onClick={retestDb} disabled={loadingDb}>
-                <RefreshCw className="mr-2 h-4 w-4" />
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
                 重新测试
               </Button>
             </div>
