@@ -5,6 +5,7 @@ import {
   cancelTask,
   getDownloadProgress,
   getDownloadFileList,
+  getProcessProgress,
 } from '@/lib/etl-pipeline'
 
 // GET /api/sync/status?batch_code=xxx - 获取同步状态
@@ -71,6 +72,7 @@ export async function GET(request: NextRequest) {
         progress: Math.round(progress),
         current_file: running ? getDownloadProgress(batchCode) : null,
         file_list: running ? getDownloadFileList(batchCode) : null,
+        process_progress: running ? getProcessProgress(batchCode) : null,
       },
     })
   } catch (error) {

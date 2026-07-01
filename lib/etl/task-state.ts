@@ -1,4 +1,8 @@
-import type { FileDownloadItem, FileDownloadProgress } from '@/types'
+import type {
+  FileDownloadItem,
+  FileDownloadProgress,
+  ProcessProgress,
+} from '@/types'
 
 export interface SpeedTracker {
   samples: Array<{ timestamp: number; bytes: number }>
@@ -20,6 +24,8 @@ export const runningTasks = new Map<
 export const downloadProgress = new Map<string, FileDownloadProgress>()
 
 export const downloadFileList = new Map<string, FileDownloadItem[]>()
+
+export const processProgress = new Map<string, ProcessProgress>()
 
 export const speedTrackers = new Map<string, SpeedTracker>()
 
@@ -50,6 +56,38 @@ export function getDownloadFileList(
   batchCode: string,
 ): FileDownloadItem[] | null {
   return downloadFileList.get(batchCode) ?? null
+}
+
+export function setProcessProgress(
+  batchCode: string,
+  progress: Omit<ProcessProgress, 'batchCode' | 'updatedAt'>,
+): void {
+  processProgress.set(batchCode, {
+    batchCode,
+    updatedAt: Date.now(),
+    ...progress,
+  })
+}
+
+export function patchProcessProgress(
+  batchCode: string,
+  patch: Partial<Omit<ProcessProgress, 'batchCode' | 'updatedAt'>>,
+): void {
+  const current = processProgress.get(batchCode)
+  if (!current) return
+  processProgress.set(batchCode, {
+    ...current,
+    ...patch,
+    updatedAt: Date.now(),
+  })
+}
+
+export function getProcessProgress(batchCode: string): ProcessProgress | null {
+  return processProgress.get(batchCode) ?? null
+}
+
+export function clearProcessProgress(batchCode: string): void {
+  processProgress.delete(batchCode)
 }
 
 export function isTaskRunning(batchCode: string): boolean {

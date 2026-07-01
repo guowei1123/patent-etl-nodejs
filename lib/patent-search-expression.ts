@@ -1,3 +1,5 @@
+import { normalizeClassificationCodeNorm } from './classification-code'
+
 type TokenType = 'word' | 'phrase' | 'operator' | 'lparen' | 'rparen' | 'field'
 
 type Token = {
@@ -94,6 +96,14 @@ export class PatentSearchExpressionError extends Error {
 
 function normalizeField(field: string): string {
   return FIELD_ALIASES[field.toUpperCase()] || FIELD_ALIASES[field] || field
+}
+
+function canStartSpacedClassificationCode(value: string): boolean {
+  return /^[A-Z]\d{2}[A-Z]$/i.test(value.trim())
+}
+
+function canContinueSpacedClassificationCode(value: string): boolean {
+  return /^\d+\/[A-Z0-9]+$/i.test(value.trim())
 }
 
 function isOperator(value: string): boolean {
@@ -267,6 +277,24 @@ class Parser {
         return this.parseFieldTerm(field)
       }
 
+      if (
+        defaultField === 'ipc' &&
+        canStartSpacedClassificationCode(token.value)
+      ) {
+        const next = this.peek()
+        if (
+          next?.type === 'word' &&
+          canContinueSpacedClassificationCode(next.value)
+        ) {
+          this.consume()
+          return {
+            type: 'term',
+            field: defaultField,
+            value: `${token.value} ${next.value}`,
+          }
+        }
+      }
+
       return { type: 'term', field: defaultField, value: token.value }
     }
 
@@ -322,6 +350,21 @@ class Parser {
       throw new PatentSearchExpressionError('字段检索式缺少查询值')
     }
 
+    if (field === 'ipc' && canStartSpacedClassificationCode(token.value)) {
+      const next = this.peek()
+      if (
+        next?.type === 'word' &&
+        canContinueSpacedClassificationCode(next.value)
+      ) {
+        this.consume()
+        return {
+          type: 'term',
+          field,
+          value: `${token.value} ${next.value}`,
+        }
+      }
+    }
+
     return { type: 'term', field, value: token.value }
   }
 
@@ -375,6 +418,24 @@ function makeLikePattern(value: string): string {
     .replaceAll('?', '_')
 
   return `%${escaped}%`
+}
+
+function makePrefixLikePattern(value: string): string {
+  const escaped = escapeLike(value)
+    .replaceAll('*', '%')
+    .replaceAll('？', '_')
+    .replaceAll('?', '_')
+
+  return `${escaped}%`
+}
+
+function classificationCodeFieldCondition(value: string): SqlBuilder {
+  const normalizedValue = normalizeClassificationCodeNorm(value)
+  return (paramIndex) => ({
+    sql: `EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $${paramIndex} ESCAPE '\\')`,
+    params: [makePrefixLikePattern(normalizedValue)],
+    nextParamIndex: paramIndex + 1,
+  })
 }
 
 function textFieldCondition(sqlExpression: string, value: string): SqlBuilder {
@@ -504,12 +565,7 @@ function termToSqlBuilder(
         value,
       )
     case 'ipc':
-      return existsCondition(
-        'cnipa.patent_ipc',
-        'pic_expr',
-        (paramIndex) => `pic_expr.ipc_code ILIKE $${paramIndex} ESCAPE '\\'`,
-        value,
-      )
+      return classificationCodeFieldCondition(value)
     case 'agent':
       return existsCondition(
         'cnipa.patent_agent',

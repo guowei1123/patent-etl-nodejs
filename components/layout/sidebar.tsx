@@ -3,13 +3,14 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
+  BookOpen,
   LayoutDashboard,
   Layers,
   FileText,
   Settings,
-  FolderSync,
   LogOut,
 } from 'lucide-react'
+import { PatentLogoMark } from '@/components/layout/patent-logo-mark'
 import {
   Sidebar as SidebarPanel,
   SidebarContent,
@@ -28,6 +29,7 @@ const navigation = [
   { name: '仪表盘', href: '/', icon: LayoutDashboard },
   { name: '批次管理', href: '/batches', icon: Layers },
   { name: '专利数据', href: '/patents', icon: FileText },
+  { name: '分类字典', href: '/classifications', icon: BookOpen },
   { name: '设置', href: '/settings', icon: Settings },
 ]
 
@@ -53,11 +55,7 @@ export function Sidebar() {
               className="h-14 rounded-xl group-data-[collapsible=icon]:p-0!"
             >
               <Link href="/">
-                <div className="bg-sidebar-primary text-sidebar-primary-foreground relative flex aspect-square size-9 items-center justify-center overflow-hidden rounded-lg">
-                  <div className="absolute inset-x-1 top-2 h-px bg-sidebar-primary-foreground/35" />
-                  <div className="absolute inset-y-1 left-2 w-px bg-sidebar-primary-foreground/25" />
-                  <FolderSync className="size-4" aria-hidden="true" />
-                </div>
+                <PatentLogoMark />
                 <div className="grid flex-1 text-left text-sm leading-tight">
                   <span className="truncate font-semibold">专利湖仓平台</span>
                   <span className="text-sidebar-foreground/62 truncate text-xs">

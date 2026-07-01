@@ -1,6 +1,6 @@
 # 数据库结构与 FTP 数据源清册
 
-> 记录日期：2026-05-11 | 更新日期：2026-05-19
+> 记录日期：2026-05-11 | 更新日期：2026-07-01
 
 ## 一、PostgreSQL 数据库
 
@@ -15,7 +15,10 @@
 
 ### 当前状态
 
-数据库中存在 **两套 schema**，分别由不同系统管理。
+数据库中存在 **两套 schema**：
+
+- `public`：同步批次、日志等运维表
+- `cnipa`：专利主表、结构化子表、图片元数据和分类字典表
 
 ---
 
@@ -42,7 +45,7 @@
 | completed_at     | TIMESTAMP    |                           | 任务完成时间                                                                                                 |
 | created_at       | TIMESTAMP    | DEFAULT CURRENT_TIMESTAMP |                                                                                                              |
 
-**行数**：2
+**行数**：8（截至 2026-07-01 实测）
 
 ##### patents（专利数据 — 宽表）
 
@@ -73,7 +76,7 @@
 
 索引：`patent_type`、`grant_date`、`batch_code`、`patent_number`(unique)
 
-**行数**：0
+**行数**：当前数据库不存在该旧宽表；新流程写入 `cnipa` schema（截至 2026-07-01 实测）
 
 ##### sync_logs（同步日志）
 
@@ -88,7 +91,7 @@
 
 索引：`batch_code`
 
-**行数**：75
+**行数**：1,578（截至 2026-07-01 实测）
 
 ##### 其他表
 
@@ -98,11 +101,11 @@
 
 ---
 
-### Schema B：`cnipa` — 外部系统管理（已对齐解析器字段）
+### Schema B：`cnipa` — 专利业务表
 
-本项目代码中 **不包含** cnipa schema 的任何创建或写入逻辑。以下是实际查库获取的结构。
+本项目通过 `lib/db.ts` 的 `initializeDatabase()` 确保核心 `cnipa` 表存在，并在导入步骤写入 `cnipa.patent` 及其子表。专利图片二进制存储在 OSS，数据库只保存图片元数据和 OSS object key。
 
-> 2026-05-20 已 ALTER 对齐实际 XML 字段：新增 grant_number/grant_date、patent_claim 表、county/city 等字段。
+> 2026-07-01 已实现新批次附图上传、`cnipa.patent_image` 元数据入库和后端代理读取。历史已完成批次不自动补录图片。
 
 ##### patent（专利主表）
 
@@ -126,7 +129,7 @@
 | status             | VARCHAR(5)   |                           | 文档状态码（XML `@_status`，如 `C`）                                                        |
 | status_label       | VARCHAR(10)  |                           | 状态标签                                                                                    |
 | abstract_fig_key   | TEXT         |                           | 摘要附图文件名                                                                              |
-| drawings           | JSONB        |                           | 附图元数据                                                                                  |
+| drawings           | JSONB        |                           | XML 中的附图结构化信息；实际图片元数据见 `cnipa.patent_image`                               |
 | xml_oss_key        | TEXT         |                           | 原始 XML 的 OSS 存储路径                                                                    |
 | batch_id           | VARCHAR(100) |                           | 所属同步批次                                                                                |
 | source_file        | VARCHAR(500) |                           | 来源文件名                                                                                  |
@@ -142,7 +145,7 @@
 
 唯一约束：`(doc_number, kind)`
 
-**行数**：0
+**行数**：80,492（截至 2026-07-01 实测）
 
 ##### patent_claim（权利要求 — 结构化）
 
@@ -153,7 +156,7 @@
 | claim_num  | INTEGER | 权利要求编号 |
 | claim_text | TEXT    | 权利要求全文 |
 
-**行数**：0
+**行数**：628,730（截至 2026-07-01 实测）
 
 ##### patent_applicant（申请人）
 
@@ -168,7 +171,7 @@
 | county    | VARCHAR(50) | 区县        |
 | postcode  | VARCHAR(10) | 邮编        |
 
-**行数**：0
+**行数**：87,981（截至 2026-07-01 实测）
 
 ##### patent_inventor（发明人）
 
@@ -178,7 +181,7 @@
 | patent_id | UUID FK | → patent.id |
 | name      | TEXT    | 发明人名    |
 
-**行数**：0
+**行数**：299,401（截至 2026-07-01 实测）
 
 ##### patent_agent（代理机构/代理人）
 
@@ -190,7 +193,7 @@
 | agent           | TEXT        | 代理人姓名   |
 | customer_number | VARCHAR(20) | 代理机构编号 |
 
-**行数**：0
+**行数**：83,593（截至 2026-07-01 实测）
 
 ##### patent_assignee（受让人/权利人）
 
@@ -204,7 +207,7 @@
 | city      | VARCHAR(50) | 城市        |
 | postcode  | VARCHAR(10) | 邮编        |
 
-**行数**：0
+**行数**：87,981（截至 2026-07-01 实测）
 
 ##### patent_citation（引用文献）
 
@@ -218,7 +221,7 @@
 | pub_date   | DATE        | 公开日期             |
 | srep_phase | VARCHAR(10) | 审查阶段（如 `SEA`） |
 
-**行数**：0
+**行数**：323,980（截至 2026-07-01 实测）
 
 ##### patent_examiner（审查员）
 
@@ -228,7 +231,7 @@
 | patent_id | UUID FK | → patent.id |
 | name      | TEXT    | 审查员名    |
 
-**行数**：0
+**行数**：39,572（截至 2026-07-01 实测）
 
 ##### patent_ipc（专利-IPC关联）
 
@@ -239,7 +242,34 @@
 | ipc_code         | TEXT    | IPC 分类号   |
 | ipc_version_date | DATE    | IPC 版本日期 |
 
-**行数**：0
+**行数**：246,081（截至 2026-07-01 实测）
+
+##### patent_image（专利附图）
+
+| 列名         | 类型      | 说明                                    |
+| ------------ | --------- | --------------------------------------- |
+| id           | UUID PK   | 图片记录 ID                             |
+| patent_id    | UUID FK   | → `cnipa.patent.id`，专利删除时级联删除 |
+| file_name    | TEXT      | 内层 ZIP 中的原始图片文件名             |
+| oss_key      | TEXT      | OSS object key，唯一索引                |
+| content_type | TEXT      | MIME 类型，当前为 `image/jpeg`          |
+| size         | INTEGER   | 图片字节数                              |
+| width        | INTEGER   | JPEG 宽度，可为空                       |
+| height       | INTEGER   | JPEG 高度，可为空                       |
+| is_abstract  | BOOLEAN   | 是否摘要图                              |
+| created_at   | TIMESTAMP | 创建时间                                |
+
+索引：`patent_id`、`oss_key` unique
+
+图片 object key 规则：
+
+```text
+patents/{batchCode}/{docNumber}/{originalFileName}
+```
+
+读取路径：前端使用 `/api/patent-images/{image_id}`，后端根据 `image_id` 查询 `cnipa.patent_image`，再从 OSS 读取并返回二进制图片。前端不直接接触 OSS key、bucket、密钥或签名 URL。
+
+**行数**：161,320（截至 2026-07-01 实测）
 
 ##### patent_related_doc（相关文档/优先权）
 
@@ -326,15 +356,15 @@
 
 ##### cnipa schema 索引一览
 
-| 类型   | 涉及字段/表                                                |
-| ------ | ---------------------------------------------------------- |
-| GIN    | patent.title, patent.abstract (trigram), patent.tsv        |
-| GIN    | patent.description, patent.claims (JSONB)                  |
-| GIN    | patent_applicant.name, patent_inventor.name (trigram)      |
-| GIN    | patent_ipc.ipc_code (trigram)                              |
-| HNSW   | patent.title_embedding, patent.abstract_embedding (vector) |
-| HNSW   | ipc.vector (vector)                                        |
-| B-tree | 所有 FK 列、日期列、状态列、county、city                   |
+| 类型   | 涉及字段/表                                                    |
+| ------ | -------------------------------------------------------------- |
+| GIN    | patent.title, patent.abstract (trigram), patent.tsv            |
+| GIN    | patent.description, patent.claims (JSONB)                      |
+| GIN    | patent_applicant.name, patent_inventor.name (trigram)          |
+| GIN    | patent_ipc.ipc_code (trigram)                                  |
+| HNSW   | patent.title_embedding, patent.abstract_embedding (vector)     |
+| HNSW   | ipc.vector (vector)                                            |
+| B-tree | 所有 FK 列、日期列、状态列、county、city、patent_image.oss_key |
 
 ---
 
@@ -368,72 +398,72 @@
 
 下表列出 CNIPA XML 中实际存在的所有数据元素，以及当前解析器和两个 schema 的覆盖情况。
 
-| #                            | XML 路径 (去命名空间后)                                            | 字段语义          | ParsedPatent 已提取                   | public.patents        | cnipa 对应                         | XML 示例值                             |
-| ---------------------------- | ------------------------------------------------------------------ | ----------------- | ------------------------------------- | --------------------- | ---------------------------------- | -------------------------------------- |
+| #                            | XML 路径 (去命名空间后)                                            | 字段语义          | ParsedPatent 已提取                   | public.patents        | cnipa 对应                                      | XML 示例值                             |
+| ---------------------------- | ------------------------------------------------------------------ | ----------------- | ------------------------------------- | --------------------- | ----------------------------------------------- | -------------------------------------- |
 | **1. 根元素属性**            |
-| 1.1                          | `root.@_docNumber`                                                 | 文献号            | ✅ → `patent_number`                  | `patent_number`       | `doc_number`                       | `104751825`                            |
-| 1.2                          | `root.@_kind`                                                      | 类型码            | ⚠️ 仅用于 `detectPatentType()` 未保存 | —                     | `kind`                             | `B` / `U`                              |
-| 1.3                          | `root.@_country`                                                   | 国家代码          | ❌                                    | —                     | `pub_country`                      | `CN`                                   |
-| 1.4                          | `root.@_datePublication`                                           | 公告日期          | ✅ → `grant_date` (降级)              | `grant_date`          | `pub_date`                         | `20231003`                             |
-| 1.5                          | `root.@_status`                                                    | 文档状态          | ❌                                    | —                     | `status`                           | `C`                                    |
-| 1.6                          | `root.@_file`                                                      | 来源文件名        | ❌                                    | —                     | `source_file`                      | `CN102015...XML`                       |
+| 1.1                          | `root.@_docNumber`                                                 | 文献号            | ✅ → `patent_number`                  | `patent_number`       | `doc_number`                                    | `104751825`                            |
+| 1.2                          | `root.@_kind`                                                      | 类型码            | ⚠️ 仅用于 `detectPatentType()` 未保存 | —                     | `kind`                                          | `B` / `U`                              |
+| 1.3                          | `root.@_country`                                                   | 国家代码          | ❌                                    | —                     | `pub_country`                                   | `CN`                                   |
+| 1.4                          | `root.@_datePublication`                                           | 公告日期          | ✅ → `grant_date` (降级)              | `grant_date`          | `pub_date`                                      | `20231003`                             |
+| 1.5                          | `root.@_status`                                                    | 文档状态          | ❌                                    | —                     | `status`                                        | `C`                                    |
+| 1.6                          | `root.@_file`                                                      | 来源文件名        | ❌                                    | —                     | `source_file`                                   | `CN102015...XML`                       |
 | **2. BibliographicData**     |
-| 2.1                          | `PublicationReference[].DocumentID.DocNumber`                      | 公开号            | ✅ → `publication_number`             | `publication_number`  | 即 `doc_number`                    | `104751825`                            |
-| 2.2                          | `PublicationReference[].DocumentID.Kind`                           | 公开类型          | ❌                                    | —                     | `kind`                             | `B`                                    |
-| 2.3                          | `PublicationReference[].DocumentID.Date`                           | 公开日期          | ✅ → `publication_date`               | `publication_date`    | `pub_date`                         | `20231003`                             |
-| 2.4                          | `PublicationReference[].DocumentID.WIPOST3Code`                    | 公开国别          | ❌                                    | —                     | `pub_country`                      | `CN`                                   |
-| 2.5                          | `ApplicationReference[].@_applType`                                | 申请类型码        | ❌                                    | —                     | `app_type`                         | `10` / `20`                            |
-| 2.6                          | `ApplicationReference[].DocumentID.DocNumber`                      | 申请号            | ✅ → `application_number`             | `application_number`  | `app_number`                       | `201510163325.6`                       |
-| 2.7                          | `ApplicationReference[].DocumentID.Date`                           | 申请日期          | ✅ → `application_date`               | `application_date`    | `app_date`                         | `20150408`                             |
-| 2.8                          | `ApplicationReference[].DocumentID.WIPOST3Code`                    | 申请国别          | ❌                                    | —                     | `app_country`                      | `CN`                                   |
+| 2.1                          | `PublicationReference[].DocumentID.DocNumber`                      | 公开号            | ✅ → `publication_number`             | `publication_number`  | 即 `doc_number`                                 | `104751825`                            |
+| 2.2                          | `PublicationReference[].DocumentID.Kind`                           | 公开类型          | ❌                                    | —                     | `kind`                                          | `B`                                    |
+| 2.3                          | `PublicationReference[].DocumentID.Date`                           | 公开日期          | ✅ → `publication_date`               | `publication_date`    | `pub_date`                                      | `20231003`                             |
+| 2.4                          | `PublicationReference[].DocumentID.WIPOST3Code`                    | 公开国别          | ❌                                    | —                     | `pub_country`                                   | `CN`                                   |
+| 2.5                          | `ApplicationReference[].@_applType`                                | 申请类型码        | ❌                                    | —                     | `app_type`                                      | `10` / `20`                            |
+| 2.6                          | `ApplicationReference[].DocumentID.DocNumber`                      | 申请号            | ✅ → `application_number`             | `application_number`  | `app_number`                                    | `201510163325.6`                       |
+| 2.7                          | `ApplicationReference[].DocumentID.Date`                           | 申请日期          | ✅ → `application_date`               | `application_date`    | `app_date`                                      | `20150408`                             |
+| 2.8                          | `ApplicationReference[].DocumentID.WIPOST3Code`                    | 申请国别          | ❌                                    | —                     | `app_country`                                   | `CN`                                   |
 | **3. 分类**                  |
-| 3.1                          | `ClassificationIPCRDetails.ClassificationIPCR[]`                   | IPC 分类          | ✅ → `ipc_codes` (文本数组)           | `ipc_codes TEXT[]`    | `patent_ipc` 表                    | —                                      |
-| 3.2                          | `ClassificationIPCR.Text`                                          | IPC 文本          | ✅ (拼接进数组)                       | 同上                  | `patent_ipc.ipc_code`              | `G09G 5/10 (2006.01)`                  |
-| 3.3                          | `ClassificationIPCR.Section/MainClass/Subclass/MainGroup/Subgroup` | IPC 拆分字段      | ❌                                    | —                     | — (可推算)                         | `G, 09, G, 5, 10`                      |
-| 3.4                          | `ClassificationIPCR.IPCVersionDate`                                | IPC 版本日期      | ❌                                    | —                     | —                                  | `20060101`                             |
+| 3.1                          | `ClassificationIPCRDetails.ClassificationIPCR[]`                   | IPC 分类          | ✅ → `ipc_codes` (文本数组)           | `ipc_codes TEXT[]`    | `patent_ipc` 表                                 | —                                      |
+| 3.2                          | `ClassificationIPCR.Text`                                          | IPC 文本          | ✅ (拼接进数组)                       | 同上                  | `patent_ipc.ipc_code`                           | `G09G 5/10 (2006.01)`                  |
+| 3.3                          | `ClassificationIPCR.Section/MainClass/Subclass/MainGroup/Subgroup` | IPC 拆分字段      | ❌                                    | —                     | — (可推算)                                      | `G, 09, G, 5, 10`                      |
+| 3.4                          | `ClassificationIPCR.IPCVersionDate`                                | IPC 版本日期      | ❌                                    | —                     | —                                               | `20060101`                             |
 | **4. Parties — 申请人**      |
-| 4.1                          | `ApplicantDetails.Applicant[].AddressBook.Name`                    | 申请人名称        | ✅ → `applicant` (`;` 拼接)           | `applicant TEXT`      | `patent_applicant.name`            | `恒银金融科技股份有限公司`             |
-| 4.2                          | `Applicant[].AddressBook.Address.Province`                         | 省份              | ❌                                    | —                     | `patent_applicant.province`        | `天津市`                               |
-| 4.3                          | `Applicant[].AddressBook.Address.City`                             | 城市              | ❌                                    | —                     | `patent_applicant.city`            | `市辖区`                               |
-| 4.4                          | `Applicant[].AddressBook.Address.County`                           | 区县              | ❌                                    | —                     | —                                  | `滨海新区`                             |
-| 4.5                          | `Applicant[].AddressBook.Address.PostCode`                         | 邮编              | ❌                                    | —                     | `patent_applicant.postcode`        | `300308`                               |
-| 4.6                          | `Applicant[].AddressBook.Address.Text`                             | 完整地址          | ❌                                    | —                     | `patent_applicant.address`         | `300308 天津市...`                     |
+| 4.1                          | `ApplicantDetails.Applicant[].AddressBook.Name`                    | 申请人名称        | ✅ → `applicant` (`;` 拼接)           | `applicant TEXT`      | `patent_applicant.name`                         | `恒银金融科技股份有限公司`             |
+| 4.2                          | `Applicant[].AddressBook.Address.Province`                         | 省份              | ❌                                    | —                     | `patent_applicant.province`                     | `天津市`                               |
+| 4.3                          | `Applicant[].AddressBook.Address.City`                             | 城市              | ❌                                    | —                     | `patent_applicant.city`                         | `市辖区`                               |
+| 4.4                          | `Applicant[].AddressBook.Address.County`                           | 区县              | ❌                                    | —                     | —                                               | `滨海新区`                             |
+| 4.5                          | `Applicant[].AddressBook.Address.PostCode`                         | 邮编              | ❌                                    | —                     | `patent_applicant.postcode`                     | `300308`                               |
+| 4.6                          | `Applicant[].AddressBook.Address.Text`                             | 完整地址          | ❌                                    | —                     | `patent_applicant.address`                      | `300308 天津市...`                     |
 | **5. Parties — 发明人**      |
-| 5.1                          | `InventorDetails.Inventor[].AddressBook.Name`                      | 发明人名          | ✅ → `inventor` (`;` 拼接)            | `inventor TEXT`       | `patent_inventor.name`             | `江浩然`                               |
+| 5.1                          | `InventorDetails.Inventor[].AddressBook.Name`                      | 发明人名          | ✅ → `inventor` (`;` 拼接)            | `inventor TEXT`       | `patent_inventor.name`                          | `江浩然`                               |
 | **6. Parties — 代理人/机构** |
-| 6.1                          | `AgentDetails.Agent[].Agency.AddressBook.OrganizationName`         | 代理机构          | ✅ → `agency` (`;` 拼接)              | `agency TEXT`         | `patent_agent.agency`              | `天津市三利专利商标代理有限公司 12107` |
-| 6.2                          | `AgentDetails.Agent[].AddressBook.Name`                            | 代理人            | ✅ → `agent` (`;` 拼接)               | `agent TEXT`          | `patent_agent.agent`               | `周庆路`                               |
-| 6.3                          | `AgentDetails.CustomerNumber`                                      | 代理机构编号      | ❌                                    | —                     | —                                  | `12107`                                |
-| 6.4                          | _Agent 与 Agency 的配对关系_                                       |                   | ❌ 丢失                               | —                     | `patent_agent` (每行一对)          | —                                      |
+| 6.1                          | `AgentDetails.Agent[].Agency.AddressBook.OrganizationName`         | 代理机构          | ✅ → `agency` (`;` 拼接)              | `agency TEXT`         | `patent_agent.agency`                           | `天津市三利专利商标代理有限公司 12107` |
+| 6.2                          | `AgentDetails.Agent[].AddressBook.Name`                            | 代理人            | ✅ → `agent` (`;` 拼接)               | `agent TEXT`          | `patent_agent.agent`                            | `周庆路`                               |
+| 6.3                          | `AgentDetails.CustomerNumber`                                      | 代理机构编号      | ❌                                    | —                     | —                                               | `12107`                                |
+| 6.4                          | _Agent 与 Agency 的配对关系_                                       |                   | ❌ 丢失                               | —                     | `patent_agent` (每行一对)                       | —                                      |
 | **7. 受让人**                |
-| 7.1                          | `AssigneeDetails.Assignee[].AddressBook.Name`                      | 受让人名称        | ❌                                    | —                     | `patent_assignee.name`             | `恒银金融科技股份有限公司`             |
-| 7.2                          | `AssigneeDetails.Assignee[].AddressBook.Address.*`                 | 受让人地址        | ❌                                    | —                     | `patent_assignee.address/province` | —                                      |
+| 7.1                          | `AssigneeDetails.Assignee[].AddressBook.Name`                      | 受让人名称        | ❌                                    | —                     | `patent_assignee.name`                          | `恒银金融科技股份有限公司`             |
+| 7.2                          | `AssigneeDetails.Assignee[].AddressBook.Address.*`                 | 受让人地址        | ❌                                    | —                     | `patent_assignee.address/province`              | —                                      |
 | **8. 审查员 (仅发明)**       |
-| 8.1                          | `ExaminerDetails.Examiner[].Name`                                  | 审查员            | ❌                                    | —                     | `patent_examiner.name`             | `李尊懋`                               |
-|                              |                                                                    |                   |                                       |                       |                                    | _实用新型无此节点_                     |
+| 8.1                          | `ExaminerDetails.Examiner[].Name`                                  | 审查员            | ❌                                    | —                     | `patent_examiner.name`                          | `李尊懋`                               |
+|                              |                                                                    |                   |                                       |                       |                                                 | _实用新型无此节点_                     |
 | **9. 引用文献 (仅发明)**     |
-| 9.1                          | `ReferencesCited.Citation[].ApplicationCitation`                   | 引用文献          | ❌                                    | —                     | `patent_citation` 表               | —                                      |
-| 9.2                          | `.PublicationReference[].DocumentID.WIPOST3Code`                   | 国别              | ❌                                    | —                     | `patent_citation.country`          | `CN`                                   |
-| 9.3                          | `.PublicationReference[].DocumentID.DocNumber`                     | 文献号            | ❌                                    | —                     | `patent_citation.doc_number`       | `203232659`                            |
-| 9.4                          | `.PublicationReference[].DocumentID.Kind`                          | 类型码            | ❌                                    | —                     | `patent_citation.kind`             | `U`                                    |
-| 9.5                          | `.PublicationReference[].DocumentID.Date`                          | 公开日期          | ❌                                    | —                     | `patent_citation.pub_date`         | `20131009`                             |
-|                              |                                                                    |                   |                                       |                       |                                    | _实用新型无此节点_                     |
+| 9.1                          | `ReferencesCited.Citation[].ApplicationCitation`                   | 引用文献          | ❌                                    | —                     | `patent_citation` 表                            | —                                      |
+| 9.2                          | `.PublicationReference[].DocumentID.WIPOST3Code`                   | 国别              | ❌                                    | —                     | `patent_citation.country`                       | `CN`                                   |
+| 9.3                          | `.PublicationReference[].DocumentID.DocNumber`                     | 文献号            | ❌                                    | —                     | `patent_citation.doc_number`                    | `203232659`                            |
+| 9.4                          | `.PublicationReference[].DocumentID.Kind`                          | 类型码            | ❌                                    | —                     | `patent_citation.kind`                          | `U`                                    |
+| 9.5                          | `.PublicationReference[].DocumentID.Date`                          | 公开日期          | ❌                                    | —                     | `patent_citation.pub_date`                      | `20131009`                             |
+|                              |                                                                    |                   |                                       |                       |                                                 | _实用新型无此节点_                     |
 | **10. 摘要**                 |
-| 10.1                         | `Abstract.Paragraphs`                                              | 摘要文本          | ✅ → `abstract`                       | `abstract TEXT`       | `abstract TEXT`                    | —                                      |
-| 10.2                         | `Abstract.AbstractFigure.Figure.Image.@_file`                      | 摘要附图文件名    | ❌                                    | —                     | `abstract_fig_key`                 | `201510163325.JPG`                     |
-| 10.3                         | `Abstract.AbstractFigure.Figure.Image.@_he/@_wi`                   | 附图尺寸          | ❌                                    | —                     | `drawings` JSONB                   | `he="341" wi="1000"`                   |
+| 10.1                         | `Abstract.Paragraphs`                                              | 摘要文本          | ✅ → `abstract`                       | `abstract TEXT`       | `abstract TEXT`                                 | —                                      |
+| 10.2                         | `Abstract.AbstractFigure.Figure.Image.@_file`                      | 摘要附图文件名    | ✅                                    | —                     | `abstract_fig_key` + `patent_image.is_abstract` | `201510163325.JPG`                     |
+| 10.3                         | `Abstract.AbstractFigure.Figure.Image.@_he/@_wi`                   | 附图尺寸          | ✅                                    | —                     | `patent_image.width/height`                     | `he="341" wi="1000"`                   |
 | **11. 权利要求**             |
-| 11.1                         | `Claims.Claim[].ClaimText[]`                                       | 权利要求文本      | ✅ → `claims` (文本拼接)              | `claims TEXT`         | `claims JSONB` (结构化)            | —                                      |
+| 11.1                         | `Claims.Claim[].ClaimText[]`                                       | 权利要求文本      | ✅ → `claims` (文本拼接)              | `claims TEXT`         | `claims JSONB` (结构化)                         | —                                      |
 | **12. 说明书**               |
-| 12.1                         | `Description.TechnicalField`                                       | 技术领域          | ❌                                    | —                     | `description JSONB`                | —                                      |
-| 12.2                         | `Description.BackgroundArt`                                        | 背景技术          | ❌                                    | —                     | `description JSONB`                | —                                      |
-| 12.3                         | `Description.Disclosure`                                           | 发明/实用新型内容 | ❌                                    | —                     | `description JSONB`                | —                                      |
-| 12.4                         | `Description.DrawingsDescription`                                  | 附图说明          | ❌                                    | —                     | `description JSONB`                | —                                      |
-| 12.5                         | `Description.InventionMode`                                        | 具体实施方式      | ❌                                    | —                     | `description JSONB`                | —                                      |
+| 12.1                         | `Description.TechnicalField`                                       | 技术领域          | ❌                                    | —                     | `description JSONB`                             | —                                      |
+| 12.2                         | `Description.BackgroundArt`                                        | 背景技术          | ❌                                    | —                     | `description JSONB`                             | —                                      |
+| 12.3                         | `Description.Disclosure`                                           | 发明/实用新型内容 | ❌                                    | —                     | `description JSONB`                             | —                                      |
+| 12.4                         | `Description.DrawingsDescription`                                  | 附图说明          | ❌                                    | —                     | `description JSONB`                             | —                                      |
+| 12.5                         | `Description.InventionMode`                                        | 具体实施方式      | ❌                                    | —                     | `description JSONB`                             | —                                      |
 | **13. 附图文件**             |
-| 13.1                         | ZIP 内 `*.JPG` 文件                                                | 附图图片          | ❌                                    | —                     | `drawings` JSONB                   | `HDA0000695450590000011.JPG`           |
+| 13.1                         | ZIP 内 `*.JPG` / `*.JPEG` 文件                                     | 附图图片          | ✅                                    | —                     | OSS + `patent_image`                            | `HDA0000695450590000011.JPG`           |
 | **14. 优先权**               |
-| 14.1                         | `PriorityClaim`                                                    | 优先权声明        | ⚠️ 仅 legacy 路径                     | `priority_info JSONB` | `patent_related_doc` 表            | 本批次样本中未出现                     |
+| 14.1                         | `PriorityClaim`                                                    | 优先权声明        | ⚠️ 仅 legacy 路径                     | `priority_info JSONB` | `patent_related_doc` 表                         | 本批次样本中未出现                     |
 
 ### 两种专利类型的 XML 差异
 
@@ -454,20 +484,20 @@
 
 ### 数据模型差异
 
-| 维度        | public                  | cnipa                     |
-| ----------- | ----------------------- | ------------------------- |
-| 设计风格    | 宽表（1 张 patents 表） | 规范化（1 主表 + 8 子表） |
-| 多值字段    | 拼接为字符串或 TEXT[]   | 拆分为独立行（子表）      |
-| 主键类型    | SERIAL INT              | UUID                      |
-| claims 存储 | TEXT（纯文本）          | JSONB（结构化）           |
-| 说明书      | 不存储                  | JSONB（结构化）           |
-| raw_xml     | 存库（TEXT）            | OSS 引用（xml_oss_key）   |
-| 地址/地理   | 不存储                  | 省/市/邮编                |
-| 全文检索    | ILIKE                   | tsvector + GIN            |
-| 模糊搜索    | 无                      | trigram GIN               |
-| 语义搜索    | 无                      | vector + HNSW             |
-| IPC 字典    | 无                      | 独立表 + 向量             |
-| 数据状态    | **0 行专利**            | **0 行专利**              |
+| 维度        | public                  | cnipa                          |
+| ----------- | ----------------------- | ------------------------------ |
+| 设计风格    | 宽表（1 张 patents 表） | 规范化（1 主表 + 8 子表）      |
+| 多值字段    | 拼接为字符串或 TEXT[]   | 拆分为独立行（子表）           |
+| 主键类型    | SERIAL INT              | UUID                           |
+| claims 存储 | TEXT（纯文本）          | JSONB（结构化）                |
+| 说明书      | 不存储                  | JSONB（结构化）                |
+| raw_xml     | 存库（TEXT）            | 存库（TEXT），预留 xml_oss_key |
+| 地址/地理   | 不存储                  | 省/市/邮编                     |
+| 全文检索    | ILIKE                   | tsvector + GIN                 |
+| 模糊搜索    | 无                      | trigram GIN                    |
+| 语义搜索    | 无                      | vector + HNSW                  |
+| IPC 字典    | 无                      | 独立表 + 向量                  |
+| 数据状态    | 运维表保留批次状态      | 已由本项目导入专利和图片元数据 |
 
 ### 字段覆盖率
 
@@ -579,13 +609,13 @@ CN102015000163325CN00001047518250BFULZH20231003CN00Q/
 - `生物序列2023年` / `生物序列2024年` / `生物序列2025年`
 - `*rawdata` 目录
 
-### 6. 两套 Schema 数据不同步（P1）
+### 6. 两套 Schema 数据不同步（P1）— 已缓解
 
-cnipa schema 有 536 个 sync_task 但 patent 表为空。public schema 有 2 个 sync_batches 但 patents 也为空。两套系统各自为政，无数据共享。
+当前同步流程以 `public.sync_batches` 管理批次状态，以 `cnipa` schema 存储专利主表、结构化子表和图片元数据。旧的 `sync_task` 数据仍可能存在，但新流程不依赖它。
 
 ### 7. XML 解析器覆盖率不足（P1）
 
-当前仅提取 47 个可用字段中的 16 个（34%），遗漏了说明书、受让人、审查员、引用文献、结构化地址、附图等重要数据。
+已补充说明书、申请人/权利人、审查员、引用文献、结构化地址、权利要求和附图元数据。仍需持续按更多批次样本校验 XML 变体覆盖率。
 
 ---
 
@@ -593,8 +623,8 @@ cnipa schema 有 536 个 sync_task 但 patent 表为空。public schema 有 2 �
 
 1. ~~修复分包过滤器~~ ✅
 2. ~~修复 XML 命名空间解析~~ ✅
-3. **手动运行 1 个批次** — 验证下载 → 解压 → 解析 → 入库全流程（端到端验证）
-4. **增强 XML 解析器** — 补充提取 kind、description、结构化申请人/代理人、审查员、引用文献等
-5. **演进 public schema** — 新增规范化子表（patent_applicant 等），向 cnipa 设计对齐
+3. ~~手动运行 1 个批次~~ ✅ — 已验证下载 → 解压/CRC → XML 解析 + 附图上传 → 入库全流程
+4. **增强 XML 解析器** — 持续补充不同批次、不同专利类型的 XML 变体覆盖
+5. **收敛旧 public patents 宽表** — 新流程以 `cnipa` schema 为专利业务数据源，避免两套专利表继续分叉
 6. **实现批量扫描和同步** — 自动遍历 541 个 FTP 子目录
 7. **全文检索与语义搜索** — 添加 tsvector、trigram、vector 能力

@@ -10,6 +10,7 @@ export type { StepResult } from './etl/types'
 export {
   getDownloadProgress,
   getDownloadFileList,
+  getProcessProgress,
   isTaskRunning,
   isTaskCancelling,
   cancelTask,

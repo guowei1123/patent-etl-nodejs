@@ -77,6 +77,46 @@ export interface PatentListItem {
   applicants: PatentApplicantRow[]
 }
 
+// IPC/CPC 分类字典
+export type ClassificationType = 'ipc' | 'cpc'
+
+export interface ClassificationRow {
+  code_norm: string
+  code: string
+  source_code: string
+  version: string
+  section: string | null
+  class_code: string | null
+  subclass: string | null
+  main_group: string | null
+  subgroup: string | null
+  level: number | null
+  title_en: string
+  title_zh: string | null
+  title_zh_source: string | null
+  source_file: string | null
+}
+
+export interface ClassificationFilter {
+  type: ClassificationType
+  q?: string
+}
+
+export interface ClassificationTreeNode extends ClassificationRow {
+  parent_code_norm: string | null
+  depth: number
+  has_children: boolean
+  is_match: boolean
+}
+
+export interface ClassificationTreeResponse {
+  items: ClassificationTreeNode[]
+  total: number
+  limit: number
+  parent_code_norm: string | null
+  is_search: boolean
+}
+
 // 子表行类型
 export interface PatentApplicantRow {
   name: string
@@ -291,6 +331,26 @@ export interface FileDownloadItem {
   fileSize: number
   status: FileDownloadStatus
   bytesDownloaded: number
+}
+
+export type ProcessProgressPhase =
+  | 'preparing'
+  | 'parsing_xml'
+  | 'uploading_images'
+
+export interface ProcessProgress {
+  batchCode: string
+  currentZip: string | null
+  phase: ProcessProgressPhase
+  processedZips: number
+  totalZips: number
+  xmlProcessed: number
+  patentCount: number
+  imageTotal: number
+  imageUploaded: number
+  imageSkipped: number
+  imageFailed: number
+  updatedAt: number
 }
 
 // API 响应

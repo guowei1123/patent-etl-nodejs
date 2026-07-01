@@ -23,11 +23,17 @@ import {
 import {
   buildPatentImageKey,
   isOssConfigured,
+  patentImageExists,
   putPatentImage,
 } from '../oss-client'
 import type { ParsedPatent, PatentType } from '@/types'
 import type { StepResult } from './types'
-import { runningTasks } from './task-state'
+import {
+  clearProcessProgress,
+  patchProcessProgress,
+  runningTasks,
+  setProcessProgress,
+} from './task-state'
 
 type ZipImageEntry = {
   fileName: string
@@ -40,6 +46,36 @@ type ZipImageEntry = {
 type PatentImageReference = {
   patent: ParsedPatent
   isAbstract: boolean
+}
+
+type ImageUploadResult = 'uploaded' | 'skipped'
+
+type ImageUploadFailure = {
+  fileName: string
+  patentNumber: string
+  ossKey: string
+  error: string
+}
+
+type ImageUploadStats = {
+  total: number
+  uploaded: number
+  skipped: number
+  failed: number
+}
+
+function getImageUploadConcurrency(): number {
+  const value = parseInt(process.env.IMAGE_UPLOAD_CONCURRENCY || '8', 10)
+  return Number.isFinite(value) && value > 0 ? value : 8
+}
+
+function getImageUploadLogInterval(): number {
+  const value = parseInt(process.env.IMAGE_UPLOAD_LOG_INTERVAL || '200', 10)
+  return Number.isFinite(value) && value > 0 ? value : 200
+}
+
+function shouldUploadImagesDuringProcess(): boolean {
+  return process.env.PROCESS_UPLOAD_IMAGES !== '0'
 }
 
 function getImageMapKey(fileName: string): string {
@@ -122,13 +158,16 @@ async function attachPatentImage(
   reference: PatentImageReference,
   image: ZipImageEntry,
   content: Buffer,
-): Promise<void> {
+): Promise<{ ossKey: string; result: ImageUploadResult }> {
   const ossKey = buildPatentImageKey(
     batchCode,
     reference.patent.patent_number,
     image.fileName,
   )
-  await putPatentImage(ossKey, content, image.contentType)
+  const exists = await patentImageExists(ossKey)
+  if (!exists) {
+    await putPatentImage(ossKey, content, image.contentType)
+  }
 
   const patentImages = reference.patent.images || []
   patentImages.push({
@@ -141,21 +180,114 @@ async function attachPatentImage(
     is_abstract: reference.isAbstract,
   })
   reference.patent.images = patentImages
+
+  return { ossKey, result: exists ? 'skipped' : 'uploaded' }
 }
 
 async function uploadReferencedPatentImages(
   batchCode: string,
   zipFile: string,
+  zipIndex: number,
+  totalZips: number,
   referencesByName: Map<string, PatentImageReference[]>,
-): Promise<{ uploadedCount: number; processed: number; skipped: number }> {
-  let uploadedCount = 0
+  isCancelled: () => boolean,
+): Promise<{
+  stats: ImageUploadStats
+  processed: number
+  skippedEntries: number
+}> {
+  const concurrency = getImageUploadConcurrency()
+  const logInterval = getImageUploadLogInterval()
+  const stats: ImageUploadStats = {
+    total: Array.from(referencesByName.values()).reduce(
+      (sum, refs) => sum + refs.length,
+      0,
+    ),
+    uploaded: 0,
+    skipped: 0,
+    failed: 0,
+  }
+  const failures: ImageUploadFailure[] = []
+  const active = new Set<Promise<void>>()
+  const seenImageKeys = new Set<string>()
+
+  const updateProgress = () => {
+    patchProcessProgress(batchCode, {
+      phase: 'uploading_images',
+      currentZip: path.basename(zipFile),
+      processedZips: zipIndex,
+      totalZips,
+      imageTotal: stats.total,
+      imageUploaded: stats.uploaded,
+      imageSkipped: stats.skipped,
+      imageFailed: stats.failed,
+    })
+  }
+
+  const waitForSlot = async () => {
+    while (active.size >= concurrency) {
+      await Promise.race(active)
+    }
+  }
+
+  const schedule = async (
+    reference: PatentImageReference,
+    image: ZipImageEntry,
+    content: Buffer,
+  ) => {
+    await waitForSlot()
+    if (isCancelled()) return
+
+    const task = (async () => {
+      const ossKey = buildPatentImageKey(
+        batchCode,
+        reference.patent.patent_number,
+        image.fileName,
+      )
+      try {
+        const result = await attachPatentImage(
+          batchCode,
+          reference,
+          image,
+          content,
+        )
+        if (result.result === 'skipped') stats.skipped++
+        else stats.uploaded++
+      } catch (error) {
+        stats.failed++
+        failures.push({
+          fileName: image.fileName,
+          patentNumber: reference.patent.patent_number,
+          ossKey,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        })
+      } finally {
+        updateProgress()
+        const done = stats.uploaded + stats.skipped + stats.failed
+        if (done > 0 && done % logInterval === 0) {
+          await addLog(
+            batchCode,
+            'info',
+            `${path.basename(zipFile)}: 附图上传进度 ${done}/${stats.total}，上传 ${stats.uploaded}，跳过 ${stats.skipped}，失败 ${stats.failed}`,
+          )
+        }
+      }
+    })()
+    active.add(task)
+    task.finally(() => active.delete(task))
+  }
+
+  updateProgress()
 
   const result = await forEachZipEntryBuffer(
     zipFile,
     async (fileName, content) => {
+      if (isCancelled()) return
       const imageKey = getImageMapKey(fileName)
       const references = referencesByName.get(imageKey)
       if (!references || !isPatentImageFile(fileName)) return
+      if (seenImageKeys.has(imageKey)) return
+      seenImageKeys.add(imageKey)
 
       const image: ZipImageEntry = {
         fileName,
@@ -165,14 +297,23 @@ async function uploadReferencedPatentImages(
       }
 
       for (const reference of references) {
-        await attachPatentImage(batchCode, reference, image, content)
-        uploadedCount++
+        await schedule(reference, image, content)
       }
     },
     (fileName) =>
       isPatentImageFile(fileName) &&
       referencesByName.has(getImageMapKey(fileName)),
   )
+
+  await Promise.all(active)
+
+  if (isCancelled()) {
+    throw new Error('任务已取消')
+  }
+
+  if (failures.length > 0) {
+    throw new Error(`专利附图上传失败: ${JSON.stringify(failures.slice(0, 10))}`)
+  }
 
   for (const references of referencesByName.values()) {
     for (const { patent } of references) {
@@ -184,7 +325,11 @@ async function uploadReferencedPatentImages(
     }
   }
 
-  return { uploadedCount, ...result }
+  return {
+    stats,
+    processed: result.processed,
+    skippedEntries: result.skipped,
+  }
 }
 
 export async function runProcessStep(batchCode: string): Promise<StepResult> {
@@ -293,13 +438,35 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     await addLog(batchCode, 'info', `流式解析 ${innerZips.length} 个内层 ZIP`)
 
-    if (!isOssConfigured()) {
+    const uploadImages = shouldUploadImagesDuringProcess()
+    if (uploadImages && !isOssConfigured()) {
       throw new Error('OSS 配置未设置，无法存储专利附图')
+    }
+    if (!uploadImages) {
+      await addLog(
+        batchCode,
+        'info',
+        '处理步骤跳过附图上传，仅解析 XML 生成 parsed.json',
+      )
     }
 
     const patents: ParsedPatent[] = []
     const patentType = batch.data_type as PatentType
     let uploadedImageCount = 0
+    let skippedImageCount = 0
+
+    setProcessProgress(batchCode, {
+      currentZip: null,
+      phase: 'preparing',
+      processedZips: 0,
+      totalZips: innerZips.length,
+      xmlProcessed: 0,
+      patentCount: 0,
+      imageTotal: 0,
+      imageUploaded: 0,
+      imageSkipped: 0,
+      imageFailed: 0,
+    })
 
     for (let i = 0; i < innerZips.length; i++) {
       if (cancelled) throw new Error('任务已取消')
@@ -307,9 +474,23 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       const zipFile = path.join(extractDir, innerZips[i])
       const zipPatents: ParsedPatent[] = []
       const referencesByName = new Map<string, PatentImageReference[]>()
+      setProcessProgress(batchCode, {
+        currentZip: innerZips[i],
+        phase: 'parsing_xml',
+        processedZips: i,
+        totalZips: innerZips.length,
+        xmlProcessed: 0,
+        patentCount: patents.length,
+        imageTotal: 0,
+        imageUploaded: uploadedImageCount,
+        imageSkipped: skippedImageCount,
+        imageFailed: 0,
+      })
+      await addLog(batchCode, 'info', `开始处理内层 ZIP: ${innerZips[i]}`)
       const xmlResult = await forEachZipEntryBuffer(
         zipFile,
         (fileName, content) => {
+          if (cancelled) return
           const patent = parsePatentXml(content.toString('utf-8'), patentType)
           if (patent) {
             patent.source_file = fileName
@@ -320,20 +501,51 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         },
         isPatentXmlFile,
       )
-      const imageResult = await uploadReferencedPatentImages(
-        batchCode,
-        zipFile,
-        referencesByName,
-      )
-      const zipUploadedCount = imageResult.uploadedCount
-      uploadedImageCount += zipUploadedCount
-
+      patchProcessProgress(batchCode, {
+        xmlProcessed: xmlResult.processed,
+        patentCount: patents.length,
+        imageTotal: Array.from(referencesByName.values()).reduce(
+          (sum, refs) => sum + refs.length,
+          0,
+        ),
+      })
       await addLog(
         batchCode,
         'info',
-        `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${zipPatents.length} 条专利, ${zipUploadedCount} 张附图上传, ${patents.length} 条累计专利`,
+        `${innerZips[i]}: XML 解析完成 ${xmlResult.processed} 个，专利 ${zipPatents.length} 条，引用附图 ${referencesByName.size} 个文件`,
       )
+      if (cancelled) throw new Error('任务已取消')
+      if (uploadImages) {
+        const imageResult = await uploadReferencedPatentImages(
+          batchCode,
+          zipFile,
+          i,
+          innerZips.length,
+          referencesByName,
+          () => cancelled,
+        )
+        const zipUploadedCount = imageResult.stats.uploaded
+        uploadedImageCount += zipUploadedCount
+        skippedImageCount += imageResult.stats.skipped
+
+        await addLog(
+          batchCode,
+          'info',
+          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${zipPatents.length} 条专利, 上传 ${imageResult.stats.uploaded} 张, 跳过 ${imageResult.stats.skipped} 张, 失败 ${imageResult.stats.failed} 张, ${patents.length} 条累计专利`,
+        )
+      } else {
+        await addLog(
+          batchCode,
+          'info',
+          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${zipPatents.length} 条专利, 跳过附图上传, ${patents.length} 条累计专利`,
+        )
+      }
       updateBatchProgress(batchCode, undefined, i + 1)
+      patchProcessProgress(batchCode, {
+        processedZips: i + 1,
+        imageUploaded: uploadedImageCount,
+        imageSkipped: skippedImageCount,
+      })
     }
 
     if (patents.length === 0) {
@@ -355,7 +567,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     await addLog(
       batchCode,
       'info',
-      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传`,
+      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传, ${skippedImageCount} 张已存在跳过`,
     )
 
     return {
@@ -365,6 +577,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         totalPatents: patents.length,
         innerZips: innerZips.length,
         uploadedImages: uploadedImageCount,
+        skippedImages: skippedImageCount,
       },
     }
   } catch (error) {
@@ -375,6 +588,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     return { success: false, batchCode, error: errorMessage }
   } finally {
     runningTasks.delete(batchCode)
+    clearProcessProgress(batchCode)
   }
 }
 

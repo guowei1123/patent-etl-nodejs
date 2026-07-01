@@ -19,6 +19,29 @@ function createOssClient(): OSS {
   })
 }
 
+function getImageUploadTimeoutMs(): number {
+  const value = parseInt(process.env.IMAGE_UPLOAD_TIMEOUT_MS || '60000', 10)
+  return Number.isFinite(value) && value > 0 ? value : 60000
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(message)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
+}
+
 export function buildPatentImageKey(
   batchCode: string,
   docNumber: string,
@@ -40,12 +63,39 @@ export async function putPatentImage(
   }
 
   const client = createOssClient()
-  await client.put(ossKey, content, {
-    headers: {
-      'Content-Type': contentType,
-      'Cache-Control': 'private, max-age=86400',
-    },
-  })
+  const timeoutMs = getImageUploadTimeoutMs()
+  await withTimeout(
+    client.put(ossKey, content, {
+      timeout: timeoutMs,
+      headers: {
+        'Content-Type': contentType,
+        'Cache-Control': 'private, max-age=86400',
+      },
+    }),
+    timeoutMs,
+    `OSS 图片上传超时: ${ossKey}`,
+  )
+}
+
+export async function patentImageExists(ossKey: string): Promise<boolean> {
+  if (!isOssConfigured()) {
+    throw new Error('OSS 配置未设置，无法检查专利附图')
+  }
+
+  const client = createOssClient()
+  try {
+    await client.head(ossKey, { timeout: getImageUploadTimeoutMs() })
+    return true
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      'status' in error &&
+      (error as { status?: number }).status === 404
+    ) {
+      return false
+    }
+    throw error
+  }
 }
 
 export async function getPatentImage(ossKey: string): Promise<{

@@ -56,6 +56,7 @@ import type {
   FileDownloadProgress,
   FileDownloadItem,
   PatentImportFailure,
+  ProcessProgress,
 } from '@/types'
 import { cn } from '@/lib/utils'
 import {
@@ -413,6 +414,77 @@ function DownloadFileList({
   )
 }
 
+function ProcessProgressCard({ progress }: { progress: ProcessProgress }) {
+  const phaseLabels: Record<ProcessProgress['phase'], string> = {
+    preparing: '准备处理',
+    parsing_xml: '解析 XML',
+    uploading_images: '上传附图',
+  }
+  const imageDone =
+    progress.imageUploaded + progress.imageSkipped + progress.imageFailed
+  const imagePercent =
+    progress.imageTotal > 0
+      ? Math.min(Math.round((imageDone / progress.imageTotal) * 100), 100)
+      : 0
+
+  return (
+    <Card className="border-info/30">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <Activity aria-hidden="true" className="text-info size-4" />
+          处理进度
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="bg-secondary/50 rounded-lg p-3">
+            <p className="text-muted-foreground text-xs">当前阶段</p>
+            <p className="text-foreground mt-1 text-sm font-medium">
+              {phaseLabels[progress.phase]}
+            </p>
+          </div>
+          <div className="bg-secondary/50 rounded-lg p-3">
+            <p className="text-muted-foreground text-xs">当前 ZIP</p>
+            <p className="text-foreground mt-1 truncate font-mono text-xs">
+              {progress.currentZip || '-'}
+            </p>
+          </div>
+          <div className="bg-secondary/50 rounded-lg p-3">
+            <p className="text-muted-foreground text-xs">ZIP 进度</p>
+            <p className="text-foreground mt-1 text-sm font-medium">
+              {progress.processedZips} / {progress.totalZips}
+            </p>
+          </div>
+          <div className="bg-secondary/50 rounded-lg p-3">
+            <p className="text-muted-foreground text-xs">累计专利</p>
+            <p className="text-foreground mt-1 text-sm font-medium">
+              {progress.patentCount.toLocaleString()}
+            </p>
+          </div>
+        </div>
+
+        {progress.phase === 'uploading_images' && progress.imageTotal > 0 && (
+          <div>
+            <div className="text-muted-foreground mb-2 flex items-center justify-between text-xs">
+              <span>
+                附图 {imageDone.toLocaleString()} /{' '}
+                {progress.imageTotal.toLocaleString()}
+              </span>
+              <span>{imagePercent}%</span>
+            </div>
+            <Progress value={imagePercent} className="h-2" />
+            <div className="text-muted-foreground mt-2 flex flex-wrap gap-3 text-xs">
+              <span>上传 {progress.imageUploaded.toLocaleString()}</span>
+              <span>跳过 {progress.imageSkipped.toLocaleString()}</span>
+              <span>失败 {progress.imageFailed.toLocaleString()}</span>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function BatchDetailPage({
   params,
 }: {
@@ -481,6 +553,7 @@ export default function BatchDetailPage({
       progress: number
       current_file: FileDownloadProgress | null
       file_list: FileDownloadItem[] | null
+      process_progress: ProcessProgress | null
     }
   }>(
     shouldPollStatus ? `/api/sync/status?batch_code=${batch_code}` : null,
@@ -1155,6 +1228,11 @@ export default function BatchDetailPage({
             currentFile={statusData.data.current_file}
           />
         )}
+
+        {batch.status === 'processing' &&
+          statusData?.data?.process_progress && (
+            <ProcessProgressCard progress={statusData.data.process_progress} />
+          )}
 
         {/* Logs */}
         <Card className="bg-card border-border">

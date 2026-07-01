@@ -6,6 +6,7 @@ import {
   testConnection,
 } from '@/lib/db'
 import { isFtpConfigured } from '@/lib/ftp-client'
+import { isOssConfigured } from '@/lib/oss-client'
 
 // GET /api/stats - 获取仪表盘统计数据
 export async function GET() {
@@ -21,6 +22,7 @@ export async function GET() {
         data: {
           database_connected: isDbConfigured(),
           ftp_configured: isFtpConfigured(),
+          oss_configured: isOssConfigured(),
           total_batches: 0,
           total_patents: 0,
           invention_patents: 0,
@@ -44,6 +46,7 @@ export async function GET() {
         ...stats,
         database_connected: isDbConfigured(),
         ftp_configured: isFtpConfigured(),
+        oss_configured: isOssConfigured(),
       },
     })
   } catch (error) {
@@ -55,6 +58,7 @@ export async function GET() {
         data: {
           database_connected: isDbConfigured(),
           ftp_configured: isFtpConfigured(),
+          oss_configured: isOssConfigured(),
           total_batches: 0,
           total_patents: 0,
           invention_patents: 0,

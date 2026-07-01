@@ -27,10 +27,10 @@ const hasRunningBatch = (batches: SyncBatch[]) =>
     ['downloading', 'processing', 'importing'].includes(b.status),
   )
 const pipelineSteps = [
-  { label: 'FTP 批次目录', description: '断点下载', icon: Server },
-  { label: 'ZIP 数据包', description: '批量校验', icon: FileArchive },
-  { label: 'XML 专利档案', description: '结构解析', icon: FileJson },
-  { label: 'PostgreSQL', description: '入库索引', icon: Database },
+  { label: '选择 FTP 批次', description: '断点下载数据包', icon: Server },
+  { label: '校验 ZIP 文件', description: '检查缺包和损坏文件', icon: FileArchive },
+  { label: '解析 XML 档案', description: '提取专利结构化字段', icon: FileJson },
+  { label: '写入数据库', description: '生成检索索引', icon: Database },
 ]
 
 export default function DashboardPage() {
@@ -43,6 +43,7 @@ export default function DashboardPage() {
     data: DashboardStats & {
       database_connected: boolean
       ftp_configured: boolean
+      oss_configured: boolean
     }
     error?: string
   }>('/api/stats', fetcher, {
@@ -66,7 +67,8 @@ export default function DashboardPage() {
   const batches = batchesData?.data?.items || []
   const isLoading = !statsData && !statsError
   const showSetupWarning =
-    stats && (!stats.database_connected || !stats.ftp_configured)
+    stats &&
+    (!stats.database_connected || !stats.ftp_configured || !stats.oss_configured)
 
   return (
     <AppShell>
@@ -79,6 +81,12 @@ export default function DashboardPage() {
 
       <div className="flex flex-col gap-6 p-6">
         <div className="border-border/80 bg-card/88 overflow-hidden rounded-lg border shadow-xs">
+          <div className="border-border/70 flex flex-col gap-1 border-b px-4 py-3 sm:px-5">
+            <h2 className="text-foreground text-sm font-medium">同步流程</h2>
+            <p className="text-muted-foreground text-xs">
+              从 FTP 批次目录下载专利数据包，校验后解析 XML 并写入数据库。
+            </p>
+          </div>
           <div className="grid gap-0 md:grid-cols-4">
             {pipelineSteps.map((step, index) => (
               <div
@@ -121,6 +129,7 @@ export default function DashboardPage() {
                 <p className="text-muted-foreground text-xs">
                   {!stats.database_connected && '数据库未连接。'}
                   {!stats.ftp_configured && 'FTP 服务器未配置。'}
+                  {!stats.oss_configured && 'OSS 未配置。'}
                   请前往设置页面完成配置。
                 </p>
               </div>

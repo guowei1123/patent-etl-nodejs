@@ -23,6 +23,7 @@ interface StatsCardsProps {
   stats: DashboardStats & {
     database_connected: boolean
     ftp_configured: boolean
+    oss_configured: boolean
   }
 }
 
@@ -111,14 +112,14 @@ export function StatsCards({ stats }: StatsCardsProps) {
       {/* Connection Status Cards */}
       <Card
         className={cn(
-          'bg-card/92 border-border/80 col-span-full overflow-hidden shadow-xs md:col-span-2',
+          'bg-card/92 border-border/80 col-span-full overflow-hidden shadow-xs',
           !stats.database_connected && 'border-destructive/50',
         )}
       >
         <CardHeader className="border-border/70 border-b pb-4">
           <CardTitle className="text-base font-medium">同步控制面</CardTitle>
           <CardDescription>
-            数据库连接、FTP 配置和最近同步记录
+            数据库连接、FTP 与 OSS 配置和最近同步记录
           </CardDescription>
         </CardHeader>
         <CardContent className="p-5">
@@ -173,6 +174,17 @@ export function StatsCards({ stats }: StatsCardsProps) {
                 />
                 <span className="text-muted-foreground text-xs font-medium">
                   FTP {stats.ftp_configured ? '已配置' : '未配置'}
+                </span>
+              </div>
+              <div className="bg-secondary/55 flex items-center gap-2 rounded-md border px-3 py-2">
+                <span
+                  className={cn(
+                    'flex size-2 rounded-full',
+                    stats.oss_configured ? 'bg-success' : 'bg-warning',
+                  )}
+                />
+                <span className="text-muted-foreground text-xs font-medium">
+                  OSS {stats.oss_configured ? '已配置' : '未配置'}
                 </span>
               </div>
             </div>

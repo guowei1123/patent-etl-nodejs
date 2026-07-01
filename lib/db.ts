@@ -18,8 +18,19 @@ import type {
   PatentImage,
   PatentImportFailure,
   PatentImportResult,
+  ClassificationFilter,
+  ClassificationRow,
+  ClassificationTreeNode,
+  ClassificationTreeResponse,
 } from '@/types'
 import { buildPatentSearchExpressionCondition } from './patent-search-expression'
+import {
+  getClassificationAncestorCodeNorms,
+  getClassificationDepth,
+  getClassificationParentCodeNorm,
+  normalizeClassificationCodeNorm,
+  splitClassificationCode,
+} from './classification-code'
 
 function getConnectionString(): string {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL
@@ -267,6 +278,70 @@ export async function initializeDatabase(): Promise<void> {
     `)
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pag_patent_id ON cnipa.patent_agent(patent_id)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.ipc_classification (
+        code_norm       TEXT PRIMARY KEY,
+        code            TEXT NOT NULL,
+        source_code     TEXT NOT NULL,
+        version         TEXT NOT NULL,
+        section         CHAR(1),
+        class_code      TEXT,
+        subclass        TEXT,
+        main_group      TEXT,
+        subgroup        TEXT,
+        level           INTEGER,
+        title_en        TEXT NOT NULL,
+        title_zh        TEXT,
+        title_zh_source TEXT,
+        source_file     TEXT,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_ipc_title_zh_source
+          CHECK (title_zh_source IS NULL OR title_zh_source IN ('cnipa', 'manual', 'machine'))
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_ipc_classification_section ON cnipa.ipc_classification(section)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_ipc_classification_class_code ON cnipa.ipc_classification(class_code)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_ipc_classification_subclass ON cnipa.ipc_classification(subclass)',
+    )
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.cpc_classification (
+        code_norm       TEXT PRIMARY KEY,
+        code            TEXT NOT NULL,
+        source_code     TEXT NOT NULL,
+        version         TEXT NOT NULL,
+        section         CHAR(1),
+        class_code      TEXT,
+        subclass        TEXT,
+        main_group      TEXT,
+        subgroup        TEXT,
+        level           INTEGER,
+        title_en        TEXT NOT NULL,
+        title_zh        TEXT,
+        title_zh_source TEXT,
+        source_file     TEXT,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT chk_cpc_title_zh_source
+          CHECK (title_zh_source IS NULL OR title_zh_source IN ('official', 'manual', 'machine'))
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_cpc_classification_section ON cnipa.cpc_classification(section)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_cpc_classification_class_code ON cnipa.cpc_classification(class_code)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_cpc_classification_subclass ON cnipa.cpc_classification(subclass)',
     )
 
     await client.query(`
@@ -996,6 +1071,267 @@ function rowToPatentListItem(row: Record<string, unknown>): PatentListItem {
     title: row.title as string,
     pub_date: (row.pub_date as Date) || null,
     applicants: (row.applicants as PatentApplicantRow[]) || [],
+  }
+}
+
+function escapeLike(value: string): string {
+  return value
+    .replaceAll('\\', '\\\\')
+    .replaceAll('%', '\\%')
+    .replaceAll('_', '\\_')
+}
+
+function makeLikePattern(value: string): string {
+  return `%${escapeLike(value)}%`
+}
+
+function getClassificationTableName(
+  type: ClassificationFilter['type'],
+): string {
+  return type === 'ipc'
+    ? 'cnipa.ipc_classification'
+    : 'cnipa.cpc_classification'
+}
+
+export async function getClassificationList(
+  filter: ClassificationFilter,
+  page = 1,
+  limit = 20,
+): Promise<PaginatedResponse<ClassificationRow>> {
+  const normalizedPage = Math.max(1, page)
+  const normalizedLimit = Math.min(Math.max(1, limit), 100)
+  const offset = (normalizedPage - 1) * normalizedLimit
+  const tableName = getClassificationTableName(filter.type)
+  const params: string[] = []
+  const conditions: string[] = []
+  const query = filter.q?.trim()
+
+  if (query) {
+    const codePrefix = `${escapeLike(normalizeClassificationCodeNorm(query))}%`
+    params.push(codePrefix, makeLikePattern(query))
+    conditions.push(`(
+      code_norm ILIKE $1 ESCAPE '\\'
+      OR code ILIKE $2 ESCAPE '\\'
+      OR source_code ILIKE $2 ESCAPE '\\'
+      OR title_en ILIKE $2 ESCAPE '\\'
+      OR title_zh ILIKE $2 ESCAPE '\\'
+    )`)
+  }
+
+  const whereClause =
+    conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const orderPrefix = query ? `(code_norm ILIKE $1 ESCAPE '\\') DESC,` : ''
+
+  const countResult = await pool.query(
+    `SELECT COUNT(*) FROM ${tableName} ${whereClause}`,
+    params,
+  )
+  const total = parseInt(countResult.rows[0]?.count || '0')
+
+  const result = await pool.query<ClassificationRow>(
+    `SELECT code_norm, code, source_code, version, section, class_code,
+            subclass, main_group, subgroup, level, title_en, title_zh,
+            title_zh_source, source_file
+       FROM ${tableName}
+       ${whereClause}
+      ORDER BY ${orderPrefix}
+               section NULLS LAST,
+               class_code NULLS LAST,
+               subclass NULLS LAST,
+               main_group NULLS LAST,
+               subgroup NULLS LAST,
+               code_norm
+      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, normalizedLimit, offset],
+  )
+
+  return {
+    items: result.rows,
+    total,
+    page: normalizedPage,
+    limit: normalizedLimit,
+    total_pages: Math.ceil(total / normalizedLimit),
+  }
+}
+
+function mapClassificationTreeNode(
+  row: ClassificationRow,
+  matches: Set<string>,
+): ClassificationTreeNode {
+  return {
+    ...row,
+    parent_code_norm: getClassificationParentCodeNorm(row.code_norm),
+    depth: getClassificationDepth(row.code_norm),
+    has_children:
+      !row.main_group ||
+      (row.main_group !== null && row.subgroup === '00'),
+    is_match: matches.has(row.code_norm),
+  }
+}
+
+function getClassificationChildCondition(
+  parentCodeNorm: string | null,
+): { sql: string; params: string[] } {
+  if (!parentCodeNorm) {
+    return {
+      sql: "code_norm ~ '^[A-Z]$'",
+      params: [],
+    }
+  }
+
+  const normalizedParent = normalizeClassificationCodeNorm(parentCodeNorm)
+  const parentParts = splitClassificationCode(normalizedParent)
+
+  if (normalizedParent.length === 1 && parentParts.section) {
+    return {
+      sql: "section = $1 AND code_norm ~ '^[A-Z][0-9]{2}$'",
+      params: [parentParts.section],
+    }
+  }
+
+  if (
+    normalizedParent.length === 3 &&
+    parentParts.class_code &&
+    !parentParts.subclass
+  ) {
+    return {
+      sql: "class_code = $1 AND code_norm ~ '^[A-Z][0-9]{2}[A-Z]$'",
+      params: [parentParts.class_code],
+    }
+  }
+
+  if (parentParts.subclass && !parentParts.main_group) {
+    return {
+      sql: "subclass = $1 AND main_group IS NOT NULL AND subgroup = '00'",
+      params: [parentParts.subclass],
+    }
+  }
+
+  if (
+    parentParts.subclass &&
+    parentParts.main_group &&
+    parentParts.subgroup === '00'
+  ) {
+    return {
+      sql: `subclass = $1
+        AND main_group = $2
+        AND subgroup IS NOT NULL
+        AND subgroup <> '00'`,
+      params: [parentParts.subclass, parentParts.main_group],
+    }
+  }
+
+  return {
+    sql: 'FALSE',
+    params: [],
+  }
+}
+
+export async function getClassificationTree(
+  filter: ClassificationFilter,
+  parentCodeNorm: string | null = null,
+  limit = 100,
+): Promise<ClassificationTreeResponse> {
+  const normalizedLimit = Math.min(Math.max(1, limit), 200)
+  const tableName = getClassificationTableName(filter.type)
+  const query = filter.q?.trim()
+
+  if (!query) {
+    const childCondition = getClassificationChildCondition(parentCodeNorm)
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM ${tableName} WHERE ${childCondition.sql}`,
+      childCondition.params,
+    )
+    const result = await pool.query<ClassificationRow>(
+      `SELECT code_norm, code, source_code, version, section, class_code,
+              subclass, main_group, subgroup, level, title_en, title_zh,
+              title_zh_source, source_file
+         FROM ${tableName}
+        WHERE ${childCondition.sql}
+        ORDER BY section NULLS LAST,
+                 class_code NULLS LAST,
+                 subclass NULLS LAST,
+                 main_group::INTEGER NULLS LAST,
+                 subgroup NULLS LAST,
+                 code_norm
+        LIMIT $${childCondition.params.length + 1}`,
+      [...childCondition.params, normalizedLimit],
+    )
+
+    return {
+      items: result.rows.map((row) => mapClassificationTreeNode(row, new Set())),
+      total: parseInt(countResult.rows[0]?.count || '0'),
+      limit: normalizedLimit,
+      parent_code_norm: parentCodeNorm,
+      is_search: false,
+    }
+  }
+
+  const matches = new Set<string>()
+  const codePrefix = `${escapeLike(normalizeClassificationCodeNorm(query))}%`
+  const matchResult = await pool.query<ClassificationRow>(
+    `SELECT code_norm, code, source_code, version, section, class_code,
+            subclass, main_group, subgroup, level, title_en, title_zh,
+            title_zh_source, source_file
+       FROM ${tableName}
+      WHERE (
+        code_norm ILIKE $1 ESCAPE '\\'
+        OR code ILIKE $2 ESCAPE '\\'
+        OR source_code ILIKE $2 ESCAPE '\\'
+        OR title_en ILIKE $2 ESCAPE '\\'
+        OR title_zh ILIKE $2 ESCAPE '\\'
+      )
+      ORDER BY (code_norm ILIKE $1 ESCAPE '\\') DESC,
+               section NULLS LAST,
+               class_code NULLS LAST,
+               subclass NULLS LAST,
+               main_group NULLS LAST,
+               subgroup NULLS LAST,
+               code_norm
+      LIMIT $3`,
+    [codePrefix, makeLikePattern(query), normalizedLimit],
+  )
+
+  const wantedCodeNorms = new Set<string>()
+  for (const row of matchResult.rows) {
+    matches.add(row.code_norm)
+    wantedCodeNorms.add(row.code_norm)
+    for (const ancestor of getClassificationAncestorCodeNorms(row.code_norm)) {
+      wantedCodeNorms.add(ancestor)
+    }
+  }
+
+  if (wantedCodeNorms.size === 0) {
+    return {
+      items: [],
+      total: 0,
+      limit: normalizedLimit,
+      parent_code_norm: null,
+      is_search: true,
+    }
+  }
+
+  const result = await pool.query<ClassificationRow>(
+    `SELECT code_norm, code, source_code, version, section, class_code,
+            subclass, main_group, subgroup, level, title_en, title_zh,
+            title_zh_source, source_file
+       FROM ${tableName}
+      WHERE code_norm = ANY($1::text[])
+      ORDER BY section NULLS LAST,
+               class_code NULLS LAST,
+               subclass NULLS LAST,
+               main_group NULLS LAST,
+               subgroup NULLS LAST,
+               code_norm`,
+    [Array.from(wantedCodeNorms)],
+  )
+
+  return {
+    items: result.rows.map((row) => mapClassificationTreeNode(row, matches)),
+    total: matchResult.rows.length,
+    limit: normalizedLimit,
+    parent_code_norm: null,
+    is_search: true,
   }
 }
 

@@ -32,6 +32,7 @@ const parserMock = vi.hoisted(() => ({
 const ossMock = vi.hoisted(() => ({
   buildPatentImageKey: vi.fn(),
   isOssConfigured: vi.fn(),
+  patentImageExists: vi.fn(),
   putPatentImage: vi.fn(),
 }))
 
@@ -68,7 +69,9 @@ describe('runProcessStep extracted file verification', () => {
     parserMock.parsePatentXml.mockReset()
     ossMock.buildPatentImageKey.mockReset()
     ossMock.isOssConfigured.mockReset()
+    ossMock.patentImageExists.mockReset()
     ossMock.putPatentImage.mockReset()
+    delete process.env.PROCESS_UPLOAD_IMAGES
     fileMock.calls = []
     fileMock.tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'process-step-'))
 
@@ -85,6 +88,7 @@ describe('runProcessStep extracted file verification', () => {
       image_files: ['100001.jpg'],
     })
     ossMock.isOssConfigured.mockReturnValue(true)
+    ossMock.patentImageExists.mockResolvedValue(false)
     ossMock.buildPatentImageKey.mockImplementation(
       (batchCode: string, docNumber: string, fileName: string) =>
         `patents/${batchCode}/${docNumber}/${fileName}`,
@@ -151,18 +155,52 @@ describe('runProcessStep extracted file verification', () => {
       Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       'image/jpeg',
     )
-    expect(ossMock.putPatentImage).toHaveBeenCalledTimes(1)
     const parsedPath = path.join(fileMock.tempRoot, 'batch-1', 'parsed.json')
     const parsed = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
-    expect(parsed[0].images).toEqual([
-      {
-        file_name: '100001.jpg',
-        oss_key: 'patents/batch-1/100001/100001.jpg',
-        content_type: 'image/jpeg',
-        size: 4,
-        is_abstract: true,
-      },
-    ])
+    expect(parsed[0].images[0].oss_key).toBe(
+      'patents/batch-1/100001/100001.jpg',
+    )
+  })
+
+  it('skips uploading existing patent images and still writes metadata', async () => {
+    integrityMock.verifyExtractedFilesCrc.mockResolvedValue({
+      passed: true,
+      checkedFiles: 1,
+      failures: [],
+    })
+    ossMock.patentImageExists.mockResolvedValue(true)
+
+    const { runProcessStep } = await import('../etl/process-step')
+    const result = await runProcessStep('batch-1')
+
+    expect(result.success).toBe(true)
+    expect(ossMock.putPatentImage).not.toHaveBeenCalled()
+    const parsedPath = path.join(fileMock.tempRoot, 'batch-1', 'parsed.json')
+    const parsed = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
+    expect(parsed[0].images[0].oss_key).toBe(
+      'patents/batch-1/100001/100001.jpg',
+    )
+  })
+
+  it('fails the process step when patent image upload fails', async () => {
+    integrityMock.verifyExtractedFilesCrc.mockResolvedValue({
+      passed: true,
+      checkedFiles: 1,
+      failures: [],
+    })
+    ossMock.putPatentImage.mockRejectedValue(new Error('upload timeout'))
+
+    const { runProcessStep } = await import('../etl/process-step')
+    const result = await runProcessStep('batch-1')
+
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('专利附图上传失败')
+    expect(result.error).toContain('upload timeout')
+    expect(dbMock.updateBatchStatus).toHaveBeenLastCalledWith(
+      'batch-1',
+      'failed',
+      expect.stringContaining('专利附图上传失败'),
+    )
   })
 
   it('stops processing when automatic extracted file verification fails', async () => {

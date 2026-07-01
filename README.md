@@ -1,36 +1,55 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 专利 ETL 工作台
 
-## Getting Started
+本项目用于从 CNIPA FTP 批次数据中下载、处理、导入专利全文数据，并管理专利附图在 OSS 中的存储与读取。
 
-First, run the development server:
+## 本地运行
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+默认访问地址：
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```text
+http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+登录账号密码从 `.env` 的 `AUTH_USERNAME` / `AUTH_PASSWORD` 读取。FTP、数据库和 OSS 配置也来自 `.env`，不要在代码、日志或文档中提交真实密钥。
 
-## Learn More
+## 同步流程
 
-To learn more about Next.js, take a look at the following resources:
+批次同步拆分为 3 个手动步骤：
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```text
+创建批次 -> 下载 -> 处理 -> 导入
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- 下载：从 CNIPA FTP 下载外层分卷 ZIP 到 `data/<batch_code>/`
+- 处理：解压外层包，校验内层 ZIP CRC，流式解析 XML，并将内层 ZIP 中引用到的 JPG/JPEG 附图上传到 OSS
+- 导入：读取 `data/<batch_code>/parsed.json`，写入 `cnipa.patent`、结构化子表和 `cnipa.patent_image`
 
-## Deploy on Vercel
+图片读取统一通过后端代理：
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```text
+GET /api/patent-images/{image_id}
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+前端不直接暴露 OSS key、bucket、密钥或签名 URL。
+
+完整流程说明见 [docs/data-pipeline.md](docs/data-pipeline.md)。
+
+## 常用验证
+
+```bash
+pnpm lint
+pnpm test
+pnpm build
+```
+
+`pnpm build` 使用 Turbopack，沙箱环境可能因内部 worker 绑定端口失败；如出现 `Operation not permitted (os error 1)`，需要在授权环境下重跑。
+
+## 相关文档
+
+- [数据处理流程与原始数据包说明](docs/data-pipeline.md)
+- [数据库结构与 FTP 数据源清册](docs/database-and-ftp-inventory.md)
+- [IPC/CPC 数据源说明](docs/ipc-cpc-data-sources.md)
