@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.9.2 - 2026-07-07
+
+### 新增
+
+- 新增 IPC/CPC 分类向量语料构建、OpenAI-compatible embedding 客户端封装和 pgvector 相似度查询服务
+- 新增 `pnpm vector:poc` 小规模 IPC 向量 POC 脚本，支持 dry-run 预览、样本向量写入和内存语义检索
+
+### 变更
+
+- `.env.example` 补充 embedding 模型和维度配置，便于复用兼容 OpenAI 的向量接口
+
 ## 0.9.1 - 2026-07-07
 
 ### 变更
