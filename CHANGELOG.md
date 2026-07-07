@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.9.3 - 2026-07-07
+
+### 变更
+
+- 将检索式生成和分类向量嵌入从 LangChain 迁移到 Vercel AI SDK，并统一 OpenAI 兼容 Provider 配置
+- Docker 运行时升级到 Node.js 22，以匹配 AI SDK 运行环境要求
+
+### 修复
+
+- 补充检索式生成和 embedding 客户端单元测试，覆盖 OpenAI 兼容 base URL、模型配置和批量向量生成行为
+
 ## 0.9.2 - 2026-07-07
 
 ### 新增

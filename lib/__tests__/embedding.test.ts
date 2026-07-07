@@ -1,11 +1,36 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createOpenAI } from '@ai-sdk/openai'
+import { embed, embedMany } from 'ai'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  getEmbedding,
   getEmbeddingDimensions,
   getEmbeddingModel,
+  getEmbeddings,
   isEmbeddingConfigured,
 } from '../embedding'
 
+const mocks = vi.hoisted(() => ({
+  embed: vi.fn(),
+  embedMany: vi.fn(),
+  embeddingModel: vi.fn((model: string) => ({ provider: 'openai', model })),
+}))
+
+vi.mock('ai', () => ({
+  embed: mocks.embed,
+  embedMany: mocks.embedMany,
+}))
+
+vi.mock('@ai-sdk/openai', () => ({
+  createOpenAI: vi.fn(() => ({
+    embedding: mocks.embeddingModel,
+  })),
+}))
+
 describe('embedding configuration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   afterEach(() => {
     vi.unstubAllEnvs()
   })
@@ -35,5 +60,85 @@ describe('embedding configuration', () => {
 
     vi.stubEnv('OPENAI_EMBEDDING_MODEL', '')
     expect(isEmbeddingConfigured()).toBe(false)
+  })
+
+  it('embeds a single query through the AI SDK OpenAI provider', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'test-key')
+    vi.stubEnv('OPENAI_BASE_URL', 'https://example.test/v1')
+    vi.mocked(embed).mockResolvedValue({
+      embedding: [0.1, 0.2, 0.3],
+    } as Awaited<ReturnType<typeof embed>>)
+
+    await expect(
+      getEmbedding('锂电池隔膜', {
+        model: 'text-embedding-3-small',
+        dimensions: 1024,
+        timeout: 0,
+        maxRetries: 0,
+      }),
+    ).resolves.toEqual([0.1, 0.2, 0.3])
+
+    expect(createOpenAI).toHaveBeenCalledWith({
+      apiKey: 'test-key',
+      baseURL: 'https://example.test/v1',
+    })
+    expect(mocks.embeddingModel).toHaveBeenCalledWith('text-embedding-3-small')
+    expect(embed).toHaveBeenCalledWith({
+      model: { provider: 'openai', model: 'text-embedding-3-small' },
+      value: '锂电池隔膜',
+      providerOptions: {
+        openai: {
+          dimensions: 1024,
+        },
+      },
+      maxRetries: 0,
+      abortSignal: undefined,
+    })
+  })
+
+  it('embeds document batches without calling the provider for empty input', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'test-key')
+    vi.mocked(embedMany)
+      .mockResolvedValueOnce({
+        embeddings: [[1], [2]],
+      } as Awaited<ReturnType<typeof embedMany>>)
+      .mockResolvedValueOnce({
+        embeddings: [[3]],
+      } as Awaited<ReturnType<typeof embedMany>>)
+
+    await expect(
+      getEmbeddings(['a', 'b', 'c'], {
+        model: 'text-embedding-3-small',
+        batchSize: 2,
+        timeout: 0,
+      }),
+    ).resolves.toEqual([[1], [2], [3]])
+
+    expect(embedMany).toHaveBeenNthCalledWith(1, {
+      model: { provider: 'openai', model: 'text-embedding-3-small' },
+      values: ['a', 'b'],
+      providerOptions: undefined,
+      maxRetries: 1,
+      abortSignal: undefined,
+    })
+    expect(embedMany).toHaveBeenNthCalledWith(2, {
+      model: { provider: 'openai', model: 'text-embedding-3-small' },
+      values: ['c'],
+      providerOptions: undefined,
+      maxRetries: 1,
+      abortSignal: undefined,
+    })
+
+    vi.clearAllMocks()
+    await expect(getEmbeddings([])).resolves.toEqual([])
+    expect(embedMany).not.toHaveBeenCalled()
+  })
+
+  it('requires an API key before embedding', async () => {
+    vi.stubEnv('OPENAI_API_KEY', '')
+
+    await expect(getEmbedding('query')).rejects.toThrow(
+      '缺少 OPENAI_API_KEY 配置',
+    )
   })
 })

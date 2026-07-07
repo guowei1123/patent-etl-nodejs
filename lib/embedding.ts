@@ -1,4 +1,9 @@
-import { OpenAIEmbeddings } from '@langchain/openai'
+import { embed, embedMany } from 'ai'
+import { getEmbeddingModelProvider } from './ai-provider.ts'
+
+type EmbeddingProviderOptions = NonNullable<
+  Parameters<typeof embed>[0]['providerOptions']
+>
 
 export type EmbeddingClientOptions = {
   model?: string
@@ -40,9 +45,7 @@ export function isEmbeddingConfigured(): boolean {
   )
 }
 
-export function createEmbeddingClient(
-  options: EmbeddingClientOptions = {},
-): OpenAIEmbeddings {
+function getEmbeddingRequestOptions(options: EmbeddingClientOptions) {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('缺少 OPENAI_API_KEY 配置，无法生成向量')
   }
@@ -52,26 +55,60 @@ export function createEmbeddingClient(
     options.dimensions ??
     getEmbeddingDimensions(process.env.OPENAI_EMBEDDING_DIMENSIONS)
 
-  return new OpenAIEmbeddings({
-    model,
-    dimensions,
-    batchSize: options.batchSize ?? 64,
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    configuration: process.env.OPENAI_BASE_URL
-      ? {
-          baseURL: process.env.OPENAI_BASE_URL,
-        }
+  return {
+    model: getEmbeddingModelProvider(model),
+    maxRetries: options.maxRetries ?? 1,
+    providerOptions: dimensions
+      ? ({
+          openai: {
+            dimensions,
+          },
+        } satisfies EmbeddingProviderOptions)
       : undefined,
     timeout: options.timeout ?? 120000,
-    maxRetries: options.maxRetries ?? 1,
-  })
+  }
+}
+
+async function withTimeout<T>(
+  timeout: number | undefined,
+  run: (abortSignal: AbortSignal | undefined) => Promise<T>,
+): Promise<T> {
+  if (!timeout) return run(undefined)
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), timeout)
+
+  try {
+    return await run(controller.signal)
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+function getBatchSize(options: EmbeddingClientOptions): number {
+  const batchSize = options.batchSize ?? 64
+  if (!Number.isFinite(batchSize) || batchSize <= 0) {
+    throw new Error('batchSize 必须是正整数')
+  }
+  return Math.trunc(batchSize)
 }
 
 export async function getEmbedding(
   text: string,
   options: EmbeddingClientOptions = {},
 ): Promise<number[]> {
-  return createEmbeddingClient(options).embedQuery(text)
+  const requestOptions = getEmbeddingRequestOptions(options)
+  const result = await withTimeout(requestOptions.timeout, (abortSignal) =>
+    embed({
+      model: requestOptions.model,
+      value: text,
+      providerOptions: requestOptions.providerOptions,
+      maxRetries: requestOptions.maxRetries,
+      abortSignal,
+    }),
+  )
+
+  return result.embedding
 }
 
 export async function getEmbeddings(
@@ -79,5 +116,24 @@ export async function getEmbeddings(
   options: EmbeddingClientOptions = {},
 ): Promise<number[][]> {
   if (texts.length === 0) return []
-  return createEmbeddingClient(options).embedDocuments(texts)
+
+  const requestOptions = getEmbeddingRequestOptions(options)
+  const batchSize = getBatchSize(options)
+  const embeddings: number[][] = []
+
+  for (let index = 0; index < texts.length; index += batchSize) {
+    const values = texts.slice(index, index + batchSize)
+    const result = await withTimeout(requestOptions.timeout, (abortSignal) =>
+      embedMany({
+        model: requestOptions.model,
+        values,
+        providerOptions: requestOptions.providerOptions,
+        maxRetries: requestOptions.maxRetries,
+        abortSignal,
+      }),
+    )
+    embeddings.push(...result.embeddings)
+  }
+
+  return embeddings
 }

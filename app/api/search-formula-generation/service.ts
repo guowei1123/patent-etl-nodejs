@@ -1,7 +1,5 @@
-import { StringOutputParser } from '@langchain/core/output_parsers'
-import { ChatPromptTemplate } from '@langchain/core/prompts'
-import { RunnableSequence } from '@langchain/core/runnables'
-import { ChatOpenAI } from '@langchain/openai'
+import { generateText } from 'ai'
+import { getChatModel } from '../../../lib/ai-provider.ts'
 
 export type SearchFormulaOutputFormat = 'format1' | 'format2'
 
@@ -37,37 +35,17 @@ const FORMAT2_REQUIREMENTS = `1. 生成仅包含关键词的检索式，绝对�
 6. 示例：TIAB=(蓝牙 AND 扭矩扳手)
 7. 重要：此格式只包含关键词，不包含任何IPC或CPC分类号`
 
-const formulaPromptTemplate = ChatPromptTemplate.fromTemplate(
-  FORMULA_GENERATION_TEMPLATE,
-)
-
-function createFormulaGenerationChain() {
-  if (!process.env.OPENAI_API_KEY) {
-    throw new Error('缺少 OPENAI_API_KEY 配置，无法生成检索式')
-  }
-
-  if (!process.env.OPENAI_CHAT_MODEL) {
-    throw new Error('缺少 OPENAI_CHAT_MODEL 配置，无法生成检索式')
-  }
-
-  const model = new ChatOpenAI({
-    modelName: process.env.OPENAI_CHAT_MODEL,
-    temperature: 0.1,
-    openAIApiKey: process.env.OPENAI_API_KEY,
-    configuration: process.env.OPENAI_BASE_URL
-      ? {
-          baseURL: process.env.OPENAI_BASE_URL,
-        }
-      : undefined,
-    timeout: 120000,
-    maxRetries: 1,
-  })
-
-  return RunnableSequence.from([
-    formulaPromptTemplate,
-    model,
-    new StringOutputParser(),
-  ])
+function renderFormulaGenerationPrompt(params: {
+  keywords: string[]
+  ipcCodes: string[]
+  formatRequirements: string
+}): string {
+  return FORMULA_GENERATION_TEMPLATE.replace(
+    '{keywords}',
+    params.keywords.join('、'),
+  )
+    .replace('{ipcCodes}', params.ipcCodes.join('、'))
+    .replace('{formatRequirements}', params.formatRequirements)
 }
 
 export async function generateSearchFormula(params: {
@@ -78,11 +56,17 @@ export async function generateSearchFormula(params: {
   const { keywords, ipcCodes, outputFormat } = params
   const formatRequirements =
     outputFormat === 'format1' ? FORMAT1_REQUIREMENTS : FORMAT2_REQUIREMENTS
-  const formula = await createFormulaGenerationChain().invoke({
-    keywords: keywords.join('、'),
-    ipcCodes: ipcCodes.join('、'),
-    formatRequirements,
+  const { text } = await generateText({
+    model: getChatModel(),
+    prompt: renderFormulaGenerationPrompt({
+      keywords,
+      ipcCodes,
+      formatRequirements,
+    }),
+    temperature: 0.1,
+    timeout: 120000,
+    maxRetries: 1,
   })
 
-  return { formula: formula.trim() }
+  return { formula: text.trim() }
 }
