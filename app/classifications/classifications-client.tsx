@@ -7,6 +7,7 @@ import {
   BookOpen,
   ChevronDown,
   ChevronRight,
+  Eye,
   ListTree,
   RotateCcw,
   Search,
@@ -38,6 +39,14 @@ import {
   InputGroupButton,
   InputGroupInput,
 } from '@/components/ui/input-group'
+import { Separator } from '@/components/ui/separator'
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import {
@@ -48,10 +57,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from '@/components/ui/toggle-group'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import type {
   ClassificationRow,
@@ -76,6 +82,8 @@ type ClassificationTreeApiResponse = {
 }
 
 type ClassificationView = 'tree' | 'list'
+
+type ClassificationDetail = ClassificationRow | ClassificationTreeNode
 
 const fetcher = async <T,>(url: string): Promise<T> => {
   const response = await fetch(url)
@@ -116,12 +124,161 @@ function getTitleStatus(row: ClassificationRow) {
   return row.title_zh_source || '已补齐'
 }
 
+function getPrimaryTitle(row: ClassificationRow): string {
+  return row.title_zh?.trim() || row.title_en
+}
+
+function hasTreeFields(
+  row: ClassificationDetail,
+): row is ClassificationTreeNode {
+  return 'depth' in row
+}
+
+function DetailField({
+  label,
+  value,
+  isCode = false,
+}: {
+  label: string
+  value: string | number | boolean | null | undefined
+  isCode?: boolean
+}) {
+  const displayValue =
+    typeof value === 'boolean'
+      ? value
+        ? '是'
+        : '否'
+      : value === null || value === undefined || value === ''
+        ? '未记录'
+        : value
+
+  return (
+    <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-3 text-sm">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd
+        className={cn(
+          'min-w-0 break-words',
+          isCode && 'font-mono text-sm',
+        )}
+        translate={isCode ? 'no' : undefined}
+      >
+        {displayValue}
+      </dd>
+    </div>
+  )
+}
+
+function ClassificationDetailSheet({
+  row,
+  open,
+  onOpenChange,
+}: {
+  row: ClassificationDetail | null
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
+        <SheetHeader>
+          <SheetTitle>分类详情</SheetTitle>
+          <SheetDescription>
+            查看该 IPC/CPC 条目的标题、层级、版本、来源和结构字段。
+          </SheetDescription>
+        </SheetHeader>
+
+        {row ? (
+          <div className="flex flex-col gap-5 px-4 pb-4">
+            <div className="flex flex-col gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="font-mono text-base" translate="no">
+                  {row.code}
+                </span>
+                <Badge variant="secondary">{formatLevel(row)}</Badge>
+                <Badge variant="outline">{getTitleStatus(row)}</Badge>
+              </div>
+              <p
+                className="text-muted-foreground break-words font-mono text-xs"
+                translate="no"
+              >
+                {row.code_norm}
+              </p>
+            </div>
+
+            <Separator />
+
+            <section className="flex flex-col gap-3">
+              <h3 className="text-sm font-medium">基础信息</h3>
+              <dl className="flex flex-col gap-2">
+                <DetailField label="分类号" value={row.code} isCode />
+                <DetailField label="规范化 code" value={row.code_norm} isCode />
+                <DetailField label="原始 code" value={row.source_code} isCode />
+                <DetailField label="层级" value={formatLevel(row)} />
+                <DetailField label="层级值" value={row.level} />
+                <DetailField label="版本" value={row.version} isCode />
+              </dl>
+            </section>
+
+            <Separator />
+
+            <section className="flex flex-col gap-3">
+              <h3 className="text-sm font-medium">标题</h3>
+              <dl className="flex flex-col gap-2">
+                <DetailField label="中文标题" value={row.title_zh} />
+                <DetailField label="英文标题" value={row.title_en} />
+                <DetailField
+                  label="中文来源状态"
+                  value={getTitleStatus(row)}
+                />
+              </dl>
+            </section>
+
+            <Separator />
+
+            <section className="flex flex-col gap-3">
+              <h3 className="text-sm font-medium">结构字段</h3>
+              <dl className="flex flex-col gap-2">
+                <DetailField label="section" value={row.section} isCode />
+                <DetailField label="class" value={row.class_code} isCode />
+                <DetailField label="subclass" value={row.subclass} isCode />
+                <DetailField label="main_group" value={row.main_group} isCode />
+                <DetailField label="subgroup" value={row.subgroup} isCode />
+              </dl>
+            </section>
+
+            {hasTreeFields(row) ? (
+              <>
+                <Separator />
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-medium">树节点</h3>
+                  <dl className="flex flex-col gap-2">
+                    <DetailField
+                      label="父级 code"
+                      value={row.parent_code_norm}
+                      isCode
+                    />
+                    <DetailField label="深度" value={row.depth} />
+                    <DetailField label="有子级" value={row.has_children} />
+                    <DetailField label="命中查询" value={row.is_match} />
+                  </dl>
+                </section>
+              </>
+            ) : null}
+          </div>
+        ) : null}
+      </SheetContent>
+    </Sheet>
+  )
+}
+
 function ClassificationTable({
   rows,
   isLoading,
+  onViewDetails,
 }: {
   rows: ClassificationRow[]
   isLoading: boolean
+  onViewDetails: (row: ClassificationRow) => void
 }) {
   if (isLoading) {
     return (
@@ -134,54 +291,70 @@ function ClassificationTable({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead className="w-36">分类号</TableHead>
-          <TableHead className="min-w-96">英文标题</TableHead>
-          <TableHead className="min-w-48">中文标题</TableHead>
-          <TableHead className="w-20">层级</TableHead>
-          <TableHead className="w-24">版本</TableHead>
-          <TableHead className="min-w-52">来源文件</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => (
-          <TableRow key={`${row.version}-${row.code_norm}`}>
-            <TableCell className="font-mono text-sm">
-              <div className="flex flex-col gap-1">
-                <span translate="no">{row.code}</span>
-                <span translate="no" className="text-muted-foreground text-xs">
-                  {row.code_norm}
-                </span>
-              </div>
-            </TableCell>
-            <TableCell className="max-w-xl whitespace-normal">
-              <p className="line-clamp-3 break-words">{row.title_en}</p>
-            </TableCell>
-            <TableCell className="whitespace-normal">
-              {row.title_zh ? (
+    <div className="overflow-x-auto rounded-lg border">
+      <Table className="min-w-[880px]">
+        <TableHeader>
+          <TableRow>
+            <TableHead className="w-36">分类号</TableHead>
+            <TableHead className="min-w-96">标题</TableHead>
+            <TableHead className="min-w-64">英文标题</TableHead>
+            <TableHead className="w-20">层级</TableHead>
+            <TableHead className="w-24">版本</TableHead>
+            <TableHead className="w-28 text-right">操作</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={`${row.version}-${row.code_norm}`}>
+              <TableCell className="font-mono text-sm">
                 <div className="flex flex-col gap-1">
-                  <span className="break-words">{row.title_zh}</span>
-                  {row.title_zh_source ? (
+                  <span translate="no">{row.code}</span>
+                  <span
+                    translate="no"
+                    className="text-muted-foreground text-xs"
+                  >
+                    {row.code_norm}
+                  </span>
+                </div>
+              </TableCell>
+              <TableCell className="max-w-xl whitespace-normal">
+                <div className="flex flex-col gap-1">
+                  <p className="line-clamp-3 break-words">
+                    {getPrimaryTitle(row)}
+                  </p>
+                  {row.title_zh && row.title_zh_source ? (
                     <Badge variant="outline">{row.title_zh_source}</Badge>
                   ) : null}
+                  {!row.title_zh ? (
+                    <span className="text-muted-foreground text-xs">
+                      暂无中文标题，显示英文
+                    </span>
+                  ) : null}
                 </div>
-              ) : (
-                <span className="text-muted-foreground">未补齐</span>
-              )}
-            </TableCell>
-            <TableCell>
-              <Badge variant="secondary">{formatLevel(row)}</Badge>
-            </TableCell>
-            <TableCell className="font-mono text-sm">{row.version}</TableCell>
-            <TableCell className="max-w-64 truncate font-mono text-xs">
-              {row.source_file || '未记录'}
-            </TableCell>
-          </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+              </TableCell>
+              <TableCell className="max-w-lg whitespace-normal">
+                <p className="line-clamp-3 break-words">{row.title_en}</p>
+              </TableCell>
+              <TableCell>
+                <Badge variant="secondary">{formatLevel(row)}</Badge>
+              </TableCell>
+              <TableCell className="font-mono text-sm">{row.version}</TableCell>
+              <TableCell className="text-right">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onViewDetails(row)}
+                >
+                  <Eye data-icon="inline-start" aria-hidden="true" />
+                  查看详情
+                </Button>
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
@@ -190,11 +363,13 @@ function ClassificationTreeNodeRow({
   type,
   query,
   isSearch,
+  onViewDetails,
 }: {
   node: ClassificationTreeNode
   type: ClassificationType
   query: string
   isSearch: boolean
+  onViewDetails: (row: ClassificationTreeNode) => void
 }) {
   const [isExpanded, setIsExpanded] = useState(false)
   const shouldLoadChildren = isExpanded && node.has_children && !isSearch
@@ -210,16 +385,27 @@ function ClassificationTreeNodeRow({
   } = useSWR<ClassificationTreeApiResponse>(childUrl, fetcher)
   const children = childData?.data.items || []
   const canExpand = node.has_children && !isSearch
+  const rowId = `classification-row-${type}-${node.code_norm.replace(
+    /[^a-zA-Z0-9_-]/g,
+    '-',
+  )}`
+  const childrenId = `${rowId}-children`
 
   return (
     <>
       <div
+        id={rowId}
+        role="row"
+        aria-level={node.depth + 1}
+        aria-expanded={canExpand ? isExpanded : undefined}
+        aria-owns={canExpand && isExpanded ? childrenId : undefined}
         className={cn(
-          'grid min-w-[760px] grid-cols-[minmax(18rem,1.1fr)_minmax(20rem,1.4fr)_minmax(12rem,0.8fr)_7rem_7rem] items-start gap-3 border-b px-3 py-2 text-sm',
+          'grid min-w-[780px] grid-cols-[minmax(18rem,1.1fr)_minmax(20rem,1.4fr)_minmax(14rem,0.9fr)_7rem_7rem] items-start gap-3 border-b px-3 py-2 text-sm [contain-intrinsic-size:44px] [content-visibility:auto]',
           node.is_match && 'bg-muted/50',
         )}
       >
         <div
+          role="gridcell"
           className="flex min-w-0 items-start gap-1"
           style={{ paddingLeft: `${node.depth * 1.25}rem` }}
         >
@@ -229,8 +415,11 @@ function ClassificationTreeNodeRow({
               variant="ghost"
               size="icon"
               className="size-7 shrink-0"
-              aria-label={isExpanded ? `折叠 ${node.code}` : `展开 ${node.code}`}
+              aria-label={
+                isExpanded ? `折叠 ${node.code}` : `展开 ${node.code}`
+              }
               aria-expanded={isExpanded}
+              aria-controls={childrenId}
               onClick={() => setIsExpanded((current) => !current)}
             >
               {isExpanded ? (
@@ -257,26 +446,34 @@ function ClassificationTreeNodeRow({
             </span>
           </div>
         </div>
-        <div className="min-w-0">
-          <p className="line-clamp-2 break-words">{node.title_en}</p>
-        </div>
-        <div className="min-w-0">
+        <div role="gridcell" className="min-w-0">
+          <p className="line-clamp-2 break-words">{getPrimaryTitle(node)}</p>
           {node.title_zh ? (
-            <p className="line-clamp-2 break-words">{node.title_zh}</p>
+            <span className="text-muted-foreground text-xs">
+              {getTitleStatus(node)}
+            </span>
           ) : (
-            <span className="text-muted-foreground">未补齐</span>
+            <span className="text-muted-foreground text-xs">
+              暂无中文标题，显示英文
+            </span>
           )}
         </div>
-        <div>
+        <div role="gridcell" className="min-w-0">
+          <p className="line-clamp-2 break-words">{node.title_en}</p>
+        </div>
+        <div role="gridcell">
           <Badge variant="outline">{formatLevel(node)}</Badge>
         </div>
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="font-mono text-xs" translate="no">
-            {node.version}
-          </span>
-          <span className="text-muted-foreground truncate text-xs">
-            {getTitleStatus(node)}
-          </span>
+        <div role="gridcell" className="flex justify-end">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onViewDetails(node)}
+          >
+            <Eye data-icon="inline-start" aria-hidden="true" />
+            查看详情
+          </Button>
         </div>
       </div>
 
@@ -291,23 +488,26 @@ function ClassificationTreeNodeRow({
       ) : null}
 
       {isLoadingChildren ? (
-        <div className="flex min-w-[760px] flex-col gap-2 border-b px-3 py-2">
+        <div className="flex min-w-[780px] flex-col gap-2 border-b px-3 py-2">
           <Skeleton className="h-9 w-full" />
           <Skeleton className="h-9 w-full" />
         </div>
       ) : null}
 
-      {isExpanded
-        ? children.map((child) => (
+      {isExpanded ? (
+        <div id={childrenId} role="presentation">
+          {children.map((child) => (
             <ClassificationTreeNodeRow
               key={`${query}-${child.version}-${child.code_norm}`}
               node={child}
               type={type}
               query={query}
               isSearch={false}
+              onViewDetails={onViewDetails}
             />
-          ))
-        : null}
+          ))}
+        </div>
+      ) : null}
     </>
   )
 }
@@ -318,12 +518,14 @@ function ClassificationTree({
   rows,
   isSearch,
   isLoading,
+  onViewDetails,
 }: {
   type: ClassificationType
   query: string
   rows: ClassificationTreeNode[]
   isSearch: boolean
   isLoading: boolean
+  onViewDetails: (row: ClassificationTreeNode) => void
 }) {
   if (isLoading) {
     return (
@@ -336,15 +538,27 @@ function ClassificationTree({
   }
 
   return (
-    <div className="overflow-x-auto rounded-lg border">
-      <div className="grid min-w-[760px] grid-cols-[minmax(18rem,1.1fr)_minmax(20rem,1.4fr)_minmax(12rem,0.8fr)_7rem_7rem] gap-3 border-b bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground">
-        <div>分类号</div>
-        <div>英文标题</div>
-        <div>中文标题</div>
-        <div>层级</div>
-        <div>版本 / 状态</div>
+    <div
+      role="treegrid"
+      aria-label="分类字典树"
+      aria-rowcount={rows.length}
+      className="overflow-x-auto rounded-lg border"
+    >
+      <div role="rowgroup">
+        <div
+          role="row"
+          className="bg-muted/40 text-muted-foreground grid min-w-[780px] grid-cols-[minmax(18rem,1.1fr)_minmax(20rem,1.4fr)_minmax(14rem,0.9fr)_7rem_7rem] gap-3 border-b px-3 py-2 text-xs font-medium"
+        >
+          <div role="columnheader">分类号</div>
+          <div role="columnheader">标题</div>
+          <div role="columnheader">英文标题</div>
+          <div role="columnheader">层级</div>
+          <div role="columnheader" className="text-right">
+            操作
+          </div>
+        </div>
       </div>
-      <div aria-live="polite">
+      <div role="rowgroup" aria-live="polite">
         {rows.map((node) => (
           <ClassificationTreeNodeRow
             key={`${query}-${node.version}-${node.code_norm}`}
@@ -352,6 +566,7 @@ function ClassificationTree({
             type={type}
             query={query}
             isSearch={isSearch}
+            onViewDetails={onViewDetails}
           />
         ))}
       </div>
@@ -430,9 +645,12 @@ function ClassificationSearchForm({
             </InputGroupAddon>
             <InputGroupInput
               id="classification-query"
+              name="classification-query"
+              autoComplete="off"
+              spellCheck={false}
               value={queryInput}
               onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="输入分类号或标题关键词"
+              placeholder="输入分类号或标题关键词…"
               disabled={isBusy}
             />
             {queryInput ? (
@@ -473,6 +691,8 @@ export function ClassificationsClient() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
+  const [selectedDetail, setSelectedDetail] =
+    useState<ClassificationDetail | null>(null)
   const type = getClassificationType(searchParams.get('type'))
   const view = getClassificationView(searchParams.get('view'))
   const page = getPositiveInt(searchParams.get('page'), 1)
@@ -555,6 +775,10 @@ export function ClassificationsClient() {
     updateParams({ q: '', page: 1 })
   }
 
+  const handleViewDetails = (row: ClassificationDetail) => {
+    setSelectedDetail(row)
+  }
+
   return (
     <AppShell>
       <Header
@@ -625,7 +849,7 @@ export function ClassificationsClient() {
                       } / ${result.total_pages} 页`}
                 </CardDescription>
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                 <ToggleGroup
                   type="single"
                   value={view}
@@ -648,7 +872,14 @@ export function ClassificationsClient() {
                     列表视图
                   </ToggleGroupItem>
                 </ToggleGroup>
-                <Badge variant="outline">{hasQuery ? query : '全部字典'}</Badge>
+                <Badge variant="outline" className="max-w-full">
+                  <span
+                    className="truncate"
+                    translate={hasQuery ? 'no' : undefined}
+                  >
+                    {hasQuery ? query : '全部字典'}
+                  </span>
+                </Badge>
               </div>
             </div>
           </CardHeader>
@@ -674,12 +905,19 @@ export function ClassificationsClient() {
                 rows={treeResult.items}
                 isSearch={treeResult.is_search}
                 isLoading={isTreeBusy}
+                onViewDetails={handleViewDetails}
               />
             ) : (
-              <ClassificationTable rows={result.items} isLoading={isListBusy} />
+              <ClassificationTable
+                rows={result.items}
+                isLoading={isListBusy}
+                onViewDetails={handleViewDetails}
+              />
             )}
 
-            {view === 'tree' && !hasQuery && treeResult.total > treeResult.limit ? (
+            {view === 'tree' &&
+            !hasQuery &&
+            treeResult.total > treeResult.limit ? (
               <Alert>
                 <AlertDescription>
                   当前层仅显示前 {treeResult.limit.toLocaleString('zh-CN')}{' '}
@@ -690,7 +928,7 @@ export function ClassificationsClient() {
 
             {view === 'list' && result.total_pages > 1 ? (
               <div className="flex flex-col gap-3 border-t pt-4 md:flex-row md:items-center md:justify-between">
-                <p className="text-muted-foreground text-sm">
+                <p className="text-muted-foreground text-sm tabular-nums">
                   每页 {result.limit} 条，第 {result.page} /{' '}
                   {result.total_pages} 页
                 </p>
@@ -721,6 +959,14 @@ export function ClassificationsClient() {
           </CardContent>
         </Card>
       </div>
+
+      <ClassificationDetailSheet
+        row={selectedDetail}
+        open={Boolean(selectedDetail)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedDetail(null)
+        }}
+      />
     </AppShell>
   )
 }

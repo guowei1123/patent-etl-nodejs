@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.9.1 - 2026-07-07
+
+### 变更
+
+- 优化 IPC/CPC 分类字典页，列表和树状视图优先展示中文标题并减少主表冗余字段
+- IPC/CPC 分类字典列表和树状视图新增行详情面板，集中展示分类号、标题、层级、版本和结构字段
+
 ## 0.9.0 - 2026-07-01
 
 ### 新增
