@@ -24,6 +24,7 @@ export type ClassificationSemanticSearchOptions = {
   query: string
   locale?: ClassificationEmbeddingLocale
   model?: string
+  dimensions?: number
   limit?: number
   version?: string
   section?: string
@@ -39,6 +40,7 @@ export type ClassificationSemanticSearchResult = ClassificationRow & {
 }
 
 const CLASSIFICATION_EMBEDDING_TABLE = 'cnipa.classification_embedding'
+const UPSERT_CHUNK_SIZE = 200
 
 function getClassificationTableName(type: ClassificationType): string {
   return type === 'ipc'
@@ -63,13 +65,68 @@ function normalizeSection(section: string | undefined): string | undefined {
   return normalized
 }
 
+function normalizeDimensions(dimensions: number): number {
+  if (!Number.isFinite(dimensions) || dimensions <= 0) {
+    throw new Error('embedding dimensions 必须是正整数')
+  }
+  return Math.trunc(dimensions)
+}
+
+function getVectorDimensionFromType(embeddingType: string): number | null {
+  const match = embeddingType.match(/^vector\((\d+)\)$/i)
+  return match ? Number.parseInt(match[1], 10) : null
+}
+
+export async function getClassificationEmbeddingDimensions(
+  client: pg.PoolClient,
+): Promise<number | null> {
+  const typeResult = await client.query<{ embedding_type: string }>(
+    `SELECT format_type(a.atttypid, a.atttypmod) AS embedding_type
+       FROM pg_attribute a
+      WHERE a.attrelid = to_regclass($1)
+        AND a.attname = 'embedding'
+        AND NOT a.attisdropped`,
+    [CLASSIFICATION_EMBEDDING_TABLE],
+  )
+
+  return getVectorDimensionFromType(typeResult.rows[0]?.embedding_type ?? '')
+}
+
+export async function assertClassificationEmbeddingDimensions(
+  client: pg.PoolClient,
+  dimensions: number,
+): Promise<void> {
+  const normalizedDimensions = normalizeDimensions(dimensions)
+  const existingDimensions = await getClassificationEmbeddingDimensions(client)
+
+  if (
+    existingDimensions !== null &&
+    existingDimensions !== normalizedDimensions
+  ) {
+    throw new Error(
+      `classification_embedding.embedding 已是 ${existingDimensions} 维，不能写入 ${normalizedDimensions} 维向量`,
+    )
+  }
+}
+
+function assertEmbeddedRowsDimensions(
+  embeddedRows: EmbeddedClassificationRow[],
+  dimensions: number,
+): void {
+  for (const item of embeddedRows) {
+    if (item.embedding.length !== dimensions) {
+      throw new Error(
+        `embedding 维度不一致：${item.row.code_norm} 为 ${item.embedding.length} 维，期望 ${dimensions} 维`,
+      )
+    }
+  }
+}
+
 export async function ensureClassificationEmbeddingTable(
   client: pg.PoolClient,
   dimensions: number,
 ): Promise<void> {
-  if (!Number.isFinite(dimensions) || dimensions <= 0) {
-    throw new Error('embedding dimensions 必须是正整数')
-  }
+  const normalizedDimensions = normalizeDimensions(dimensions)
 
   await client.query('CREATE EXTENSION IF NOT EXISTS vector')
   await client.query(`
@@ -82,11 +139,14 @@ export async function ensureClassificationEmbeddingTable(
       embedding_dimensions INTEGER NOT NULL,
       content_hash         TEXT NOT NULL,
       content              TEXT NOT NULL,
-      embedding            VECTOR(${Math.trunc(dimensions)}) NOT NULL,
+      embedding            VECTOR(${normalizedDimensions}) NOT NULL,
       embedded_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (type, code_norm, version, locale, embedding_model)
     )
   `)
+
+  await assertClassificationEmbeddingDimensions(client, normalizedDimensions)
+
   await client.query(`
     CREATE INDEX IF NOT EXISTS idx_classification_embedding_hnsw
       ON ${CLASSIFICATION_EMBEDDING_TABLE}
@@ -135,27 +195,22 @@ export async function upsertClassificationEmbeddings(
 
   const locale = options.locale ?? 'mixed'
   const model = getEmbeddingModel(options.model)
-  const dimensions = options.dimensions ?? embeddedRows[0].embedding.length
+  const dimensions = normalizeDimensions(
+    options.dimensions ?? embeddedRows[0].embedding.length,
+  )
+  assertEmbeddedRowsDimensions(embeddedRows, dimensions)
 
   await ensureClassificationEmbeddingTable(client, dimensions)
 
-  for (const item of embeddedRows) {
-    await client.query(
-      `INSERT INTO ${CLASSIFICATION_EMBEDDING_TABLE} (
-         type, code_norm, version, locale, embedding_model,
-         embedding_dimensions, content_hash, content, embedding
-       )
-       VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9::vector
-       )
-       ON CONFLICT (type, code_norm, version, locale, embedding_model)
-       DO UPDATE SET
-         embedding_dimensions = EXCLUDED.embedding_dimensions,
-         content_hash = EXCLUDED.content_hash,
-         content = EXCLUDED.content,
-         embedding = EXCLUDED.embedding,
-         embedded_at = CURRENT_TIMESTAMP`,
-      [
+  for (
+    let offset = 0;
+    offset < embeddedRows.length;
+    offset += UPSERT_CHUNK_SIZE
+  ) {
+    const chunk = embeddedRows.slice(offset, offset + UPSERT_CHUNK_SIZE)
+    const params: (string | number)[] = []
+    const valueGroups = chunk.map((item, rowIndex) => {
+      params.push(
         options.type,
         item.row.code_norm,
         item.row.version,
@@ -165,7 +220,29 @@ export async function upsertClassificationEmbeddings(
         item.content_hash,
         item.content,
         toPgVectorLiteral(item.embedding),
-      ],
+      )
+      const base = rowIndex * 9
+      const placeholders = Array.from({ length: 9 }, (_, colIndex) => {
+        const param = `$${base + colIndex + 1}`
+        return colIndex === 8 ? `${param}::vector` : param
+      })
+      return `(${placeholders.join(', ')})`
+    })
+
+    await client.query(
+      `INSERT INTO ${CLASSIFICATION_EMBEDDING_TABLE} (
+         type, code_norm, version, locale, embedding_model,
+         embedding_dimensions, content_hash, content, embedding
+       )
+       VALUES ${valueGroups.join(', ')}
+       ON CONFLICT (type, code_norm, version, locale, embedding_model)
+       DO UPDATE SET
+         embedding_dimensions = EXCLUDED.embedding_dimensions,
+         content_hash = EXCLUDED.content_hash,
+         content = EXCLUDED.content,
+         embedding = EXCLUDED.embedding,
+         embedded_at = CURRENT_TIMESTAMP`,
+      params,
     )
   }
 }
@@ -179,8 +256,17 @@ export async function searchSimilarClassificationsByEmbedding(
   const tableName = getClassificationTableName(type)
   const locale = options.locale ?? 'mixed'
   const model = getEmbeddingModel(options.model)
+  const queryDimensions = normalizeDimensions(queryEmbedding.length)
+  const dimensions = options.dimensions
+    ? normalizeDimensions(options.dimensions)
+    : queryDimensions
   const limit = normalizeLimit(options.limit)
   const section = normalizeSection(options.section)
+  if (queryDimensions !== dimensions) {
+    throw new Error(
+      `query embedding 为 ${queryDimensions} 维，期望 ${dimensions} 维`,
+    )
+  }
 
   const params: (string | number)[] = [
     toPgVectorLiteral(queryEmbedding),
@@ -198,6 +284,9 @@ export async function searchSimilarClassificationsByEmbedding(
     params.push(options.version)
     conditions.push(`ce.version = $${params.length}`)
   }
+
+  params.push(dimensions)
+  conditions.push(`ce.embedding_dimensions = $${params.length}`)
 
   if (section) {
     params.push(section)
@@ -249,6 +338,7 @@ export async function searchSimilarClassifications(
 
   const queryEmbedding = await getEmbedding(query, {
     model: options.model,
+    dimensions: options.dimensions,
   })
 
   return searchSimilarClassificationsByEmbedding(

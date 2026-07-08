@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  assertClassificationEmbeddingDimensions,
   searchSimilarClassificationsByEmbedding,
   upsertClassificationEmbeddings,
   type EmbeddedClassificationRow,
@@ -73,14 +74,16 @@ describe('classification vector search', () => {
     expect(sql).toContain('FROM cnipa.classification_embedding ce')
     expect(sql).toContain('JOIN cnipa.ipc_classification c')
     expect(sql).toContain('ce.version = $5')
-    expect(sql).toContain('c.section = $6')
-    expect(sql).toContain('LIMIT $7')
+    expect(sql).toContain('ce.embedding_dimensions = $6')
+    expect(sql).toContain('c.section = $7')
+    expect(sql).toContain('LIMIT $8')
     expect(params).toEqual([
       '[0.1,0.2,0.3]',
       'ipc',
       'mixed',
       'test-embedding',
       '2026.01',
+      3,
       'H',
       5,
     ])
@@ -89,6 +92,32 @@ describe('classification vector search', () => {
       similarity: 0.876,
       similarity_percent: '87.6%',
     })
+  })
+
+  it('filters semantic search by the generated query embedding dimensions', async () => {
+    const client = createClient()
+
+    await searchSimilarClassificationsByEmbedding(
+      client as never,
+      [0.1, 0.2, 0.3, 0.4],
+      {
+        type: 'ipc',
+        locale: 'mixed',
+        model: 'test-embedding',
+      },
+    )
+
+    const [sql, params] = client.query.mock.calls[0]
+    expect(sql).toContain('ce.embedding_dimensions = $5')
+    expect(sql).toContain('LIMIT $6')
+    expect(params).toEqual([
+      '[0.1,0.2,0.3,0.4]',
+      'ipc',
+      'mixed',
+      'test-embedding',
+      4,
+      10,
+    ])
   })
 
   it('upserts classification embeddings with model, locale, and content hash metadata', async () => {
@@ -116,13 +145,14 @@ describe('classification vector search', () => {
     expect(client.query.mock.calls[1][0]).toContain(
       'CREATE TABLE IF NOT EXISTS cnipa.classification_embedding',
     )
-    expect(client.query.mock.calls[2][0]).toContain(
+    expect(client.query.mock.calls[2][0]).toContain("a.attname = 'embedding'")
+    expect(client.query.mock.calls[3][0]).toContain(
       'USING hnsw (embedding vector_cosine_ops)',
     )
-    expect(client.query.mock.calls[3][0]).toContain(
+    expect(client.query.mock.calls[4][0]).toContain(
       'ON CONFLICT (type, code_norm, version, locale, embedding_model)',
     )
-    expect(client.query.mock.calls[3][1]).toEqual([
+    expect(client.query.mock.calls[4][1]).toEqual([
       'ipc',
       'H01M4/13',
       '2026.01',
@@ -133,5 +163,39 @@ describe('classification vector search', () => {
       '分类号：H01M 4/13',
       '[0.1,0.2,0.3]',
     ])
+  })
+
+  it('rejects writes when existing pgvector dimensions differ', async () => {
+    const client = createClient([{ embedding_type: 'vector(1536)' }])
+    const embeddedRows: EmbeddedClassificationRow[] = [
+      {
+        row: classificationRow(),
+        content: '分类号：H01M 4/13',
+        content_hash: 'hash-1',
+        embedding: [0.1, 0.2, 0.3],
+      },
+    ]
+
+    await expect(
+      upsertClassificationEmbeddings(client as never, embeddedRows, {
+        type: 'ipc',
+        locale: 'mixed',
+        model: 'test-embedding',
+        dimensions: 3,
+      }),
+    ).rejects.toThrow(
+      'classification_embedding.embedding 已是 1536 维，不能写入 3 维向量',
+    )
+  })
+
+  it('preflights existing classification embedding table dimensions', async () => {
+    const client = createClient([{ embedding_type: 'vector(1536)' }])
+
+    await expect(
+      assertClassificationEmbeddingDimensions(client as never, 1024),
+    ).rejects.toThrow(
+      'classification_embedding.embedding 已是 1536 维，不能写入 1024 维向量',
+    )
+    expect(client.query.mock.calls[0][0]).toContain('to_regclass($1)')
   })
 })

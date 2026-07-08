@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.9.4 - 2026-07-08
+
+### 修复
+
+- IPC 向量 POC 默认 embedding batch size 改为 10，并支持 `OPENAI_EMBEDDING_BATCH_SIZE` 配置，兼容批量上限较低的 OpenAI 兼容服务
+- 分类向量写入前校验 pgvector 维度和样本向量维度，语义查询透传 embedding dimensions，避免模型维度不一致导致运行时失败
+- IPC 向量写入支持 embedding batch 并发和批量 upsert，减少全量写入时的 API 串行等待和数据库往返
+
 ## 0.9.3 - 2026-07-07
 
 ### 变更

@@ -3,6 +3,8 @@ import { embed, embedMany } from 'ai'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getEmbedding,
+  getEmbeddingBatchSize,
+  getEmbeddingConcurrency,
   getEmbeddingDimensions,
   getEmbeddingModel,
   getEmbeddings,
@@ -50,6 +52,24 @@ describe('embedding configuration', () => {
     expect(getEmbeddingDimensions(1536)).toBe(1536)
     expect(() => getEmbeddingDimensions('0')).toThrow(
       'OPENAI_EMBEDDING_DIMENSIONS 必须是正整数',
+    )
+  })
+
+  it('uses a conservative default embedding batch size', () => {
+    expect(getEmbeddingBatchSize(undefined)).toBe(10)
+    expect(getEmbeddingBatchSize('8')).toBe(8)
+    expect(getEmbeddingBatchSize(2)).toBe(2)
+    expect(() => getEmbeddingBatchSize('0')).toThrow(
+      'OPENAI_EMBEDDING_BATCH_SIZE 必须是正整数',
+    )
+  })
+
+  it('uses a conservative default embedding concurrency', () => {
+    expect(getEmbeddingConcurrency(undefined)).toBe(3)
+    expect(getEmbeddingConcurrency('4')).toBe(4)
+    expect(getEmbeddingConcurrency(2)).toBe(2)
+    expect(() => getEmbeddingConcurrency('0')).toThrow(
+      'OPENAI_EMBEDDING_CONCURRENCY 必须是正整数',
     )
   })
 
@@ -110,6 +130,7 @@ describe('embedding configuration', () => {
       getEmbeddings(['a', 'b', 'c'], {
         model: 'text-embedding-3-small',
         batchSize: 2,
+        concurrency: 1,
         timeout: 0,
       }),
     ).resolves.toEqual([[1], [2], [3]])
@@ -132,6 +153,36 @@ describe('embedding configuration', () => {
     vi.clearAllMocks()
     await expect(getEmbeddings([])).resolves.toEqual([])
     expect(embedMany).not.toHaveBeenCalled()
+  })
+
+  it('embeds batches concurrently while preserving result order', async () => {
+    vi.stubEnv('OPENAI_API_KEY', 'test-key')
+    const resolvers: Array<
+      (value: Awaited<ReturnType<typeof embedMany>>) => void
+    > = []
+    vi.mocked(embedMany).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolvers.push(resolve)
+        }),
+    )
+
+    const promise = getEmbeddings(['a', 'b', 'c', 'd'], {
+      model: 'text-embedding-3-small',
+      batchSize: 2,
+      concurrency: 2,
+      timeout: 0,
+    })
+
+    await vi.waitFor(() => expect(embedMany).toHaveBeenCalledTimes(2))
+    resolvers[1]({
+      embeddings: [[3], [4]],
+    } as Awaited<ReturnType<typeof embedMany>>)
+    resolvers[0]({
+      embeddings: [[1], [2]],
+    } as Awaited<ReturnType<typeof embedMany>>)
+
+    await expect(promise).resolves.toEqual([[1], [2], [3], [4]])
   })
 
   it('requires an API key before embedding', async () => {

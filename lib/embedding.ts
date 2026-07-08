@@ -9,6 +9,7 @@ export type EmbeddingClientOptions = {
   model?: string
   dimensions?: number
   batchSize?: number
+  concurrency?: number
   timeout?: number
   maxRetries?: number
 }
@@ -37,6 +38,40 @@ export function getEmbeddingDimensions(
     throw new Error('OPENAI_EMBEDDING_DIMENSIONS 必须是正整数')
   }
   return parsed
+}
+
+export function getEmbeddingBatchSize(
+  batchSize: string | number | undefined = process.env
+    .OPENAI_EMBEDDING_BATCH_SIZE,
+): number {
+  const fallback = 10
+  if (!batchSize) return fallback
+
+  const parsed =
+    typeof batchSize === 'number'
+      ? batchSize
+      : Number.parseInt(String(batchSize), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error('OPENAI_EMBEDDING_BATCH_SIZE 必须是正整数')
+  }
+  return Math.trunc(parsed)
+}
+
+export function getEmbeddingConcurrency(
+  concurrency: string | number | undefined = process.env
+    .OPENAI_EMBEDDING_CONCURRENCY,
+): number {
+  const fallback = 3
+  if (!concurrency) return fallback
+
+  const parsed =
+    typeof concurrency === 'number'
+      ? concurrency
+      : Number.parseInt(String(concurrency), 10)
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error('OPENAI_EMBEDDING_CONCURRENCY 必须是正整数')
+  }
+  return Math.trunc(parsed)
 }
 
 export function isEmbeddingConfigured(): boolean {
@@ -86,11 +121,23 @@ async function withTimeout<T>(
 }
 
 function getBatchSize(options: EmbeddingClientOptions): number {
-  const batchSize = options.batchSize ?? 64
+  const batchSize =
+    options.batchSize ??
+    getEmbeddingBatchSize(process.env.OPENAI_EMBEDDING_BATCH_SIZE)
   if (!Number.isFinite(batchSize) || batchSize <= 0) {
     throw new Error('batchSize 必须是正整数')
   }
   return Math.trunc(batchSize)
+}
+
+function getConcurrency(options: EmbeddingClientOptions): number {
+  const concurrency =
+    options.concurrency ??
+    getEmbeddingConcurrency(process.env.OPENAI_EMBEDDING_CONCURRENCY)
+  if (!Number.isFinite(concurrency) || concurrency <= 0) {
+    throw new Error('concurrency 必须是正整数')
+  }
+  return Math.trunc(concurrency)
 }
 
 export async function getEmbedding(
@@ -119,21 +166,39 @@ export async function getEmbeddings(
 
   const requestOptions = getEmbeddingRequestOptions(options)
   const batchSize = getBatchSize(options)
-  const embeddings: number[][] = []
+  const concurrency = getConcurrency(options)
+  const batches: string[][] = []
 
   for (let index = 0; index < texts.length; index += batchSize) {
-    const values = texts.slice(index, index + batchSize)
-    const result = await withTimeout(requestOptions.timeout, (abortSignal) =>
-      embedMany({
-        model: requestOptions.model,
-        values,
-        providerOptions: requestOptions.providerOptions,
-        maxRetries: requestOptions.maxRetries,
-        abortSignal,
-      }),
-    )
-    embeddings.push(...result.embeddings)
+    batches.push(texts.slice(index, index + batchSize))
   }
 
-  return embeddings
+  const results: number[][][] = new Array(batches.length)
+  let nextBatchIndex = 0
+
+  async function worker(): Promise<void> {
+    while (nextBatchIndex < batches.length) {
+      const batchIndex = nextBatchIndex
+      nextBatchIndex += 1
+      const values = batches[batchIndex]
+      const result = await withTimeout(requestOptions.timeout, (abortSignal) =>
+        embedMany({
+          model: requestOptions.model,
+          values,
+          providerOptions: requestOptions.providerOptions,
+          maxRetries: requestOptions.maxRetries,
+          abortSignal,
+        }),
+      )
+      results[batchIndex] = result.embeddings
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, batches.length) }, () =>
+      worker(),
+    ),
+  )
+
+  return results.flat()
 }

@@ -5,10 +5,15 @@ import {
   type ClassificationEmbeddingLocale,
 } from '../lib/classification-embedding.ts'
 import {
+  assertClassificationEmbeddingDimensions,
   embedClassificationRows,
   upsertClassificationEmbeddings,
 } from '../lib/classification-vector-search.ts'
-import { getEmbedding } from '../lib/embedding.ts'
+import {
+  getEmbedding,
+  getEmbeddingBatchSize,
+  getEmbeddingConcurrency,
+} from '../lib/embedding.ts'
 import type { ClassificationRow } from '../types/index.ts'
 
 type CliOptions = {
@@ -19,6 +24,7 @@ type CliOptions = {
   model: string
   dimensions: number
   batchSize: number
+  concurrency: number
   topK: number
   query?: string
   dryRun: boolean
@@ -28,9 +34,11 @@ type CliOptions = {
 const DEFAULT_MODEL =
   process.env.OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small'
 const DEFAULT_DIMENSIONS = Number.parseInt(
-  process.env.OPENAI_EMBEDDING_DIMENSIONS || '1536',
+  process.env.OPENAI_EMBEDDING_DIMENSIONS || '1024',
   10,
 )
+const DEFAULT_BATCH_SIZE = getEmbeddingBatchSize()
+const DEFAULT_CONCURRENCY = getEmbeddingConcurrency()
 
 function parsePositiveInt(value: string, name: string): number {
   const parsed = Number.parseInt(value, 10)
@@ -47,8 +55,9 @@ function parseArgs(argv: string[]): CliOptions {
     locale: 'mixed',
     level: 'concrete',
     model: DEFAULT_MODEL,
-    dimensions: Number.isFinite(DEFAULT_DIMENSIONS) ? DEFAULT_DIMENSIONS : 1536,
-    batchSize: 64,
+    dimensions: Number.isFinite(DEFAULT_DIMENSIONS) ? DEFAULT_DIMENSIONS : 1024,
+    batchSize: DEFAULT_BATCH_SIZE,
+    concurrency: DEFAULT_CONCURRENCY,
     topK: 10,
     dryRun: true,
     write: false,
@@ -85,6 +94,8 @@ function parseArgs(argv: string[]): CliOptions {
       options.dimensions = parsePositiveInt(next, arg)
     else if (arg === '--batch-size')
       options.batchSize = parsePositiveInt(next, arg)
+    else if (arg === '--concurrency')
+      options.concurrency = parsePositiveInt(next, arg)
     else if (arg === '--top-k') options.topK = parsePositiveInt(next, arg)
     else if (arg === '--query') options.query = next
     else if (arg === '--locale') {
@@ -125,8 +136,9 @@ Options:
   --write               Store sampled embeddings in PostgreSQL
   --dry-run             Preview sampled embedding text without API calls, default
   --model <name>        Embedding model, default OPENAI_EMBEDDING_MODEL or text-embedding-3-small
-  --dimensions <n>      Embedding dimensions, default OPENAI_EMBEDDING_DIMENSIONS or 1536
-  --batch-size <n>      Embedding request batch size, default 64
+  --dimensions <n>      Embedding dimensions, default OPENAI_EMBEDDING_DIMENSIONS or 1024
+  --batch-size <n>      Embedding request batch size, default OPENAI_EMBEDDING_BATCH_SIZE or 10
+  --concurrency <n>     Concurrent embedding batch requests, default OPENAI_EMBEDDING_CONCURRENCY or 3
   --top-k <n>           Search result count, default 10`)
 }
 
@@ -150,12 +162,27 @@ function getConnectionConfig(): pg.PoolConfig {
 async function fetchIpcRows(
   client: pg.PoolClient,
   options: CliOptions,
+  skipExisting: boolean,
 ): Promise<ClassificationRow[]> {
-  const conditions = ['section = $1']
+  const conditions = ['ic.section = $1']
   const params: (string | number)[] = [options.section]
 
   if (options.level === 'concrete') {
-    conditions.push('main_group IS NOT NULL')
+    conditions.push('ic.main_group IS NOT NULL')
+  }
+
+  if (skipExisting) {
+    params.push(options.locale, options.model, options.dimensions)
+    conditions.push(`NOT EXISTS (
+      SELECT 1
+        FROM cnipa.classification_embedding ce
+       WHERE ce.type = 'ipc'
+         AND ce.code_norm = ic.code_norm
+         AND ce.version = ic.version
+         AND ce.locale = $${params.length - 2}
+         AND ce.embedding_model = $${params.length - 1}
+         AND ce.embedding_dimensions = $${params.length}
+    )`)
   }
 
   params.push(options.limit)
@@ -164,14 +191,40 @@ async function fetchIpcRows(
     `SELECT code_norm, code, source_code, version, section, class_code,
             subclass, main_group, subgroup, level, title_en, title_zh,
             title_zh_source, source_file
-       FROM cnipa.ipc_classification
+       FROM cnipa.ipc_classification ic
       WHERE ${conditions.join(' AND ')}
-      ORDER BY code_norm
+      ORDER BY ic.code_norm
       LIMIT $${params.length}`,
     params,
   )
 
   return result.rows
+}
+
+async function classificationEmbeddingTableExists(
+  client: pg.PoolClient,
+): Promise<boolean> {
+  const result = await client.query<{ table_name: string | null }>(
+    "SELECT to_regclass('cnipa.classification_embedding') AS table_name",
+  )
+  return Boolean(result.rows[0]?.table_name)
+}
+
+async function fetchIpcRowsFromPool(
+  pool: pg.Pool,
+  options: CliOptions,
+): Promise<ClassificationRow[]> {
+  const client = await pool.connect()
+  try {
+    if (options.write) {
+      await assertClassificationEmbeddingDimensions(client, options.dimensions)
+    }
+    const skipExisting =
+      options.write && (await classificationEmbeddingTableExists(client))
+    return await fetchIpcRows(client, options, skipExisting)
+  } finally {
+    client.release()
+  }
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
@@ -198,6 +251,7 @@ async function searchInMemory(
     model: options.model,
     dimensions: options.dimensions,
     batchSize: options.batchSize,
+    concurrency: options.concurrency,
   })
   const results = embeddedRows
     .map((item) => ({
@@ -234,21 +288,17 @@ function printPreview(rows: ClassificationRow[], options: CliOptions): void {
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2))
   const pool = new pg.Pool(getConnectionConfig())
-  const client = await pool.connect()
 
   try {
-    await client.query('BEGIN')
-    const rows = await fetchIpcRows(client, options)
+    const rows = await fetchIpcRowsFromPool(pool, options)
 
     if (rows.length === 0) {
       console.log('No IPC rows matched the POC sample filter.')
-      await client.query('ROLLBACK')
       return
     }
 
     if (options.dryRun && !options.query) {
       printPreview(rows, options)
-      await client.query('ROLLBACK')
       return
     }
 
@@ -259,22 +309,31 @@ async function main(): Promise<void> {
         model: options.model,
         dimensions: options.dimensions,
         batchSize: options.batchSize,
+        concurrency: options.concurrency,
       },
     })
 
     if (options.write) {
-      await upsertClassificationEmbeddings(client, embeddedRows, {
-        type: 'ipc',
-        locale: options.locale,
-        model: options.model,
-        dimensions: options.dimensions,
-      })
-      await client.query('COMMIT')
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await upsertClassificationEmbeddings(client, embeddedRows, {
+          type: 'ipc',
+          locale: options.locale,
+          model: options.model,
+          dimensions: options.dimensions,
+        })
+        await client.query('COMMIT')
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => undefined)
+        throw error
+      } finally {
+        client.release()
+      }
       console.log(
         `Stored ${embeddedRows.length} IPC embeddings in cnipa.classification_embedding.`,
       )
     } else {
-      await client.query('ROLLBACK')
       console.log(
         `Generated ${embeddedRows.length} IPC embeddings in memory; database was not changed.`,
       )
@@ -283,11 +342,7 @@ async function main(): Promise<void> {
     if (options.query) {
       await searchInMemory(embeddedRows, options.query, options)
     }
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => undefined)
-    throw error
   } finally {
-    client.release()
     await pool.end()
   }
 }

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, type FormEvent } from 'react'
+import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,32 +54,34 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="bg-background relative flex min-h-screen items-center justify-center overflow-hidden px-4">
-      <div className="border-primary/20 bg-card/60 absolute top-10 left-10 hidden h-40 w-64 rounded-lg border p-3 shadow-xs lg:block">
-        <div className="grid h-full grid-cols-4 gap-2">
-          {[...Array(12)].map((_, index) => (
-            <div
-              key={index}
-              className="bg-secondary/80 rounded-sm border"
-              aria-hidden="true"
-            />
-          ))}
-        </div>
-      </div>
-      <div className="border-border/70 bg-card/50 absolute right-12 bottom-12 hidden h-28 w-72 rounded-lg border p-4 shadow-xs lg:block">
-        <div className="mb-3 flex items-center gap-2">
-          <div className="bg-success size-2 rounded-full" />
-          <div className="bg-muted h-2 w-24 rounded-full" />
-        </div>
-        <div className="bg-muted mb-2 h-2 w-full rounded-full" />
-        <div className="bg-muted h-2 w-2/3 rounded-full" />
-      </div>
+    <div className="bg-background relative flex min-h-dvh items-center justify-center overflow-hidden px-4 py-16 sm:py-20">
+      <Image
+        src="/login-bg-light.png"
+        alt=""
+        fill
+        priority
+        sizes="100vw"
+        className="object-cover"
+        aria-hidden="true"
+      />
+      <div
+        className="absolute inset-0 bg-background/72 dark:bg-background/84"
+        aria-hidden="true"
+      />
+      <div
+        className="absolute inset-0 bg-[radial-gradient(circle_at_center,var(--background)_0%,color-mix(in_oklch,var(--background)_70%,transparent)_38%,transparent_72%)]"
+        aria-hidden="true"
+      />
+      <div
+        className="absolute inset-0 bg-[linear-gradient(to_bottom,color-mix(in_oklch,var(--background)_52%,transparent),transparent_28%,color-mix(in_oklch,var(--background)_56%,transparent))]"
+        aria-hidden="true"
+      />
 
-      <div className="absolute top-4 right-4">
+      <div className="absolute top-4 right-4 z-20">
         <ThemeToggle />
       </div>
 
-      <Card className="bg-card/94 border-border/80 w-full max-w-sm shadow-lg shadow-primary/5 backdrop-blur">
+      <Card className="border-border/80 bg-card/96 relative z-10 w-full max-w-sm shadow-lg shadow-primary/5 backdrop-blur-md">
         <CardHeader className="text-center">
           <div className="bg-primary text-primary-foreground relative mx-auto mb-2 flex size-12 items-center justify-center overflow-hidden rounded-xl">
             <div className="absolute inset-x-2 top-3 h-px bg-primary-foreground/35" />
@@ -93,30 +96,32 @@ export default function LoginPage() {
             <FieldGroup className="gap-4">
               <Field>
                 <FieldLabel htmlFor="username">用户名</FieldLabel>
-              <Input
-                id="username"
-                placeholder="请输入用户名"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                autoComplete="username"
-                autoFocus
-              />
+                <Input
+                  id="username"
+                  name="username"
+                  placeholder="请输入用户名"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  spellCheck={false}
+                />
               </Field>
               <Field>
                 <FieldLabel htmlFor="password">密码</FieldLabel>
-              <Input
-                id="password"
-                type="password"
-                placeholder="请输入密码"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="current-password"
-              />
+                <Input
+                  id="password"
+                  name="password"
+                  type="password"
+                  placeholder="请输入密码"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                />
               </Field>
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading && <Spinner data-icon="inline-start" />}
-              登录
-            </Button>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading && <Spinner data-icon="inline-start" />}
+                登录
+              </Button>
             </FieldGroup>
           </form>
         </CardContent>
