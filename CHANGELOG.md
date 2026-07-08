@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [未发布]
 
+## 0.9.5 - 2026-07-08
+
+### 新增
+
+- 分类字典页新增 IPC 语义搜索模式，复用已写入的 1024 维分类向量召回相近分类号，并在列表中展示相似度
+- `/api/classifications` 新增 `mode=semantic` 查询模式，支持 IPC 向量搜索并对空查询、CPC 暂未生成向量等场景返回明确错误
+
+### 变更
+
+- 语义搜索结果固定以列表展示，树状视图仍保留为关键词和层级浏览入口
+
 ## 0.9.4 - 2026-07-08
 
 ### 修复

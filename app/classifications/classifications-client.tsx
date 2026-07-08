@@ -61,6 +61,8 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import type {
   ClassificationRow,
+  ClassificationSearchMode,
+  ClassificationSemanticRow,
   ClassificationTreeNode,
   ClassificationTreeResponse,
   ClassificationType,
@@ -73,7 +75,7 @@ type RequestError = Error & {
 
 type ClassificationResponse = {
   success: boolean
-  data: PaginatedResponse<ClassificationRow>
+  data: PaginatedResponse<ClassificationSearchRow>
 }
 
 type ClassificationTreeApiResponse = {
@@ -83,7 +85,9 @@ type ClassificationTreeApiResponse = {
 
 type ClassificationView = 'tree' | 'list'
 
-type ClassificationDetail = ClassificationRow | ClassificationTreeNode
+type ClassificationSearchRow = ClassificationRow | ClassificationSemanticRow
+
+type ClassificationDetail = ClassificationSearchRow | ClassificationTreeNode
 
 const fetcher = async <T,>(url: string): Promise<T> => {
   const response = await fetch(url)
@@ -119,6 +123,12 @@ function getClassificationView(value: string | null): ClassificationView {
   return value === 'list' ? 'list' : 'tree'
 }
 
+function getClassificationSearchMode(
+  value: string | null,
+): ClassificationSearchMode {
+  return value === 'semantic' ? 'semantic' : 'keyword'
+}
+
 function getTitleStatus(row: ClassificationRow) {
   if (!row.title_zh) return '未补齐'
   return row.title_zh_source || '已补齐'
@@ -132,6 +142,12 @@ function hasTreeFields(
   row: ClassificationDetail,
 ): row is ClassificationTreeNode {
   return 'depth' in row
+}
+
+function hasSemanticFields(
+  row: ClassificationDetail,
+): row is ClassificationSemanticRow {
+  return 'similarity_percent' in row
 }
 
 function DetailField({
@@ -264,6 +280,35 @@ function ClassificationDetailSheet({
                 </section>
               </>
             ) : null}
+
+            {hasSemanticFields(row) ? (
+              <>
+                <Separator />
+                <section className="flex flex-col gap-3">
+                  <h3 className="text-sm font-medium">语义匹配</h3>
+                  <dl className="flex flex-col gap-2">
+                    <DetailField
+                      label="相似度"
+                      value={row.similarity_percent}
+                    />
+                    <DetailField
+                      label="向量模型"
+                      value={row.embedding_model}
+                      isCode
+                    />
+                    <DetailField
+                      label="向量维度"
+                      value={row.embedding_dimensions}
+                    />
+                    <DetailField
+                      label="语料范围"
+                      value={row.embedding_locale}
+                      isCode
+                    />
+                  </dl>
+                </section>
+              </>
+            ) : null}
           </div>
         ) : null}
       </SheetContent>
@@ -274,11 +319,13 @@ function ClassificationDetailSheet({
 function ClassificationTable({
   rows,
   isLoading,
+  showSimilarity,
   onViewDetails,
 }: {
-  rows: ClassificationRow[]
+  rows: ClassificationSearchRow[]
   isLoading: boolean
-  onViewDetails: (row: ClassificationRow) => void
+  showSimilarity: boolean
+  onViewDetails: (row: ClassificationSearchRow) => void
 }) {
   if (isLoading) {
     return (
@@ -298,6 +345,9 @@ function ClassificationTable({
             <TableHead className="w-36">分类号</TableHead>
             <TableHead className="min-w-96">标题</TableHead>
             <TableHead className="min-w-64">英文标题</TableHead>
+            {showSimilarity ? (
+              <TableHead className="w-24 text-right">相似度</TableHead>
+            ) : null}
             <TableHead className="w-20">层级</TableHead>
             <TableHead className="w-24">版本</TableHead>
             <TableHead className="w-28 text-right">操作</TableHead>
@@ -335,6 +385,17 @@ function ClassificationTable({
               <TableCell className="max-w-lg whitespace-normal">
                 <p className="line-clamp-3 break-words">{row.title_en}</p>
               </TableCell>
+              {showSimilarity ? (
+                <TableCell className="text-right tabular-nums">
+                  {hasSemanticFields(row) ? (
+                    <Badge variant="secondary">
+                      {row.similarity_percent}
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </TableCell>
+              ) : null}
               <TableCell>
                 <Badge variant="secondary">{formatLevel(row)}</Badge>
               </TableCell>
@@ -576,11 +637,15 @@ function ClassificationTree({
 
 function ClassificationEmpty({
   hasQuery,
+  searchMode,
   onReset,
 }: {
   hasQuery: boolean
+  searchMode: ClassificationSearchMode
   onReset: () => void
 }) {
+  const isSemantic = searchMode === 'semantic'
+
   return (
     <Empty className="min-h-80">
       <EmptyHeader>
@@ -588,12 +653,22 @@ function ClassificationEmpty({
           <BookOpen aria-hidden="true" />
         </EmptyMedia>
         <EmptyTitle>
-          {hasQuery ? '未找到匹配分类号' : '请先导入 IPC/CPC 字典'}
+          {hasQuery
+            ? isSemantic
+              ? '未找到相近分类号'
+              : '未找到匹配分类号'
+            : isSemantic
+              ? '请输入语义搜索内容'
+              : '请先导入 IPC/CPC 字典'}
         </EmptyTitle>
         <EmptyDescription>
           {hasQuery
-            ? '请检查分类号格式或重置查询后重新检索。'
-            : '导入官方 IPC/CPC title list 后即可在这里查询分类字典。'}
+            ? isSemantic
+              ? '请换用更具体的技术描述，或切回关键词搜索。'
+              : '请检查分类号格式或重置查询后重新检索。'
+            : isSemantic
+              ? '输入技术描述或关键词后，将使用 IPC 向量数据召回相近分类号。'
+              : '导入官方 IPC/CPC title list 后即可在这里查询分类字典。'}
         </EmptyDescription>
       </EmptyHeader>
       {hasQuery ? (
@@ -608,15 +683,21 @@ function ClassificationEmpty({
 
 function ClassificationSearchForm({
   initialQuery,
+  searchMode,
+  canUseSemantic,
   isBusy,
   hasQuery,
   onSearch,
+  onModeChange,
   onReset,
 }: {
   initialQuery: string
+  searchMode: ClassificationSearchMode
+  canUseSemantic: boolean
   isBusy: boolean
   hasQuery: boolean
   onSearch: (query: string) => void
+  onModeChange: (mode: ClassificationSearchMode) => void
   onReset: () => void
 }) {
   const [queryInput, setQueryInput] = useState(initialQuery)
@@ -636,9 +717,38 @@ function ClassificationSearchForm({
       onSubmit={handleSearch}
       className="flex flex-col gap-3 md:flex-row md:items-end"
     >
+      <FieldGroup className="md:w-52">
+        <Field>
+          <FieldLabel>搜索模式</FieldLabel>
+          <ToggleGroup
+            type="single"
+            value={searchMode}
+            onValueChange={(value) => {
+              if (value === 'keyword' || value === 'semantic') {
+                onModeChange(value)
+              }
+            }}
+            aria-label="选择搜索模式"
+            disabled={isBusy}
+          >
+            <ToggleGroupItem value="keyword" aria-label="关键词搜索">
+              关键词
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="semantic"
+              aria-label="语义搜索"
+              disabled={!canUseSemantic}
+            >
+              语义
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </Field>
+      </FieldGroup>
       <FieldGroup className="min-w-0 flex-1">
         <Field>
-          <FieldLabel htmlFor="classification-query">分类号或标题</FieldLabel>
+          <FieldLabel htmlFor="classification-query">
+            {searchMode === 'semantic' ? '技术描述或关键词' : '分类号或标题'}
+          </FieldLabel>
           <InputGroup>
             <InputGroupAddon>
               <Search aria-hidden="true" />
@@ -650,7 +760,11 @@ function ClassificationSearchForm({
               spellCheck={false}
               value={queryInput}
               onChange={(event) => setQueryInput(event.target.value)}
-              placeholder="输入分类号或标题关键词…"
+              placeholder={
+                searchMode === 'semantic'
+                  ? '输入锂电池隔膜、无线资源分配等技术描述…'
+                  : '输入分类号或标题关键词…'
+              }
               disabled={isBusy}
             />
             {queryInput ? (
@@ -695,25 +809,37 @@ export function ClassificationsClient() {
     useState<ClassificationDetail | null>(null)
   const type = getClassificationType(searchParams.get('type'))
   const view = getClassificationView(searchParams.get('view'))
+  const requestedSearchMode = getClassificationSearchMode(
+    searchParams.get('mode'),
+  )
+  const searchMode = type === 'cpc' ? 'keyword' : requestedSearchMode
+  const effectiveView = searchMode === 'semantic' ? 'list' : view
   const page = getPositiveInt(searchParams.get('page'), 1)
   const query = searchParams.get('q') || ''
+  const hasQuery = Boolean(query.trim())
+  const canUseSemantic = type === 'ipc'
 
   const listApiUrl = useMemo(() => {
+    if (searchMode === 'semantic' && !query.trim()) return null
+
     const params = new URLSearchParams()
     params.set('type', type)
-    params.set('page', String(page))
+    params.set('page', searchMode === 'semantic' ? '1' : String(page))
     params.set('limit', '20')
+    if (searchMode === 'semantic') params.set('mode', 'semantic')
     if (query) params.set('q', query)
     return `/api/classifications?${params.toString()}`
-  }, [page, query, type])
+  }, [page, query, searchMode, type])
   const treeApiUrl = useMemo(() => {
+    if (searchMode === 'semantic') return null
+
     const params = new URLSearchParams()
     params.set('view', 'tree')
     params.set('type', type)
     params.set('limit', query ? '100' : '50')
     if (query) params.set('q', query)
     return `/api/classifications?${params.toString()}`
-  }, [query, type])
+  }, [query, searchMode, type])
 
   const {
     data: listData,
@@ -747,22 +873,31 @@ export function ClassificationsClient() {
     parent_code_norm: null,
     is_search: Boolean(query),
   }
-  const hasQuery = Boolean(query.trim())
-  const activeError = view === 'tree' ? treeError : listError
+  const activeError = effectiveView === 'tree' ? treeError : listError
   const isTreeBusy = isTreeLoading || isTreeValidating
   const isListBusy = isListLoading || isListValidating
-  const isBusy = view === 'tree' ? isTreeBusy : isListBusy
+  const isBusy = effectiveView === 'tree' ? isTreeBusy : isListBusy
 
   const updateParams = (next: {
     type?: ClassificationType
     q?: string
     page?: number
     view?: ClassificationView
+    mode?: ClassificationSearchMode
   }) => {
     const params = new URLSearchParams(searchParams.toString())
-    params.set('type', next.type || type)
-    params.set('view', next.view || view)
-    params.set('page', String(next.page || 1))
+    const nextType = next.type || type
+    const nextMode =
+      nextType === 'cpc' ? 'keyword' : next.mode || searchMode
+    const nextView =
+      nextMode === 'semantic' ? 'list' : next.view || effectiveView
+
+    params.set('type', nextType)
+    params.set('view', nextView)
+    params.set('page', String(nextMode === 'semantic' ? 1 : next.page || 1))
+
+    if (nextMode === 'semantic') params.set('mode', 'semantic')
+    else params.delete('mode')
 
     const nextQuery = next.q ?? query
     if (nextQuery.trim()) params.set('q', nextQuery.trim())
@@ -785,10 +920,12 @@ export function ClassificationsClient() {
         title="分类字典"
         description="查询 IPC/CPC 分类号、标题、层级与版本"
         onRefresh={() => {
-          if (view === 'tree') void mutateTree()
+          if (effectiveView === 'tree') void mutateTree()
           else void mutateList()
         }}
-        isRefreshing={view === 'tree' ? isTreeValidating : isListValidating}
+        isRefreshing={
+          effectiveView === 'tree' ? isTreeValidating : isListValidating
+        }
       />
 
       <div className="flex flex-col gap-6 p-6">
@@ -798,8 +935,9 @@ export function ClassificationsClient() {
               <div className="flex min-w-0 flex-col gap-1">
                 <CardTitle className="text-base">字典查询</CardTitle>
                 <CardDescription>
-                  支持 H01M、H01B 1/00、H04L0065101600、Y02A20/108
-                  或英文标题关键词。
+                  {searchMode === 'semantic'
+                    ? '输入技术描述后，使用已写入的 IPC 向量数据召回相近分类号。'
+                    : '支持 H01M、H01B 1/00、H04L0065101600、Y02A20/108 或英文标题关键词。'}
                 </CardDescription>
               </div>
               <Tabs
@@ -820,13 +958,23 @@ export function ClassificationsClient() {
           </CardHeader>
           <CardContent>
             <ClassificationSearchForm
-              key={`${type}-${query}`}
+              key={`${type}-${searchMode}-${query}`}
               initialQuery={query}
+              searchMode={searchMode}
+              canUseSemantic={canUseSemantic}
               isBusy={isBusy}
               hasQuery={hasQuery}
               onSearch={(nextQuery) => updateParams({ q: nextQuery, page: 1 })}
+              onModeChange={(mode) => updateParams({ mode, page: 1 })}
               onReset={handleReset}
             />
+            {!canUseSemantic ? (
+              <Alert className="mt-4">
+                <AlertDescription>
+                  CPC 暂未生成向量数据，当前仅支持关键词搜索。
+                </AlertDescription>
+              </Alert>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -835,10 +983,15 @@ export function ClassificationsClient() {
             <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
               <div>
                 <CardTitle className="text-base">
-                  {type.toUpperCase()} 查询结果
+                  {type.toUpperCase()}
+                  {searchMode === 'semantic' ? ' 语义搜索结果' : ' 查询结果'}
                 </CardTitle>
                 <CardDescription>
-                  {view === 'tree'
+                  {searchMode === 'semantic'
+                    ? hasQuery
+                      ? `返回 ${result.total.toLocaleString('zh-CN')} 条相近分类号`
+                      : '输入技术描述后展示相近 IPC 分类号'
+                    : effectiveView === 'tree'
                     ? treeResult.is_search
                       ? `展示 ${treeResult.total.toLocaleString('zh-CN')} 条命中及必要祖先链`
                       : `按需加载层级节点，当前层最多 ${treeResult.limit.toLocaleString(
@@ -852,13 +1005,14 @@ export function ClassificationsClient() {
               <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
                 <ToggleGroup
                   type="single"
-                  value={view}
+                  value={effectiveView}
                   onValueChange={(value) => {
                     if (value === 'tree' || value === 'list') {
                       updateParams({ view: value, page: 1 })
                     }
                   }}
                   aria-label="切换分类字典视图"
+                  disabled={searchMode === 'semantic'}
                 >
                   <ToggleGroupItem value="tree" aria-label="树状视图">
                     <ListTree data-icon="inline-start" aria-hidden="true" />
@@ -872,6 +1026,9 @@ export function ClassificationsClient() {
                     列表视图
                   </ToggleGroupItem>
                 </ToggleGroup>
+                {searchMode === 'semantic' ? (
+                  <Badge variant="secondary">语义结果以列表展示</Badge>
+                ) : null}
                 <Badge variant="outline" className="max-w-full">
                   <span
                     className="truncate"
@@ -894,11 +1051,15 @@ export function ClassificationsClient() {
             ) : null}
 
             {!activeError &&
-            ((view === 'tree' && treeResult.items.length === 0) ||
-              (view === 'list' && result.items.length === 0)) &&
+            ((effectiveView === 'tree' && treeResult.items.length === 0) ||
+              (effectiveView === 'list' && result.items.length === 0)) &&
             !isBusy ? (
-              <ClassificationEmpty hasQuery={hasQuery} onReset={handleReset} />
-            ) : view === 'tree' ? (
+              <ClassificationEmpty
+                hasQuery={hasQuery}
+                searchMode={searchMode}
+                onReset={handleReset}
+              />
+            ) : effectiveView === 'tree' ? (
               <ClassificationTree
                 type={type}
                 query={query}
@@ -911,11 +1072,12 @@ export function ClassificationsClient() {
               <ClassificationTable
                 rows={result.items}
                 isLoading={isListBusy}
+                showSimilarity={searchMode === 'semantic'}
                 onViewDetails={handleViewDetails}
               />
             )}
 
-            {view === 'tree' &&
+            {effectiveView === 'tree' &&
             !hasQuery &&
             treeResult.total > treeResult.limit ? (
               <Alert>
@@ -926,7 +1088,7 @@ export function ClassificationsClient() {
               </Alert>
             ) : null}
 
-            {view === 'list' && result.total_pages > 1 ? (
+            {effectiveView === 'list' && result.total_pages > 1 ? (
               <div className="flex flex-col gap-3 border-t pt-4 md:flex-row md:items-center md:justify-between">
                 <p className="text-muted-foreground text-sm tabular-nums">
                   每页 {result.limit} 条，第 {result.page} /{' '}

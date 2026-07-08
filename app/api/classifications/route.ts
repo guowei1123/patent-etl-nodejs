@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
   getClassificationList,
+  getClassificationSemanticList,
   getClassificationTree,
   initializeDatabase,
 } from '@/lib/db'
-import type { ClassificationType } from '@/types'
+import type { ClassificationSearchMode, ClassificationType } from '@/types'
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   const parsed = Number.parseInt(value || '', 10)
@@ -15,6 +16,12 @@ function isClassificationType(
   value: string | null,
 ): value is ClassificationType {
   return value === 'ipc' || value === 'cpc'
+}
+
+function getClassificationSearchMode(
+  value: string | null,
+): ClassificationSearchMode {
+  return value === 'semantic' ? 'semantic' : 'keyword'
 }
 
 export async function GET(request: NextRequest) {
@@ -36,7 +43,42 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(parsePositiveInt(searchParams.get('limit'), 20), 100)
     const q = searchParams.get('q')?.trim() || undefined
     const view = searchParams.get('view')
+    const mode = getClassificationSearchMode(searchParams.get('mode'))
     const parent = searchParams.get('parent')?.trim() || null
+
+    if (mode === 'semantic') {
+      if (type === 'cpc') {
+        return NextResponse.json(
+          {
+            success: false,
+            error: '语义搜索当前仅支持 IPC，请先生成 CPC 向量后再使用',
+          },
+          { status: 400 },
+        )
+      }
+
+      if (!q) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: '语义搜索需要输入技术描述或关键词',
+          },
+          { status: 400 },
+        )
+      }
+
+      await initializeDatabase()
+
+      const result = await getClassificationSemanticList(
+        { type, q },
+        Math.min(parsePositiveInt(searchParams.get('limit'), 20), 50),
+      )
+
+      return NextResponse.json({
+        success: true,
+        data: result,
+      })
+    }
 
     await initializeDatabase()
 

@@ -20,9 +20,12 @@ import type {
   PatentImportResult,
   ClassificationFilter,
   ClassificationRow,
+  ClassificationSemanticRow,
   ClassificationTreeNode,
   ClassificationTreeResponse,
 } from '@/types'
+import { searchSimilarClassifications } from './classification-vector-search'
+import { getEmbeddingDimensions } from './embedding'
 import { buildPatentSearchExpressionCondition } from './patent-search-expression'
 import {
   getClassificationAncestorCodeNorms,
@@ -1151,6 +1154,40 @@ export async function getClassificationList(
     page: normalizedPage,
     limit: normalizedLimit,
     total_pages: Math.ceil(total / normalizedLimit),
+  }
+}
+
+export async function getClassificationSemanticList(
+  filter: ClassificationFilter,
+  limit = 20,
+): Promise<PaginatedResponse<ClassificationSemanticRow>> {
+  const query = filter.q?.trim()
+  if (!query) {
+    throw new Error('语义搜索需要输入技术描述或关键词')
+  }
+
+  const normalizedLimit = Math.min(Math.max(1, limit), 50)
+  const client = await pool.connect()
+
+  try {
+    const rows = await searchSimilarClassifications(client, {
+      type: filter.type,
+      query,
+      locale: 'mixed',
+      model: process.env.OPENAI_EMBEDDING_MODEL,
+      dimensions: getEmbeddingDimensions(),
+      limit: normalizedLimit,
+    })
+
+    return {
+      items: rows,
+      total: rows.length,
+      page: 1,
+      limit: normalizedLimit,
+      total_pages: rows.length > 0 ? 1 : 0,
+    }
+  } finally {
+    client.release()
   }
 }
 

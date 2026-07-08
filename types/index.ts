@@ -79,6 +79,8 @@ export interface PatentListItem {
 
 // IPC/CPC 分类字典
 export type ClassificationType = 'ipc' | 'cpc'
+export type ClassificationSearchMode = 'keyword' | 'semantic'
+export type ClassificationEmbeddingLocale = 'en' | 'zh' | 'mixed'
 
 export interface ClassificationRow {
   code_norm: string
@@ -95,6 +97,15 @@ export interface ClassificationRow {
   title_zh: string | null
   title_zh_source: string | null
   source_file: string | null
+}
+
+export interface ClassificationSemanticRow extends ClassificationRow {
+  similarity: number
+  similarity_percent: string
+  embedding_model: string
+  embedding_locale: ClassificationEmbeddingLocale
+  embedding_dimensions: number
+  content_hash: string
 }
 
 export interface ClassificationFilter {
