@@ -1,9 +1,6 @@
-import { NextRequest, NextResponse } from 'next/server'
+﻿import { NextRequest, NextResponse } from 'next/server'
 import { getPatentImageById, initializeDatabase } from '@/lib/db'
 import { getPatentImage } from '@/lib/oss-client'
-
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function GET(
   request: NextRequest,
@@ -12,15 +9,15 @@ export async function GET(
   try {
     const { image_id: imageId } = await params
 
-    if (!UUID_PATTERN.test(imageId)) {
+    if (!imageId) {
       return NextResponse.json(
-        { success: false, error: '无效的图片 ID 格式' },
+        { success: false, error: '无效的图片 ID' },
         { status: 400 },
       )
     }
 
     await initializeDatabase()
-    const image = await getPatentImageById(imageId)
+    const image = await getPatentImageById(decodeURIComponent(imageId))
     if (!image) {
       return NextResponse.json(
         { success: false, error: '图片不存在' },

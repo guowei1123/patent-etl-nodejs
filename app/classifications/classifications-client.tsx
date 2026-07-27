@@ -812,12 +812,19 @@ export function ClassificationsClient() {
   const requestedSearchMode = getClassificationSearchMode(
     searchParams.get('mode'),
   )
-  const searchMode = type === 'cpc' ? 'keyword' : requestedSearchMode
+  // /api/config 提供 embedding 是否配置；未配置时前端禁用语义搜索
+  const { data: configData } = useSWR<{ embedding?: { configured?: boolean } }>(
+    '/api/config',
+    fetcher,
+  )
+  const embeddingConfigured = Boolean(configData?.embedding?.configured)
+  const searchMode =
+    type === 'cpc' || !embeddingConfigured ? 'keyword' : requestedSearchMode
   const effectiveView = searchMode === 'semantic' ? 'list' : view
   const page = getPositiveInt(searchParams.get('page'), 1)
   const query = searchParams.get('q') || ''
   const hasQuery = Boolean(query.trim())
-  const canUseSemantic = type === 'ipc'
+  const canUseSemantic = type === 'ipc' && embeddingConfigured
 
   const listApiUrl = useMemo(() => {
     if (searchMode === 'semantic' && !query.trim()) return null
@@ -971,7 +978,9 @@ export function ClassificationsClient() {
             {!canUseSemantic ? (
               <Alert className="mt-4">
                 <AlertDescription>
-                  CPC 暂未生成向量数据，当前仅支持关键词搜索。
+                  {type === 'cpc'
+                    ? 'CPC 暂未生成向量数据，当前仅支持关键词搜索。'
+                    : '未配置 embedding 服务（OPENAI_EMBEDDING_MODEL），语义搜索已禁用。'}
                 </AlertDescription>
               </Alert>
             ) : null}

@@ -117,7 +117,7 @@ export async function syncBatchRecord(batchCode: string): Promise<{
   }
 
   if (newStatus !== previousStatus) {
-    const pool = getPool()
+    const pool = await getPool()
     await pool.query(
       `UPDATE sync_batches
        SET status = $1::varchar,

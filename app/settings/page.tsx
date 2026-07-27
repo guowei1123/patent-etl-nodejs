@@ -22,6 +22,7 @@ import {
   Database,
   Server,
   Cloud,
+  ListTree,
   CheckCircle2,
   XCircle,
   RefreshCw,
@@ -114,6 +115,16 @@ export default function SettingsPage() {
     error?: string
   }>('/api/oss/test', fetcher)
 
+  const {
+    data: redisStatus,
+    mutate: mutateRedis,
+    isValidating: loadingRedis,
+  } = useSWR<{
+    success: boolean
+    error?: string
+    configured: boolean
+  }>('/api/redis/test', fetcher)
+
   const { data: config } = useSWR<{
     ftp: { configured: boolean; host: string; port: string; user: string }
     oss: {
@@ -124,10 +135,17 @@ export default function SettingsPage() {
     }
     database: {
       configured: boolean
+      type: string
       host: string
       port: string
       db: string
       user: string
+    }
+    redis: {
+      configured: boolean
+      host: string
+      port: string
+      db: string
     }
   }>('/api/config', fetcher)
 
@@ -153,6 +171,14 @@ export default function SettingsPage() {
     mutateDb(result, { revalidate: false })
     if (result?.success) toast.success('数据库连接成功')
     else toast.error(result?.error || '数据库连接失败')
+  }
+
+  const retestRedis = async () => {
+    const res = await fetch('/api/redis/test', { method: 'POST' })
+    const result = await res.json()
+    mutateRedis(result, { revalidate: false })
+    if (result?.success) toast.success('Redis 连接成功')
+    else toast.error(result?.error || 'Redis 连接失败')
   }
 
   return (
@@ -301,8 +327,12 @@ export default function SettingsPage() {
                 />
               </div>
               <div className="flex-1">
-                <CardTitle className="text-base">PostgreSQL 数据库</CardTitle>
-                <CardDescription>数据存储</CardDescription>
+                <CardTitle className="text-base">专利数据库</CardTitle>
+                <CardDescription>
+                  {config?.database.type === 'sqlite'
+                    ? '本地 SQLite'
+                    : '本地 PostgreSQL'}
+                </CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 {loadingDb ? (
@@ -344,6 +374,79 @@ export default function SettingsPage() {
             <Separator />
             <div className="flex items-center justify-end">
               <Button onClick={retestDb} disabled={loadingDb}>
+                <RefreshCw data-icon="inline-start" aria-hidden="true" />
+                重新测试
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Redis 分类字典 */}
+        <Card className="bg-card border-border">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              <div
+                className={cn(
+                  'flex size-10 items-center justify-center rounded-lg',
+                  redisStatus?.success ? 'bg-success/20' : 'bg-secondary',
+                )}
+              >
+                <ListTree
+                  className={cn(
+                    'size-5',
+                    redisStatus?.success
+                      ? 'text-success'
+                      : 'text-muted-foreground',
+                  )}
+                  aria-hidden="true"
+                />
+              </div>
+              <div className="flex-1">
+                <CardTitle className="text-base">Redis 分类字典</CardTitle>
+                <CardDescription>本地 Redis 中的 IPC 分类数据</CardDescription>
+              </div>
+              <div className="flex items-center gap-2">
+                {loadingRedis ? (
+                  <Spinner className="text-muted-foreground" />
+                ) : redisStatus?.success ? (
+                  <Badge variant="outline" className="border-success/50 text-success">
+                    <CheckCircle2 aria-hidden="true" />
+                    已连接
+                  </Badge>
+                ) : redisStatus?.configured ? (
+                  <Badge variant="destructive">
+                    <XCircle aria-hidden="true" />
+                    连接失败
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="border-warning/50 text-warning">
+                    未配置
+                  </Badge>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <FieldGroup className="contents">
+                <ReadOnlyField id="redis-host" label="主机地址" value={config?.redis.host} />
+                <ReadOnlyField id="redis-port" label="端口" value={config?.redis.port || '6379'} />
+                <ReadOnlyField id="redis-db" label="数据库" value={config?.redis.db || '0'} />
+              </FieldGroup>
+            </div>
+
+            {redisStatus?.error && (
+              <Alert variant="destructive">
+                <AlertDescription>{redisStatus.error}</AlertDescription>
+              </Alert>
+            )}
+
+            <Separator />
+            <div className="flex items-center justify-end">
+              <Button
+                onClick={retestRedis}
+                disabled={loadingRedis || !config?.redis.configured}
+              >
                 <RefreshCw data-icon="inline-start" aria-hidden="true" />
                 重新测试
               </Button>

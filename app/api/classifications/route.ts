@@ -5,6 +5,8 @@ import {
   getClassificationTree,
   initializeDatabase,
 } from '@/lib/db'
+import { isRedisClassificationsConfigured } from '@/lib/redis-classifications'
+import { isEmbeddingConfigured } from '@/lib/embedding'
 import type { ClassificationSearchMode, ClassificationType } from '@/types'
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -57,6 +59,17 @@ export async function GET(request: NextRequest) {
         )
       }
 
+      if (!isEmbeddingConfigured()) {
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              '未配置 embedding 服务（缺少 OPENAI_EMBEDDING_MODEL），无法使用语义搜索',
+          },
+          { status: 400 },
+        )
+      }
+
       if (!q) {
         return NextResponse.json(
           {
@@ -80,7 +93,13 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    await initializeDatabase()
+    // IPC/CPC 关键词搜索走 Redis 时不需要初始化 PostgreSQL
+    const skipPgInit =
+      isRedisClassificationsConfigured() && mode !== 'semantic'
+
+    if (!skipPgInit) {
+      await initializeDatabase()
+    }
 
     if (view === 'tree') {
       const treeLimit = Math.min(

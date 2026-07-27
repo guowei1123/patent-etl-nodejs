@@ -164,6 +164,45 @@ function joinNames(items: Array<{ name: string }> | null | undefined): string {
   return joinText(items?.map((a) => a.name))
 }
 
+function parseDrawingCaptions(
+  drawingsDescription: string | undefined,
+): Map<number, string> {
+  const captions = new Map<number, string>()
+  if (!drawingsDescription) return captions
+
+  const text = drawingsDescription
+
+  // 匹配模式：支持多种格式
+  // 1. 图1是/为/：XXX
+  // 2. 图1 XXX
+  // 3. 图一/二/三... XXX
+  const regex = /(?:图|Figure|Fig\.?)\s*(\d+|[一二三四五六七八九十百千]+)\s*(?:[:：是为]?\s*)([^；。\n\r]+)/gi
+  let match
+  while ((match = regex.exec(text)) !== null) {
+    let numStr = match[1]
+    let num: number
+
+    // 转换中文数字
+    if (/[一二三四五六七八九十百千]/.test(numStr)) {
+      const cnMap: Record<string, number> = {
+        '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+        '百': 100, '千': 1000
+      }
+      num = numStr.split('').reduce((acc, ch) => acc + (cnMap[ch] || 0), 0)
+    } else {
+      num = parseInt(numStr, 10)
+    }
+
+    const desc = match[2].trim().replace(/\s+/g, ' ')
+    if (num > 0 && !captions.has(num) && desc.length > 0) {
+      captions.set(num, desc)
+    }
+  }
+
+  return captions
+}
+
 export default function PatentDetailPage({
   params,
 }: {
@@ -282,7 +321,10 @@ export default function PatentDetailPage({
   const hasCitations = Boolean(patent.citations?.length)
   const images = patent.images ?? []
   const abstractImage = images.find((image) => image.is_abstract)
-  const hasImages = images.length > 0
+  const bodyImages = images.filter((image) => !image.is_abstract)
+  const drawingCaptions = parseDrawingCaptions(
+    patent.description?.drawings_description,
+  )
   const contentSections = [
     {
       id: 'section-abstract',
@@ -293,8 +335,8 @@ export default function PatentDetailPage({
     {
       id: 'section-images',
       label: '附图',
-      meta: hasImages ? `${images.length} 张` : undefined,
-      visible: hasImages,
+      meta: bodyImages.length > 0 ? `${bodyImages.length} 张` : undefined,
+      visible: bodyImages.length > 0,
     },
     {
       id: 'section-claims',
@@ -342,7 +384,7 @@ export default function PatentDetailPage({
     },
     {
       label: '附图',
-      value: hasImages ? `${images.length} 张` : '-',
+      value: bodyImages.length > 0 ? `${bodyImages.length} 张` : '-',
     },
   ]
 
@@ -660,7 +702,7 @@ export default function PatentDetailPage({
                             />
                           </div>
                           <figcaption className="text-muted-foreground border-t px-4 py-2 text-xs">
-                            摘要附图 · {abstractImage.file_name}
+                            图1
                           </figcaption>
                         </figure>
                       )}
@@ -673,7 +715,7 @@ export default function PatentDetailPage({
                 </CardContent>
               </Card>
 
-              {hasImages && (
+              {bodyImages.length > 0 && (
                 <Card
                   id="section-images"
                   className="bg-card border-border scroll-mt-28"
@@ -687,34 +729,38 @@ export default function PatentDetailPage({
                       附图
                     </CardTitle>
                     <CardDescription>
-                      当前专利 XML 引用的摘要图与说明书附图
+                      说明书附图（摘要附图见摘要区域）
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
                     <div className="grid gap-4 md:grid-cols-2">
-                      {images.map((image) => (
-                        <figure
-                          key={image.id}
-                          className="bg-secondary/30 overflow-hidden rounded-lg border"
-                        >
-                          <div className="bg-background relative aspect-[4/3]">
-                            <Image
-                              src={`/api/patent-images/${image.id}`}
-                              alt={`${patent.title} ${image.file_name}`}
-                              fill
-                              unoptimized
-                              sizes="(max-width: 768px) 100vw, 50vw"
-                              className="object-contain"
-                            />
-                          </div>
-                          <figcaption className="text-muted-foreground flex items-center justify-between gap-3 border-t px-3 py-2 text-xs">
-                            <span className="truncate">{image.file_name}</span>
-                            {image.is_abstract && (
-                              <Badge variant="secondary">摘要图</Badge>
-                            )}
-                          </figcaption>
-                        </figure>
-                      ))}
+                      {bodyImages.map((image, index) => {
+                        const figureNum = index + 1
+                        const caption = drawingCaptions.get(figureNum)
+                        return (
+                          <figure
+                            key={image.id}
+                            className="bg-secondary/30 overflow-hidden rounded-lg border"
+                          >
+                            <div className="bg-background relative aspect-[4/3]">
+                              <Image
+                                src={`/api/patent-images/${image.id}`}
+                                alt={`${patent.title} 图${figureNum}`}
+                                fill
+                                unoptimized
+                                sizes="(max-width: 768px) 100vw, 50vw"
+                                className="object-contain"
+                              />
+                            </div>
+                            <figcaption className="text-muted-foreground flex items-center justify-between gap-3 border-t px-3 py-2 text-xs">
+                              <span className="truncate">
+                                图{figureNum}
+                                {caption ? `：${caption}` : ''}
+                              </span>
+                            </figcaption>
+                          </figure>
+                        )
+                      })}
                     </div>
                   </CardContent>
                 </Card>

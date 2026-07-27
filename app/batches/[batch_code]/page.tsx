@@ -507,6 +507,7 @@ export default function BatchDetailPage({
   const [verifyResult, setVerifyResult] = useState<VerificationResult | null>(
     null,
   )
+  const [retryingProcess, setRetryingProcess] = useState(false)
 
   const { data, error, mutate } = useSWR<{
     success: boolean
@@ -705,6 +706,55 @@ export default function BatchDetailPage({
       }
     } catch {
       toast.error('请求失败')
+    }
+  }
+
+  const handleRetryProcess = async () => {
+    setVerifyResult(null)
+    setRetryingProcess(true)
+    try {
+      const fixResponse = await fetch('/api/sync/fix', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code }),
+      })
+      const fixResult = await fixResponse.json()
+
+      if (!fixResult.success) {
+        toast.error(fixResult.error || '修复状态失败')
+        return
+      }
+      if (fixResult.data?.newStatus !== 'downloaded') {
+        toast.error(
+          `当前本地状态为「${fixResult.data?.newStatus ?? '未知'}」，不满足重新处理条件，请先完成下载`,
+        )
+        mutate()
+        return
+      }
+
+      const stepResponse = await fetch('/api/sync/step', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ batch_code, step: 'process' }),
+      })
+      const stepResult = await stepResponse.json()
+
+      if (stepResult.success) {
+        toast.success(stepResult.message || '处理步骤已启动')
+        setOptimisticActiveStep('process')
+        setOptimisticSetAt(Date.now())
+        setTrustOptimisticStatus(true)
+        mutate()
+      } else {
+        setOptimisticActiveStep(null)
+        setOptimisticSetAt(0)
+        setTrustOptimisticStatus(false)
+        toast.error(stepResult.error || '启动处理失败')
+      }
+    } catch {
+      toast.error('请求失败')
+    } finally {
+      setRetryingProcess(false)
     }
   }
 
@@ -1092,6 +1142,21 @@ export default function BatchDetailPage({
                         </AlertDialogContent>
                       </AlertDialog>
                     )}
+
+                    {batch.status === 'failed' &&
+                      (hasLocalExtractFiles || hasLocalTempFiles) && (
+                        <Button
+                          onClick={handleRetryProcess}
+                          disabled={retryingProcess}
+                        >
+                          {retryingProcess ? (
+                            <Spinner data-icon="inline-start" />
+                          ) : (
+                            <Play data-icon="inline-start" />
+                          )}
+                          重新处理
+                        </Button>
+                      )}
 
                     {(batch.status === 'failed' || isOrphaned) && (
                       <Button variant="outline" onClick={handleFix}>

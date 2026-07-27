@@ -1,7 +1,19 @@
 import OSS from 'ali-oss'
 import * as path from 'path'
 
+function isMinioStorage(): boolean {
+  return process.env.OBJECT_STORAGE_TYPE === 'minio'
+}
+
 export function isOssConfigured(): boolean {
+  if (isMinioStorage()) {
+    return !!(
+      process.env.MINIO_ENDPOINT &&
+      process.env.MINIO_ACCESS_KEY &&
+      process.env.MINIO_SECRET_KEY &&
+      process.env.MINIO_BUCKET_NAME
+    )
+  }
   return !!(
     process.env.CNIPA_OSS_ACCESS_KEY_ID &&
     process.env.CNIPA_OSS_ACCESS_KEY_SECRET &&
@@ -17,6 +29,25 @@ function createOssClient(): OSS {
     region: process.env.CNIPA_OSS_REGION || 'cn-shenzhen',
     endpoint: process.env.CNIPA_OSS_ENDPOINT,
   })
+}
+
+async function createMinioClient() {
+  const { Client } = await import('minio')
+  const rawEndpoint = process.env.MINIO_ENDPOINT || 'http://localhost:9000'
+  const url = new URL(rawEndpoint.includes('://') ? rawEndpoint : `http://${rawEndpoint}`)
+  return new Client({
+    endPoint: url.hostname,
+    port: Number(url.port || (url.protocol === 'https:' ? 443 : 9000)),
+    useSSL: url.protocol === 'https:',
+    accessKey: process.env.MINIO_ACCESS_KEY || 'minioadmin',
+    secretKey: process.env.MINIO_SECRET_KEY || 'minioadmin',
+  })
+}
+
+function getBucketName(): string {
+  return isMinioStorage()
+    ? process.env.MINIO_BUCKET_NAME || 'patent-images'
+    : process.env.CNIPA_OSS_BUCKET_NAME || ''
 }
 
 function getImageUploadTimeoutMs(): number {
@@ -62,8 +93,21 @@ export async function putPatentImage(
     throw new Error('OSS 配置未设置，无法存储专利附图')
   }
 
-  const client = createOssClient()
   const timeoutMs = getImageUploadTimeoutMs()
+  if (isMinioStorage()) {
+    const client = await createMinioClient()
+    await withTimeout(
+      client.putObject(getBucketName(), ossKey, content, content.length, {
+        'Content-Type': contentType,
+        'Cache-Control': 'private, max-age=86400',
+      }),
+      timeoutMs,
+      `MinIO 图片上传超时: ${ossKey}`,
+    )
+    return
+  }
+
+  const client = createOssClient()
   await withTimeout(
     client.put(ossKey, content, {
       timeout: timeoutMs,
@@ -82,6 +126,19 @@ export async function patentImageExists(ossKey: string): Promise<boolean> {
     throw new Error('OSS 配置未设置，无法检查专利附图')
   }
 
+  if (isMinioStorage()) {
+    const client = await createMinioClient()
+    try {
+      await client.statObject(getBucketName(), ossKey)
+      return true
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && (error as { code?: string }).code === 'NotFound') {
+        return false
+      }
+      throw error
+    }
+  }
+
   const client = createOssClient()
   try {
     await client.head(ossKey, { timeout: getImageUploadTimeoutMs() })
@@ -98,12 +155,33 @@ export async function patentImageExists(ossKey: string): Promise<boolean> {
   }
 }
 
+function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    stream.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)))
+    stream.on('end', () => resolve(Buffer.concat(chunks)))
+    stream.on('error', reject)
+  })
+}
+
 export async function getPatentImage(ossKey: string): Promise<{
   content: Buffer
   contentType: string
 }> {
   if (!isOssConfigured()) {
     throw new Error('OSS 配置未设置，无法读取专利附图')
+  }
+
+  if (isMinioStorage()) {
+    const client = await createMinioClient()
+    const [stat, stream] = await Promise.all([
+      client.statObject(getBucketName(), ossKey),
+      client.getObject(getBucketName(), ossKey),
+    ])
+    return {
+      content: await streamToBuffer(stream),
+      contentType: String(stat.metaData?.['content-type'] || stat.metaData?.['Content-Type'] || 'image/jpeg'),
+    }
   }
 
   const client = createOssClient()
@@ -123,8 +201,13 @@ export async function testOssConnection(): Promise<{
   error?: string
 }> {
   try {
-    const client = createOssClient()
-    await client.list({ 'max-keys': 1 })
+    if (isMinioStorage()) {
+      const client = await createMinioClient()
+      await client.bucketExists(getBucketName())
+    } else {
+      const client = createOssClient()
+      await client.list({ 'max-keys': 1 })
+    }
     return { success: true }
   } catch (error) {
     return {

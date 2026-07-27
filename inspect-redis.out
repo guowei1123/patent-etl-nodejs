@@ -1,0 +1,47 @@
+﻿=== ipc:classification:C07D211/86 ===
+{
+  level: '',
+  source_code: 'C07D0211860000',
+  title_zh: '上....氧原子',
+  title_en: 'Oxygen atoms',
+  class_code: 'C07',
+  title_zh_source: 'cnipa',
+  source_file: '/private/tmp/ipc-official-zh-en-review/C/ipc-2026.01-C-official-zh-en-ok.csv',
+  subclass: 'C07D',
+  page: '1694',
+  section: 'C',
+  version: '2026.01',
+  subgroup: '86',
+  fetched_at: '2026-07-24T05:47:10.814389+00:00',
+  code: 'C07D 211/86',
+  code_norm: 'C07D211/86',
+  main_group: '211',
+  raw_json: '{"code_norm": "C07D211/86", "code": "C07D 211/86", "source_code": "C07D0211860000", "version": "2026.01", "section": "C", "class_code": "C07", "subclass": "C07D", "main_group": "211", "subgroup": "86", "level": null, "title_en": "Oxygen atoms", "title_zh": "上....氧原子", "title_zh_source": "cnipa", "source_file": "/private/tmp/ipc-official-zh-en-review/C/ipc-2026.01-C-official-zh-en-ok.csv"}'
+}
+
+=== ipc:classification:subclass:F24F type === set
+
+=== Section keys (first 20) ===
+[
+  'ipc:classification:section:E',
+  'ipc:classification:section:H',
+  'ipc:classification:section:B',
+  'ipc:classification:section:G',
+  'ipc:classification:section:A',
+  'ipc:classification:section:C',
+  'ipc:classification:section:D',
+  'ipc:classification:section:F'
+]
+Type: set
+
+=== Class keys count: 0 ===
+Class keys (first 20): []
+
+=== Main group keys count: 0 ===
+
+=== Subgroup keys count: 0 ===
+
+=== Top prefixes ===
+ipc:classification: 80942
+ipc:crawl: 2
+chat_sessions: 1
