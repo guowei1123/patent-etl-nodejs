@@ -399,6 +399,7 @@ export interface PatentFilter {
   pub_date_to?: string
   batch_id?: string
   province?: string
+  ipc?: string
 }
 
 // 仪表盘统计

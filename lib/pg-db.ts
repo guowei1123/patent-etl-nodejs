@@ -1433,11 +1433,11 @@ export async function getPatentList(
     conditions.push(`p.pub_date <= $${paramIdx++}`)
   }
   if (filter.search) {
-    params.push(`%${filter.search}%`)
+    params.push(`%${filter.search}%`, `%${filter.search.replace(/\s+/g, '')}%`)
     conditions.push(
-      `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}))`,
+      `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}) OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic WHERE pic.patent_id = p.id AND REPLACE(pic.ipc_code, ' ', '') ILIKE $${paramIdx + 1}))`,
     )
-    paramIdx++
+    paramIdx += 2
   }
   const expressionCondition = buildPatentSearchExpressionCondition(
     filter.expression,

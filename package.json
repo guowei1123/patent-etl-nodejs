@@ -51,7 +51,6 @@
         "ai": "^7.0.16",
         "ali-oss": "^6.23.0",
         "basic-ftp": "^6.0.1",
-        "better-sqlite3": "^13.0.1",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
@@ -81,7 +80,6 @@
     },
     "devDependencies": {
         "@tailwindcss/postcss": "^4",
-        "@types/better-sqlite3": "^7.6.13",
         "@types/node": "^20",
         "@types/react": "^19",
         "@types/react-dom": "^19",
