@@ -432,7 +432,7 @@ function makePrefixLikePattern(value: string): string {
 function classificationCodeFieldCondition(value: string): SqlBuilder {
   const normalizedValue = normalizeClassificationCodeNorm(value)
   return (paramIndex) => ({
-    sql: `EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $${paramIndex} ESCAPE '\\')`,
+    sql: `EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND pic_expr.code_norm ILIKE $${paramIndex} ESCAPE '\\')`,
     params: [makePrefixLikePattern(normalizedValue)],
     nextParamIndex: paramIndex + 1,
   })
@@ -594,7 +594,7 @@ function termToSqlBuilder(
           OR p.description::text ILIKE $${paramIndex} ESCAPE '\\'
           OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa_expr WHERE pa_expr.patent_id = p.id AND pa_expr.name ILIKE $${paramIndex} ESCAPE '\\')
           OR EXISTS (SELECT 1 FROM cnipa.patent_inventor pi_expr WHERE pi_expr.patent_id = p.id AND pi_expr.name ILIKE $${paramIndex} ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND pic_expr.ipc_code ILIKE $${paramIndex} ESCAPE '\\'))`,
+          OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND pic_expr.code_norm ILIKE $${paramIndex} ESCAPE '\\'))`,
         params: [makeLikePattern(value)],
         nextParamIndex: paramIndex + 1,
       })

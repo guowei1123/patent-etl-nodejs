@@ -69,9 +69,10 @@ async function apiFetch(path: string, params?: Record<string, string>, retry = t
   return data.data
 }
 
-export const searchPatentsTool = createTool({
+export const search_patents = createTool({
   id: 'search_patents',
-  description: '搜索专利数据，支持关键词、检索式、类型、日期范围、省份等条件',
+  description:
+    '查询真实专利数据库。当用户的问题涉及任何具体专利数据时必须调用本工具，包括：按IPC/CPC分类号查专利（如 G09G、G09G 3/3208）、按公开号查专利、按申请人查专利、按专利名称/关键词查专利、统计某类专利数量或列出专利。不要基于自身知识回答具体专利数据问题。',
   inputSchema: z.object({
     search: z.string().optional().describe('关键词'),
     expression: z.string().optional().describe('结构化检索式'),
@@ -94,4 +95,4 @@ export const searchPatentsTool = createTool({
   },
 })
 
-export const patentApiTools = { searchPatentsTool }
+export const patentApiTools = { search_patents }

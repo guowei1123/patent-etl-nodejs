@@ -918,7 +918,13 @@ export async function insertPatents(
         agentRows.push([patentId, a.agency_name || null, a.agent_name || null])
       }
       for (const code of p.ipc_codes || []) {
-        ipcRows.push([patentId, code])
+        let norm: string
+        try {
+          norm = normalizeClassificationCodeNorm(code)
+        } catch {
+          norm = code.replace(/\s+/g, '').toUpperCase()
+        }
+        ipcRows.push([patentId, code, norm])
       }
       for (const c of p.citations || []) {
         citationRows.push([
@@ -989,7 +995,7 @@ export async function insertPatents(
     await multiRowInsert(
       client,
       'cnipa.patent_ipc',
-      ['patent_id', 'ipc_code'],
+      ['patent_id', 'ipc_code', 'code_norm'],
       uniqueRows(ipcRows),
     )
     await multiRowInsert(
