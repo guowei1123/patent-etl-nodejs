@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import type { Patent } from '@/types'
 import { cn } from '@/lib/utils'
+import { toClassificationDisplayCode } from '@/lib/classification-code'
 
 type RequestError = Error & {
   status?: number
@@ -656,15 +657,24 @@ export default function PatentDetailPage({
                     </div>
                     {patent.ipc_codes?.length ? (
                       <div className="flex flex-wrap gap-2">
-                        {patent.ipc_codes.map((code) => (
-                          <Badge
-                            key={code}
-                            variant="secondary"
-                            className="font-mono text-xs"
-                          >
-                            {code}
-                          </Badge>
-                        ))}
+                        {patent.ipc_codes.map((code) => {
+                          let display = code
+                          try {
+                            display = toClassificationDisplayCode(code)
+                          } catch {
+                            display = code
+                          }
+                          return (
+                            <Badge
+                              key={code}
+                              variant="secondary"
+                              className="font-mono text-xs"
+                              translate="no"
+                            >
+                              {display}
+                            </Badge>
+                          )
+                        })}
                       </div>
                     ) : (
                       <p className="text-muted-foreground text-sm">无分类号</p>

@@ -9,6 +9,7 @@ const inventionXml = `
   country="CN"
   datePublication="20231003"
   status="C"
+  lang="zh"
   file="CN102015000163325CN00001047518250BFULZH20231003CN00Q.XML">
   <BibliographicData>
     <PublicationReference dataFormat="original" sequence="1">
@@ -84,6 +85,7 @@ const inventionXml = `
               <City>市辖区</City>
               <County>滨海新区</County>
               <PostCode>300308</PostCode>
+              <WIPOST3Code>CN</WIPOST3Code>
             </Address>
           </AddressBook>
         </Applicant>
@@ -126,6 +128,7 @@ const inventionXml = `
           <Address>
             <Province>天津市</Province>
             <City>市辖区</City>
+            <WIPOST3Code>CN</WIPOST3Code>
           </Address>
         </AddressBook>
       </Assignee>
@@ -154,11 +157,13 @@ const inventionXml = `
     </TechnicalField>
     <BackgroundArt>
       <Paragraphs id="p0003">背景技术</Paragraphs>
-      <Paragraphs id="p0004">现有技术存在不足。</Paragraphs>
+      <Paragraphs id="p0004">现有技术存在不足，例如公开号CN102030405A所披露的方案。</Paragraphs>
     </BackgroundArt>
     <Disclosure>
       <Paragraphs id="p0005">发明内容</Paragraphs>
-      <Paragraphs id="p0006">本发明解决上述技术问题。</Paragraphs>
+      <Paragraphs id="p0006">本发明所要解决的技术问题是提供一种亮度调节系统。</Paragraphs>
+      <Paragraphs id="p0007">为解决上述技术问题，本发明采用如下技术方案。</Paragraphs>
+      <Paragraphs id="p0008">本发明的有益效果是结构简单。</Paragraphs>
     </Disclosure>
   </Description>
   <Claims>
@@ -289,6 +294,7 @@ describe('xml-parser — 完整字段解析', () => {
         city: '市辖区',
         county: '滨海新区',
         postcode: '300308',
+        country: 'CN',
       })
       expect(p.applicants_structured![1]!.name).toBe('第二申请人公司')
       // 扁平字段兼容
@@ -331,6 +337,7 @@ describe('xml-parser — 完整字段解析', () => {
       expect(p.assignees).toHaveLength(1)
       expect(p.assignees![0]!.name).toBe('恒银金融科技股份有限公司')
       expect(p.assignees![0]!.province).toBe('天津市')
+      expect(p.assignees![0]!.country).toBe('CN')
     })
 
     it('提取说明书（结构化）', () => {
@@ -344,7 +351,7 @@ describe('xml-parser — 完整字段解析', () => {
         '现有技术存在不足',
       )
       expect(p.description_structured!.disclosure).toContain(
-        '本发明解决上述技术问题',
+        '本发明所要解决的技术问题',
       )
     })
 
@@ -359,6 +366,46 @@ describe('xml-parser — 完整字段解析', () => {
       expect(p.claims_structured).toHaveLength(2)
       expect(p.claims_structured![0]!.texts[0]).toContain('金融自助终端')
       expect(p.claims_structured![1]!.texts[0]).toContain('根据权利要求1')
+    })
+
+    it('提取语言', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      expect(p.lang).toBe('zh')
+    })
+
+    it('提取申请人和专利权人国家', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      expect(p.applicants_structured![0]!.country).toBe('CN')
+      // 第二申请人未提供 WIPOST3Code
+      expect(p.applicants_structured![1]!.country).toBeUndefined()
+      expect(p.assignees![0]!.country).toBe('CN')
+    })
+
+    it('拆分发明内容为技术问题/技术方案/有益效果', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      const ds = p.description_structured!
+      expect(ds.technical_problem).toContain('本发明所要解决的技术问题')
+      expect(ds.technical_solution).toContain('采用如下技术方案')
+      expect(ds.beneficial_effect).toContain('有益效果')
+    })
+
+    it('提取说明书提及文献', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      expect(p.description_structured!.referenced_documents).toEqual([
+        'CN102030405',
+      ])
+    })
+
+    it('统计权利要求总数和独立权利要求数', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      expect(p.claim_count).toBe(2)
+      expect(p.independent_claim_count).toBe(1)
+    })
+
+    it('识别独立权利要求与从属权利要求', () => {
+      const p = parsePatentXml(inventionXml, 'invention')!
+      expect(p.claims_structured![0]!.is_independent).toBe(true)
+      expect(p.claims_structured![1]!.is_independent).toBe(false)
     })
 
     it('提取IPC分类（结构化和扁平均可用）', () => {

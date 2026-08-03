@@ -586,6 +586,9 @@ function termToSqlBuilder(
         throw new PatentSearchExpressionError(`不支持的检索字段: ${node.field}`)
       }
 
+      // 默认字段检索中的 IPC 匹配也需先标准化,避免带空格/小写的 IPC 码
+      // (如 "H01B 1/00") 匹配不上 code_norm (存为 "H01B1/00")
+      const normalizedIpcValue = normalizeClassificationCodeNorm(value)
       return (paramIndex) => ({
         sql: `(p.title ILIKE $${paramIndex} ESCAPE '\\'
           OR p.doc_number ILIKE $${paramIndex} ESCAPE '\\'
@@ -594,9 +597,9 @@ function termToSqlBuilder(
           OR p.description::text ILIKE $${paramIndex} ESCAPE '\\'
           OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa_expr WHERE pa_expr.patent_id = p.id AND pa_expr.name ILIKE $${paramIndex} ESCAPE '\\')
           OR EXISTS (SELECT 1 FROM cnipa.patent_inventor pi_expr WHERE pi_expr.patent_id = p.id AND pi_expr.name ILIKE $${paramIndex} ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND pic_expr.code_norm ILIKE $${paramIndex} ESCAPE '\\'))`,
-        params: [makeLikePattern(value)],
-        nextParamIndex: paramIndex + 1,
+          OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic_expr WHERE pic_expr.patent_id = p.id AND pic_expr.code_norm ILIKE $${paramIndex + 1} ESCAPE '\\'))`,
+        params: [makeLikePattern(value), makeLikePattern(normalizedIpcValue)],
+        nextParamIndex: paramIndex + 2,
       })
   }
 }

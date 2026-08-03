@@ -169,6 +169,8 @@ function extractStructuredApplicants(nodes: unknown): ParsedApplicant[] {
         if (county) result.county = county
         const postcode = extractText(getNestedValue(addr, 'PostCode'))
         if (postcode) result.postcode = postcode
+        const country = extractText(getNestedValue(addr, 'WIPOST3Code'))
+        if (country) result.country = country
         return result
       }
       // 旧格式：纯字符串或包含 #text / name 字段的扁平对象
@@ -291,6 +293,13 @@ function extractCitations(root: unknown): ParsedCitation[] {
     .filter((x): x is ParsedCitation => x !== null)
 }
 
+// 判断权利要求是否为独立权利要求
+// CNIPA XML 无显式属性标识,通过文本启发式判断:
+// 含"如权利要求N所述"或"根据权利要求N所述"即为从属,否则为独立
+function isIndependentClaim(text: string): boolean {
+  return !/(?:如|根据)权利要求\s*\d+/.test(text)
+}
+
 // 提取结构化权利要求
 function extractStructuredClaims(root: unknown): ParsedClaim[] {
   const claimNodes = getNestedValue(root, 'Claims', 'Claim')
@@ -303,9 +312,161 @@ function extractStructuredClaims(root: unknown): ParsedClaim[] {
         .filter((t): t is string => !!t)
       if (texts.length === 0) return null
       const num = extractText(obj['@_num']) || String(idx + 1).padStart(4, '0')
-      return { num, texts }
+      const joined = texts.join('\n')
+      return { num, texts, is_independent: isIndependentClaim(joined) }
     })
     .filter((x): x is ParsedClaim => x !== null)
+}
+
+// 提取说明书段落下所有 Paragraphs 文本
+function extractParagraphsUnder(section: unknown): string[] {
+  const paragraphs: string[] = []
+  const collect = (obj: unknown) => {
+    if (!obj || typeof obj !== 'object') return
+    if (Array.isArray(obj)) {
+      for (const item of obj) collect(item)
+      return
+    }
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      if (k === 'Paragraphs' || k === 'Paragraph') {
+        if (Array.isArray(v)) {
+          for (const item of v) {
+            const t = extractText(item)
+            if (t) paragraphs.push(t)
+          }
+        } else {
+          const t = extractText(v)
+          if (t) paragraphs.push(t)
+        }
+      } else if (typeof v === 'object' && v !== null) {
+        collect(v)
+      }
+    }
+  }
+  collect(section)
+  return paragraphs
+}
+
+// 从 Disclosure(发明内容)文本中拆分技术问题/技术方案/有益效果
+// CNIPA V2.2.1 schema 下这三类信息以 Paragraphs 平铺,靠段落文本语义切分
+function splitDisclosureSections(
+  paragraphs: string[],
+): {
+  technical_problem?: string
+  technical_solution?: string
+  beneficial_effect?: string
+} {
+  if (paragraphs.length === 0) return {}
+
+  // 跳过段落首句通常是"发明内容"标题行
+  const joined = paragraphs.join('\n')
+
+  // 切分锚点(关键词)
+  // 技术问题: "为解决上述技术问题" / "所要解决的技术问题" / "所要解决的技术问题是"
+  // 技术方案: "采用如下技术方案" / "通过如下技术方案" / "本发明提供" / "技术方案是"
+  // 有益效果: "有益效果" / "具有如下技术效果" / "与现有技术相比" / "具有以下优点"
+  const problemMarkers = [
+    /为解决上述技术问题/,
+    /所要解决的技术问题/,
+    /要解决的技术问题/,
+    /本发明所要解决的技术问题/,
+  ]
+  const solutionMarkers = [
+    /采用如下技术方案/,
+    /通过如下技术方案/,
+    /通过以下技术方案/,
+    /本发明提供.{0,4}技术方案/,
+    /技术方案是/,
+    /解决上述技术问题所采用的技术方案/,
+  ]
+  const effectMarkers = [
+    /有益效果/,
+    /具有如下技术效果/,
+    /具有以下有益效果/,
+    /与现有技术相比/,
+    /具有以下优点/,
+    /本发明具有如下.{0,4}效果/,
+  ]
+
+  // 找到三类标记在段落中的索引
+  let problemIdx = -1
+  let solutionIdx = -1
+  let effectIdx = -1
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i]
+    if (problemIdx < 0 && problemMarkers.some((re) => re.test(p)))
+      problemIdx = i
+    if (solutionIdx < 0 && solutionMarkers.some((re) => re.test(p)))
+      solutionIdx = i
+    if (effectIdx < 0 && effectMarkers.some((re) => re.test(p)))
+      effectIdx = i
+  }
+
+  const result: {
+    technical_problem?: string
+    technical_solution?: string
+    beneficial_effect?: string
+  } = {}
+
+  // 按标记切分: 各段从该标记段落开始到下一标记段落(或末尾)
+  // 排序标记索引
+  const marks: { idx: number; type: 'problem' | 'solution' | 'effect' }[] = []
+  if (problemIdx >= 0) marks.push({ idx: problemIdx, type: 'problem' })
+  if (solutionIdx >= 0) marks.push({ idx: solutionIdx, type: 'solution' })
+  if (effectIdx >= 0) marks.push({ idx: effectIdx, type: 'effect' })
+  marks.sort((a, b) => a.idx - b.idx)
+
+  for (let mi = 0; mi < marks.length; mi++) {
+    const start = marks[mi].idx
+    const end = mi + 1 < marks.length ? marks[mi + 1].idx : paragraphs.length
+    const segment = paragraphs.slice(start, end).join('\n').trim()
+    if (!segment) continue
+    if (marks[mi].type === 'problem') result.technical_problem = segment
+    else if (marks[mi].type === 'solution') result.technical_solution = segment
+    else if (marks[mi].type === 'effect') result.beneficial_effect = segment
+  }
+
+  // 兜底: 若未识别到 problem 但有 solution,effect 之前的内容视为问题
+  if (!result.technical_problem && result.technical_solution && problemIdx < 0) {
+    const end = solutionIdx >= 0 ? solutionIdx : paragraphs.length
+    const seg = paragraphs.slice(0, end).join('\n').trim()
+    if (seg) result.technical_problem = seg
+  }
+
+  void joined // 保留以便调试
+  return result
+}
+
+// 从说明书中提取提及文献(非审查引证的参考文献)
+// 通常出现在 BackgroundArt 背景技术段落,正则匹配"申请号XXX"、"CNXXXXXXX"、"专利号XXX"等模式
+function extractReferencedDocuments(
+  backgroundArt?: string,
+  disclosure?: string,
+): string[] {
+  const docs = new Set<string>()
+  const patterns = [
+    // 申请号 CN201510145456.1 / 201510145456.1
+    /(?:申请号|专利号|公开号|公告号)\s*[：:]?\s*(CN\d{6,}[.\d]*)/g,
+    /(?:申请号|专利号|公开号|公告号)\s*[：:]?\s*(\d{8,}[.\d]*)/g,
+    // CNXXXXXXXX 形式
+    /\b(CN\d{8,}[.\d]*)/g,
+  ]
+
+  const scan = (text?: string) => {
+    if (!text) return
+    for (const re of patterns) {
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        if (m[1]) docs.add(m[1].trim())
+      }
+    }
+  }
+
+  scan(backgroundArt)
+  scan(disclosure)
+
+  return Array.from(docs)
 }
 
 // 提取说明书
@@ -319,32 +480,47 @@ function extractDescription(root: unknown): {
   const extractSection = (...keys: string[]): string => {
     const section = getNestedValue(desc, ...keys)
     if (!section) return ''
-    // 收集该 section 下所有 Paragraphs 文本
-    const paragraphs: string[] = []
-    const collect = (obj: unknown) => {
-      if (!obj || typeof obj !== 'object') return
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        if (k === 'Paragraphs' || k === 'Paragraph') {
-          const t = extractText(v)
-          if (t) paragraphs.push(t)
-        } else if (typeof v === 'object' && v !== null) {
-          collect(v)
-        }
-      }
-    }
-    collect(section)
-    return paragraphs.join('\n')
+    return extractParagraphsUnder(section).join('\n')
   }
 
+  const technicalField = extractSection('TechnicalField') || undefined
+  const backgroundArt = extractSection('BackgroundArt') || undefined
+  const drawingsDescription =
+    extractSection('DrawingsDescription') || undefined
+  const embodiment =
+    extractSection('InventionMode') ||
+    extractSection('ModeForInvention') ||
+    undefined
+
+  // Disclosure 拆分: 先取整段作为 disclosure,再尝试拆出三段
+  const disclosureSection = getNestedValue(desc, 'Disclosure')
+  const disclosureParagraphs = disclosureSection
+    ? extractParagraphsUnder(disclosureSection)
+    : []
+  const disclosure = disclosureParagraphs.join('\n') || undefined
+
+  const split = splitDisclosureSections(disclosureParagraphs)
+  const technicalProblem = split.technical_problem
+  const technicalSolution = split.technical_solution
+  const beneficialEffect = split.beneficial_effect
+
+  // 从说明书背景技术+发明内容提取提及文献
+  const referencedDocuments = extractReferencedDocuments(
+    backgroundArt,
+    disclosure,
+  )
+
   const structured: ParsedDescription = {
-    technical_field: extractSection('TechnicalField') || undefined,
-    background_art: extractSection('BackgroundArt') || undefined,
-    disclosure: extractSection('Disclosure') || undefined,
-    drawings_description: extractSection('DrawingsDescription') || undefined,
-    embodiment:
-      extractSection('InventionMode') ||
-      extractSection('ModeForInvention') ||
-      undefined,
+    technical_field: technicalField,
+    background_art: backgroundArt,
+    disclosure,
+    technical_problem: technicalProblem,
+    technical_solution: technicalSolution,
+    beneficial_effect: beneficialEffect,
+    drawings_description: drawingsDescription,
+    embodiment,
+    referenced_documents:
+      referencedDocuments.length > 0 ? referencedDocuments : undefined,
   }
 
   // 拼接完整说明书文本
@@ -416,6 +592,7 @@ export function parsePatentXml(
     const pubCountry =
       extractText(getNestedValue(root, '@_country')) || undefined
     const docStatus = extractText(getNestedValue(root, '@_status')) || undefined
+    const lang = extractText(getNestedValue(root, '@_lang')) || undefined
     const sourceFile = extractText(getNestedValue(root, '@_file')) || undefined
 
     // 提取标题
@@ -767,6 +944,12 @@ export function parsePatentXml(
     const { text: descText, structured: descStructured } =
       extractDescription(root)
 
+    // 权利要求统计:总数与独立项数
+    const claimCount = claimsStructured.length
+    const independentClaimCount = claimsStructured.filter(
+      (c) => c.is_independent,
+    ).length
+
     return {
       patent_number: String(patentNumber).trim(),
       patent_type: patentType,
@@ -793,6 +976,7 @@ export function parsePatentXml(
       app_country: appCountry,
       app_type: appType,
       doc_status: docStatus,
+      lang,
       source_file: sourceFile,
       description: descText || undefined,
       description_structured: descText ? descStructured : undefined,
@@ -808,6 +992,9 @@ export function parsePatentXml(
       ipc_structured: ipcCodes,
       claims_structured:
         claimsStructured.length > 0 ? claimsStructured : undefined,
+      claim_count: claimCount > 0 ? claimCount : undefined,
+      independent_claim_count:
+        independentClaimCount > 0 ? independentClaimCount : undefined,
       abstract_figure: abstractFigure,
       image_files: imageFiles.length > 0 ? imageFiles : undefined,
     }

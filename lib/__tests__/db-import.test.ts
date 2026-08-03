@@ -92,7 +92,7 @@ describe('insertPatents import result', () => {
           return { rows: [], rowCount: 0 }
         }
 
-        const patentCount = params.length / 20
+        const patentCount = params.length / 23
         if (patentCount > 1) {
           throw new Error('bulk insert failed')
         }
@@ -140,7 +140,7 @@ describe('insertPatents import result', () => {
     const client = createClient((sql, params = []) => {
       if (sql.includes('INSERT INTO cnipa.patent (')) {
         expect(sql).toContain('abstract_fig_key = EXCLUDED.abstract_fig_key')
-        expect(params[13]).toBe('100001.jpg')
+        expect(params[14]).toBe('100001.jpg')
         return {
           rows: [
             {
