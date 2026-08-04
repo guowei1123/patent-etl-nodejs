@@ -107,6 +107,7 @@ export function PatentTable({
 }: PatentTableProps) {
   const [searchInput, setSearchInput] = useState(search)
   const [expressionInput, setExpressionInput] = useState(expression)
+
   const [isFormulaDialogOpen, setIsFormulaDialogOpen] = useState(false)
   const [generatedFormulaInput, setGeneratedFormulaInput] = useState('')
   const [formulaKeywordsInput, setFormulaKeywordsInput] = useState('')
@@ -121,7 +122,6 @@ export function PatentTable({
   const handleSearch: FormEventHandler<HTMLFormElement> = (e) => {
     e.preventDefault()
     setExpressionInput('')
-    onExpressionSearch('')
     onSearch(searchInput.trim())
   }
 
@@ -241,7 +241,7 @@ export function PatentTable({
                 <Search aria-hidden="true" />
               </InputGroupAddon>
               <InputGroupInput
-                placeholder="搜索公开号、名称、申请人..."
+                placeholder="搜索公开号、名称、申请人、IPC..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 disabled={isLoading}

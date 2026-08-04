@@ -15,7 +15,7 @@ describe('patent search expression', () => {
     expect(condition?.sql).toContain('pa_expr.name ILIKE $4')
     expect(condition?.sql).toContain('NOT (')
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $5",
+      "pic_expr.code_norm ILIKE $5",
     )
     expect(condition?.params).toEqual(['%新能源%', '%比亚迪%', 'H01M%'])
     expect(condition?.nextParamIndex).toBe(6)
@@ -51,7 +51,7 @@ describe('patent search expression', () => {
     const condition = buildPatentSearchExpressionCondition('CPC:H01M', 1)
 
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $1",
+      "pic_expr.code_norm ILIKE $1",
     )
     expect(condition?.params).toEqual(['H01M%'])
   })
@@ -63,13 +63,13 @@ describe('patent search expression', () => {
     )
 
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $1",
+      "pic_expr.code_norm ILIKE $1",
     )
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $2",
+      "pic_expr.code_norm ILIKE $2",
     )
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $3",
+      "pic_expr.code_norm ILIKE $3",
     )
     expect(condition?.params).toEqual([
       'H01B1/00%',
@@ -87,10 +87,10 @@ describe('patent search expression', () => {
     expect(condition?.sql).toContain('p.title ILIKE $1')
     expect(condition?.sql).toContain('p.abstract ILIKE $1')
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $3",
+      "pic_expr.code_norm ILIKE $3",
     )
     expect(condition?.sql).toContain(
-      "upper(replace(pic_expr.ipc_code, ' ', '')) ILIKE $5",
+      "pic_expr.code_norm ILIKE $5",
     )
     expect(condition?.params).toEqual([
       '%蓝牙%',
@@ -106,7 +106,29 @@ describe('patent search expression', () => {
     const condition = buildPatentSearchExpressionCondition('新能源 电池', 1)
 
     expect(condition?.sql).toContain(') AND (')
-    expect(condition?.params).toEqual(['%新能源%', '%电池%'])
+    // 默认字段检索中 IPC 匹配会单独传入标准化后的参数,因此每个 term 产生 2 个参数
+    expect(condition?.params).toEqual([
+      '%新能源%',
+      '%新能源%',
+      '%电池%',
+      '%电池%',
+    ])
+  })
+
+  it('normalizes IPC codes in default field search before matching code_norm', () => {
+    // WIPO 长格式在默认字段检索中需先标准化才能匹配 code_norm (A01B10/02)
+    const condition = buildPatentSearchExpressionCondition(
+      'A01B0010020000',
+      1,
+    )
+
+    expect(condition?.sql).toContain('pic_expr.code_norm ILIKE $2')
+    // 第一个参数匹配文本字段(原始值),第二个参数匹配 IPC(标准化后)
+    expect(condition?.params).toEqual([
+      '%A01B0010020000%',
+      '%A01B10/02%',
+    ])
+    expect(condition?.nextParamIndex).toBe(3)
   })
 
   it('builds year ranges for publication date fields', () => {

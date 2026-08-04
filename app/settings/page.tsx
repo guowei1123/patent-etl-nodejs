@@ -135,7 +135,6 @@ export default function SettingsPage() {
     }
     database: {
       configured: boolean
-      type: string
       host: string
       port: string
       db: string
@@ -328,11 +327,7 @@ export default function SettingsPage() {
               </div>
               <div className="flex-1">
                 <CardTitle className="text-base">专利数据库</CardTitle>
-                <CardDescription>
-                  {config?.database.type === 'sqlite'
-                    ? '本地 SQLite'
-                    : '本地 PostgreSQL'}
-                </CardDescription>
+                <CardDescription>PostgreSQL 数据库</CardDescription>
               </div>
               <div className="flex items-center gap-2">
                 {loadingDb ? (

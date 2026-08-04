@@ -249,17 +249,28 @@ export async function initializeDatabase(): Promise<void> {
         description     JSONB,
         claims          JSONB,
         status          TEXT,
+        lang            TEXT,
         abstract_fig_key TEXT,
         batch_id        VARCHAR(100) REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
         source_file     TEXT,
         grant_number    TEXT,
         grant_date      TEXT,
         priority_info   JSONB,
+        claim_count     INTEGER,
+        independent_claim_count INTEGER,
         raw_xml         TEXT,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(doc_number, kind)
       )
+    `)
+
+    // 兼容旧库:为已有专利表补充新增列(lang/claim_count/independent_claim_count)
+    await client.query(`
+      ALTER TABLE cnipa.patent
+        ADD COLUMN IF NOT EXISTS lang TEXT,
+        ADD COLUMN IF NOT EXISTS claim_count INTEGER,
+        ADD COLUMN IF NOT EXISTS independent_claim_count INTEGER
     `)
 
     // 兼容旧库的 CHAR(1) kind 列；CNIPA 授权公告可能出现 B8、B9 等多字符 kind
@@ -275,7 +286,8 @@ export async function initializeDatabase(): Promise<void> {
         province    TEXT,
         city        TEXT,
         county      TEXT,
-        postcode    TEXT
+        postcode    TEXT,
+        country     TEXT
       )
     `)
     await client.query(
@@ -288,7 +300,13 @@ export async function initializeDatabase(): Promise<void> {
       'city',
       'county',
       'postcode',
+      'country',
     ])
+    // 兼容旧库:patent_applicant 补充 country 列
+    await client.query(`
+      ALTER TABLE cnipa.patent_applicant
+        ADD COLUMN IF NOT EXISTS country TEXT
+    `)
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_inventor (
@@ -381,11 +399,24 @@ export async function initializeDatabase(): Promise<void> {
       CREATE TABLE IF NOT EXISTS cnipa.patent_ipc (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
-        ipc_code    TEXT NOT NULL
+        ipc_code    TEXT NOT NULL,
+        code_norm   TEXT NOT NULL
       )
+    `)
+    await client.query(`
+      ALTER TABLE cnipa.patent_ipc 
+        ADD COLUMN IF NOT EXISTS code_norm TEXT NOT NULL DEFAULT ''
+    `)
+    await client.query(`
+      UPDATE cnipa.patent_ipc 
+         SET code_norm = regexp_replace(ipc_code, '\\s+', '', 'g')::TEXT 
+       WHERE code_norm = ''
     `)
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pic_patent_id ON cnipa.patent_ipc(patent_id)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_pic_code_norm ON cnipa.patent_ipc(code_norm)',
     )
 
     await client.query(`
@@ -423,7 +454,8 @@ export async function initializeDatabase(): Promise<void> {
         address     TEXT,
         province    TEXT,
         city        TEXT,
-        postcode    TEXT
+        postcode    TEXT,
+        country     TEXT
       )
     `)
     await client.query(
@@ -435,19 +467,31 @@ export async function initializeDatabase(): Promise<void> {
       'province',
       'city',
       'postcode',
+      'country',
     ])
+    // 兼容旧库:patent_assignee 补充 country 列
+    await client.query(`
+      ALTER TABLE cnipa.patent_assignee
+        ADD COLUMN IF NOT EXISTS country TEXT
+    `)
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_claim (
         id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         patent_id   UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
         claim_num   INTEGER NOT NULL,
-        claim_text  TEXT NOT NULL
+        claim_text  TEXT NOT NULL,
+        is_independent BOOLEAN NOT NULL DEFAULT FALSE
       )
     `)
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pcl_patent_id ON cnipa.patent_claim(patent_id)',
     )
+    // 兼容旧库:patent_claim 补充 is_independent 列
+    await client.query(`
+      ALTER TABLE cnipa.patent_claim
+        ADD COLUMN IF NOT EXISTS is_independent BOOLEAN NOT NULL DEFAULT FALSE
+    `)
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_image (
@@ -753,15 +797,20 @@ function getPatentImportFailure(
 }
 
 function getPatentDescriptionJson(p: ParsedPatent): string | null {
-  const descJson: Record<string, string> = {}
+  const descJson: Record<string, unknown> = {}
   if (p.description_structured) {
     const d = p.description_structured
     if (d.technical_field) descJson.technical_field = d.technical_field
     if (d.background_art) descJson.background_art = d.background_art
     if (d.disclosure) descJson.disclosure = d.disclosure
+    if (d.technical_problem) descJson.technical_problem = d.technical_problem
+    if (d.technical_solution) descJson.technical_solution = d.technical_solution
+    if (d.beneficial_effect) descJson.beneficial_effect = d.beneficial_effect
     if (d.drawings_description)
       descJson.drawings_description = d.drawings_description
     if (d.embodiment) descJson.embodiment = d.embodiment
+    if (d.referenced_documents && d.referenced_documents.length > 0)
+      descJson.referenced_documents = d.referenced_documents
   }
   return Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null
 }
@@ -791,12 +840,15 @@ export async function insertPatents(
       'description',
       'claims',
       'status',
+      'lang',
       'abstract_fig_key',
       'batch_id',
       'source_file',
       'grant_number',
       'grant_date',
       'priority_info',
+      'claim_count',
+      'independent_claim_count',
       'raw_xml',
     ]
     const mainRows = patents.map((p) => [
@@ -813,12 +865,15 @@ export async function insertPatents(
       getPatentDescriptionJson(p),
       p.claims ? JSON.stringify(p.claims) : null,
       p.doc_status || null,
+      p.lang || null,
       p.abstract_figure || null,
       batchCode,
       p.source_file || null,
       p.grant_number || null,
       p.grant_date || null,
       p.priority_info ? JSON.stringify(p.priority_info) : null,
+      p.claim_count ?? null,
+      p.independent_claim_count ?? null,
       p.raw_xml || null,
     ])
     const mainInsert = buildMultiRowInsert(
@@ -846,9 +901,12 @@ export async function insertPatents(
          claims = EXCLUDED.claims,
          grant_number = EXCLUDED.grant_number,
          grant_date = EXCLUDED.grant_date,
+         lang = EXCLUDED.lang,
          abstract_fig_key = EXCLUDED.abstract_fig_key,
          batch_id = EXCLUDED.batch_id,
          source_file = EXCLUDED.source_file,
+         claim_count = EXCLUDED.claim_count,
+         independent_claim_count = EXCLUDED.independent_claim_count,
          updated_at = CURRENT_TIMESTAMP
        RETURNING id, doc_number, kind, (xmax = 0) AS is_new`,
       mainInsert.params,
@@ -909,6 +967,7 @@ export async function insertPatents(
           a.city || null,
           a.county || null,
           a.postcode || null,
+          a.country || null,
         ])
       }
       for (const name of p.inventors_structured || []) {
@@ -918,7 +977,13 @@ export async function insertPatents(
         agentRows.push([patentId, a.agency_name || null, a.agent_name || null])
       }
       for (const code of p.ipc_codes || []) {
-        ipcRows.push([patentId, code])
+        let norm: string
+        try {
+          norm = normalizeClassificationCodeNorm(code)
+        } catch {
+          norm = code.replace(/\s+/g, '').toUpperCase()
+        }
+        ipcRows.push([patentId, code, norm])
       }
       for (const c of p.citations || []) {
         citationRows.push([
@@ -940,11 +1005,18 @@ export async function insertPatents(
           a.province || null,
           a.city || null,
           a.postcode || null,
+          a.country || null,
         ])
       }
       for (let ci = 0; ci < (p.claims_structured || []).length; ci++) {
         const claim = p.claims_structured?.[ci]
-        if (claim) claimRows.push([patentId, ci + 1, claim.texts.join('\n')])
+        if (claim)
+          claimRows.push([
+            patentId,
+            ci + 1,
+            claim.texts.join('\n'),
+            claim.is_independent ?? false,
+          ])
       }
       for (const image of p.images || []) {
         imageRows.push([
@@ -971,6 +1043,7 @@ export async function insertPatents(
         'city',
         'county',
         'postcode',
+        'country',
       ],
       uniqueRows(applicantRows),
     )
@@ -989,7 +1062,7 @@ export async function insertPatents(
     await multiRowInsert(
       client,
       'cnipa.patent_ipc',
-      ['patent_id', 'ipc_code'],
+      ['patent_id', 'ipc_code', 'code_norm'],
       uniqueRows(ipcRows),
     )
     await multiRowInsert(
@@ -1007,13 +1080,13 @@ export async function insertPatents(
     await multiRowInsert(
       client,
       'cnipa.patent_assignee',
-      ['patent_id', 'name', 'address', 'province', 'city', 'postcode'],
+      ['patent_id', 'name', 'address', 'province', 'city', 'postcode', 'country'],
       uniqueRows(assigneeRows),
     )
     await multiRowInsert(
       client,
       'cnipa.patent_claim',
-      ['patent_id', 'claim_num', 'claim_text'],
+      ['patent_id', 'claim_num', 'claim_text', 'is_independent'],
       uniqueRows(claimRows),
     )
     await multiRowInsert(
@@ -1072,6 +1145,7 @@ function rowToPatent(row: Record<string, unknown>): Patent {
     description: row.description as Record<string, string> | null,
     claims: (row.claims_text as string) || (row.claims as string) || null,
     status: (row.status as string) || null,
+    lang: (row.lang as string) || null,
     abstract_fig_key: (row.abstract_fig_key as string) || null,
     images: ((row.images as PatentImage[]) || []).sort((a, b) => {
       if (a.is_abstract !== b.is_abstract) return a.is_abstract ? -1 : 1
@@ -1082,6 +1156,8 @@ function rowToPatent(row: Record<string, unknown>): Patent {
     grant_number: (row.grant_number as string) || null,
     grant_date: (row.grant_date as Date) || null,
     priority_info: row.priority_info as Record<string, unknown> | null,
+    claim_count: (row.claim_count as number) ?? null,
+    independent_claim_count: (row.independent_claim_count as number) ?? null,
     created_at: row.created_at as Date,
     updated_at: row.updated_at as Date,
     // 子表聚合（由查询填充）
@@ -1433,11 +1509,11 @@ export async function getPatentList(
     conditions.push(`p.pub_date <= $${paramIdx++}`)
   }
   if (filter.search) {
-    params.push(`%${filter.search}%`)
+    params.push(`%${filter.search}%`, `%${filter.search.replace(/\s+/g, '')}%`)
     conditions.push(
-      `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}))`,
+      `(p.title ILIKE $${paramIdx} OR p.doc_number ILIKE $${paramIdx} OR EXISTS (SELECT 1 FROM cnipa.patent_applicant pa WHERE pa.patent_id = p.id AND pa.name ILIKE $${paramIdx}) OR EXISTS (SELECT 1 FROM cnipa.patent_ipc pic WHERE pic.patent_id = p.id AND REPLACE(pic.ipc_code, ' ', '') ILIKE $${paramIdx + 1}))`,
     )
-    paramIdx++
+    paramIdx += 2
   }
   const expressionCondition = buildPatentSearchExpressionCondition(
     filter.expression,
@@ -1468,7 +1544,7 @@ export async function getPatentList(
   const result = await pool.query(
     `SELECT p.id, p.doc_number, p.kind, p.title, p.pub_date,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode))
+        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode, 'country', pa.country))
         FILTER (WHERE pa.id IS NOT NULL), '[]'
       ) AS applicants
     FROM cnipa.patent p
@@ -1493,7 +1569,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
   const result = await pool.query(
     `SELECT p.*,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode))
+        json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode, 'country', pa.country))
         FILTER (WHERE pa.id IS NOT NULL), '[]'
       ) AS applicants,
       COALESCE(
@@ -1504,7 +1580,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
         FILTER (WHERE pg.id IS NOT NULL), '[]'
       ) AS agents,
       COALESCE(
-        json_agg(DISTINCT pic.ipc_code) FILTER (WHERE pic.id IS NOT NULL), '[]'
+        json_agg(DISTINCT pic.code_norm) FILTER (WHERE pic.id IS NOT NULL), '[]'
       ) AS ipc_codes,
       COALESCE(
         json_agg(DISTINCT jsonb_build_object('country', pc.country, 'doc_number', pc.doc_number, 'kind', pc.kind, 'pub_date', pc.pub_date))
@@ -1514,11 +1590,11 @@ export async function getPatentById(id: string): Promise<Patent | null> {
         json_agg(DISTINCT pe.name) FILTER (WHERE pe.id IS NOT NULL), '[]'
       ) AS examiners,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('name', pas.name, 'address', pas.address, 'province', pas.province, 'city', pas.city, 'postcode', pas.postcode))
+        json_agg(DISTINCT jsonb_build_object('name', pas.name, 'address', pas.address, 'province', pas.province, 'city', pas.city, 'postcode', pas.postcode, 'country', pas.country))
         FILTER (WHERE pas.id IS NOT NULL), '[]'
       ) AS assignees,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text))
+        json_agg(DISTINCT jsonb_build_object('claim_num', pcl.claim_num, 'claim_text', pcl.claim_text, 'is_independent', pcl.is_independent))
         FILTER (WHERE pcl.id IS NOT NULL), '[]'
       ) AS claims_structured,
       COALESCE(

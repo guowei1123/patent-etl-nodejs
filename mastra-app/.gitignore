@@ -1,3 +1,6 @@
 node_modules
 dist
 .env.local
+
+# Mastra 构建产物(由 mastra dev 自动生成)
+.mastra/

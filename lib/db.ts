@@ -23,31 +23,22 @@ import {
   getClassificationTreeFromRedis,
 } from './redis-classifications'
 
-const useSqlite = process.env.DATABASE_TYPE === 'sqlite'
+let dbModulePromise: Promise<typeof import('./pg-db')> | null = null
 
-// 懒加载数据库模块，避免顶层 await 导致模块加载失败
-let dbModulePromise: Promise<typeof import('./sqlite-db') | typeof import('./pg-db')> | null = null
-
-function getDbModule(): Promise<typeof import('./sqlite-db') | typeof import('./pg-db')> {
+function getDbModule(): Promise<typeof import('./pg-db')> {
   if (!dbModulePromise) {
-    dbModulePromise = useSqlite
-      ? import('./sqlite-db')
-      : import('./pg-db')
+    dbModulePromise = import('./pg-db')
   }
   return dbModulePromise
 }
 
-// 导出同步检查函数（不依赖模块加载）
 export function isDbConfigured(): boolean {
-  return useSqlite
-    ? !!process.env.DATABASE_PATH || true // SQLite 默认使用 ./data/patent-etl.sqlite
-    : !!(
-        process.env.DATABASE_URL ||
-        (process.env.CNIPA_PG_HOST && process.env.CNIPA_PG_USER)
-      )
+  return !!(
+    process.env.DATABASE_URL ||
+    (process.env.CNIPA_PG_HOST && process.env.CNIPA_PG_USER)
+  )
 }
 
-// 异步初始化包装函数
 export async function testConnection(): Promise<{ success: boolean; error?: string }> {
   const mod = await getDbModule()
   return mod.testConnection()
@@ -108,7 +99,6 @@ export async function insertPatents(batchCode: string, patents: ParsedPatent[]):
   return mod.insertPatents(batchCode, patents)
 }
 
-// 分类字典：IPC 走 Redis，CPC 与语义搜索继续走 PG
 export async function getClassificationList(
   filter: ClassificationFilter,
   page?: number,

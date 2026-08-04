@@ -7,7 +7,6 @@
         "dev": "next dev",
         "build": "next build",
         "import:classifications": "node --env-file-if-exists=.env --experimental-strip-types scripts/import-ipc-cpc-classifications.ts",
-        "vector:poc": "node --env-file-if-exists=.env --experimental-strip-types scripts/ipc-vector-poc.ts",
         "start": "next start",
         "lint": "eslint",
         "shadcn": "pnpm dlx --package shadcn@latest --package zod@3.25.76 shadcn",
@@ -51,7 +50,6 @@
         "ai": "^7.0.16",
         "ali-oss": "^6.23.0",
         "basic-ftp": "^6.0.1",
-        "better-sqlite3": "^13.0.1",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "cmdk": "^1.1.1",
@@ -81,7 +79,6 @@
     },
     "devDependencies": {
         "@tailwindcss/postcss": "^4",
-        "@types/better-sqlite3": "^7.6.13",
         "@types/node": "^20",
         "@types/react": "^19",
         "@types/react-dom": "^19",

@@ -6,11 +6,14 @@
   "description": "Mastra AI agents for patent Q&A system",
   "scripts": {
     "dev": "mastra dev",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "mcp:server": "npx tsx src/mastra/mcp-server.ts"
   },
   "dependencies": {
     "@mastra/core": "^1.52.1",
+    "@mastra/mcp": "^1.15.0",
     "mastra": "^1.20.1",
+    "tsx": "^4.23.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {

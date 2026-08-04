@@ -50,23 +50,10 @@ export async function GET() {
     },
     database: {
       configured: isDbConfigured(),
-      type: process.env.DATABASE_TYPE || 'postgres',
-      host:
-        process.env.DATABASE_TYPE === 'sqlite'
-          ? 'local'
-          : process.env.CNIPA_PG_HOST || '',
-      port:
-        process.env.DATABASE_TYPE === 'sqlite'
-          ? ''
-          : process.env.CNIPA_PG_PORT || '5432',
-      db:
-        process.env.DATABASE_TYPE === 'sqlite'
-          ? process.env.DATABASE_PATH || './data/patent-etl.sqlite'
-          : process.env.CNIPA_PG_DB || '',
-      user:
-        process.env.DATABASE_TYPE === 'sqlite'
-          ? ''
-          : process.env.CNIPA_PG_USER || '',
+      host: process.env.CNIPA_PG_HOST || '',
+      port: process.env.CNIPA_PG_PORT || '5432',
+      db: process.env.CNIPA_PG_DB || '',
+      user: process.env.CNIPA_PG_USER || '',
     },
     redis: {
       configured: isRedisClassificationsConfigured(),

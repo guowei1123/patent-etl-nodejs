@@ -118,3 +118,6 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 提交 UI 改动前至少运行相关静态检查或构建命令；常规优先级为 `pnpm lint`，必要时再运行 `pnpm test` 或 `pnpm build`。
 - 手动检查浅色和深色模式、桌面和移动宽度、键盘 Tab 顺序、表单错误、空状态、加载状态、长文本和无数据场景。
 - 检查是否违反关键反模式：新 UI 库、裸色值、无 label 输入框、无 `aria-label` 图标按钮、`div onClick` 导航、`transition-all`、无尺寸图片、无法截断的长文本。
+
+### 中间文件清理
+-代码执行修改完成后，删除修改过程中间产生的脚本等对项目运行没有作用的文件，这类文件仅仅是用来测试、验证系统功能，但不产生实际作用，因此请你删除这类文件，删除前需要询问用户的意见，得到用户同意后才能删除，需要表明文件的作用

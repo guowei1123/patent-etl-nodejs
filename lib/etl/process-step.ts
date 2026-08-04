@@ -34,6 +34,7 @@ import {
   runningTasks,
   setProcessProgress,
 } from './task-state'
+import { filterPatents } from '../filter-config'
 
 type ZipImageEntry = {
   fileName: string
@@ -468,12 +469,13 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       imageFailed: 0,
     })
 
+    let totalFilteredOut = 0
+
     for (let i = 0; i < innerZips.length; i++) {
       if (cancelled) throw new Error('任务已取消')
 
       const zipFile = path.join(extractDir, innerZips[i])
       const zipPatents: ParsedPatent[] = []
-      const referencesByName = new Map<string, PatentImageReference[]>()
       setProcessProgress(batchCode, {
         currentZip: innerZips[i],
         phase: 'parsing_xml',
@@ -494,13 +496,27 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           const patent = parsePatentXml(content.toString('utf-8'), patentType)
           if (patent) {
             patent.source_file = fileName
-            patents.push(patent)
             zipPatents.push(patent)
-            addPatentImageReferences(referencesByName, patent)
           }
         },
         isPatentXmlFile,
       )
+
+      // 过滤专利：只保留符合 IPC 或实体白名单的专利
+      const filterResult = filterPatents(zipPatents)
+      totalFilteredOut += filterResult.skipped
+
+      // 将过滤后的专利加入累计数组
+      for (const patent of filterResult.filtered) {
+        patents.push(patent)
+      }
+
+      // 为过滤后的专利构建附图引用
+      const referencesByName = new Map<string, PatentImageReference[]>()
+      for (const patent of filterResult.filtered) {
+        addPatentImageReferences(referencesByName, patent)
+      }
+
       patchProcessProgress(batchCode, {
         xmlProcessed: xmlResult.processed,
         patentCount: patents.length,
@@ -509,11 +525,13 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           0,
         ),
       })
+
       await addLog(
         batchCode,
         'info',
-        `${innerZips[i]}: XML 解析完成 ${xmlResult.processed} 个，专利 ${zipPatents.length} 条，引用附图 ${referencesByName.size} 个文件`,
+        `${innerZips[i]}: XML 解析 ${xmlResult.processed} 个, 原始专利 ${zipPatents.length} 条, 过滤后 ${filterResult.filtered.length} 条 (IPC匹配${filterResult.ipcMatched} + 实体匹配${filterResult.entityMatched} + 双重匹配${filterResult.bothMatched}, 过滤掉 ${filterResult.skipped} 条), 引用附图 ${referencesByName.size} 个文件`,
       )
+
       if (cancelled) throw new Error('任务已取消')
       if (uploadImages) {
         const imageResult = await uploadReferencedPatentImages(
@@ -531,13 +549,13 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         await addLog(
           batchCode,
           'info',
-          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${zipPatents.length} 条专利, 上传 ${imageResult.stats.uploaded} 张, 跳过 ${imageResult.stats.skipped} 张, 失败 ${imageResult.stats.failed} 张, ${patents.length} 条累计专利`,
+          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${filterResult.filtered.length} 条专利, 上传 ${imageResult.stats.uploaded} 张, 跳过 ${imageResult.stats.skipped} 张, 失败 ${imageResult.stats.failed} 张, ${patents.length} 条累计专利`,
         )
       } else {
         await addLog(
           batchCode,
           'info',
-          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${zipPatents.length} 条专利, 跳过附图上传, ${patents.length} 条累计专利`,
+          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${filterResult.filtered.length} 条专利, 跳过附图上传, ${patents.length} 条累计专利`,
         )
       }
       updateBatchProgress(batchCode, undefined, i + 1)
@@ -549,7 +567,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     }
 
     if (patents.length === 0) {
-      throw new Error('未解析到任何专利数据')
+      throw new Error('未解析到任何符合过滤条件的专利数据')
     }
 
     // 将解析结果写入中间文件，供导入步骤使用
@@ -567,7 +585,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     await addLog(
       batchCode,
       'info',
-      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传, ${skippedImageCount} 张已存在跳过`,
+      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传, ${skippedImageCount} 张已存在跳过, 过滤掉 ${totalFilteredOut} 条不符合条件的专利`,
     )
 
     return {
@@ -575,6 +593,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       batchCode,
       details: {
         totalPatents: patents.length,
+        filteredOut: totalFilteredOut,
         innerZips: innerZips.length,
         uploadedImages: uploadedImageCount,
         skippedImages: skippedImageCount,

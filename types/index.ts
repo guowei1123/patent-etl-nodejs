@@ -47,6 +47,7 @@ export interface Patent {
   description: Record<string, string> | null
   claims: string | null
   status: string | null
+  lang: string | null
   abstract_fig_key: string | null
   images: PatentImage[]
   batch_id: string | null
@@ -54,6 +55,8 @@ export interface Patent {
   grant_number: string | null
   grant_date: Date | null
   priority_info: Record<string, unknown> | null
+  claim_count: number | null
+  independent_claim_count: number | null
   created_at: Date
   updated_at: Date
   // 子表聚合字段
@@ -136,6 +139,7 @@ export interface PatentApplicantRow {
   city?: string
   county?: string
   postcode?: string
+  country?: string
 }
 
 export interface PatentAgentRow {
@@ -153,6 +157,7 @@ export interface PatentCitationRow {
 export interface PatentClaimRow {
   claim_num: number
   claim_text: string
+  is_independent?: boolean
 }
 
 export interface PatentImage {
@@ -228,6 +233,7 @@ export interface ParsedApplicant {
   city?: string
   county?: string
   postcode?: string
+  country?: string
 }
 
 // 结构化代理人/机构（保留配对关系）
@@ -248,6 +254,7 @@ export interface ParsedCitation {
 export interface ParsedClaim {
   num: string
   texts: string[]
+  is_independent?: boolean
 }
 
 // 结构化说明书
@@ -255,8 +262,12 @@ export interface ParsedDescription {
   technical_field?: string
   background_art?: string
   disclosure?: string
+  technical_problem?: string
+  technical_solution?: string
+  beneficial_effect?: string
   drawings_description?: string
   embodiment?: string
+  referenced_documents?: string[]
 }
 
 // 解析后的专利数据 (用于插入数据库前)
@@ -286,6 +297,7 @@ export interface ParsedPatent {
   app_country?: string
   app_type?: string
   doc_status?: string
+  lang?: string
   source_file?: string
   description?: string
   description_structured?: ParsedDescription
@@ -297,6 +309,8 @@ export interface ParsedPatent {
   assignees?: ParsedApplicant[]
   ipc_structured?: string[]
   claims_structured?: ParsedClaim[]
+  claim_count?: number
+  independent_claim_count?: number
   abstract_figure?: string
   image_files?: string[]
   images?: ParsedPatentImage[]
@@ -399,6 +413,7 @@ export interface PatentFilter {
   pub_date_to?: string
   batch_id?: string
   province?: string
+  ipc?: string
 }
 
 // 仪表盘统计
