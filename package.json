@@ -7,7 +7,6 @@
         "dev": "next dev",
         "build": "next build",
         "import:classifications": "node --env-file-if-exists=.env --experimental-strip-types scripts/import-ipc-cpc-classifications.ts",
-        "vector:poc": "node --env-file-if-exists=.env --experimental-strip-types scripts/ipc-vector-poc.ts",
         "start": "next start",
         "lint": "eslint",
         "shadcn": "pnpm dlx --package shadcn@latest --package zod@3.25.76 shadcn",
