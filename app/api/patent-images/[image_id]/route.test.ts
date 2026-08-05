@@ -31,7 +31,7 @@ describe('patent image proxy route', () => {
     const body = await response.json()
 
     expect(response.status).toBe(400)
-    expect(body).toEqual({ success: false, error: '无效的图片 ID 格式' })
+    expect(body).toEqual({ success: false, error: '无效的图片 ID' })
     expect(dbMock.getPatentImageById).not.toHaveBeenCalled()
   })
 

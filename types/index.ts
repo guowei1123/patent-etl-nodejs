@@ -1,7 +1,7 @@
-// 专利类型
+// 涓撳埄绫诲瀷
 export type PatentType = 'invention' | 'utility_model'
 
-// 批次状态
+// 鎵规鐘舵€?
 export type BatchStatus =
   | 'pending'
   | 'downloading'
@@ -12,10 +12,10 @@ export type BatchStatus =
   | 'completed'
   | 'failed'
 
-// 日志级别
+// 鏃ュ織绾у埆
 export type LogLevel = 'info' | 'warn' | 'error'
 
-// 同步批次
+// 鍚屾鎵规
 export interface SyncBatch {
   batch_code: string
   data_type: PatentType
@@ -31,7 +31,7 @@ export interface SyncBatch {
   created_at: Date
 }
 
-// 专利数据（对应 cnipa.patent 主表 + 关联子表聚合）
+// 涓撳埄鏁版嵁锛堝搴?cnipa.patent 涓昏〃 + 鍏宠仈瀛愯〃鑱氬悎锛?
 export interface Patent {
   id: string
   doc_number: string
@@ -59,7 +59,7 @@ export interface Patent {
   independent_claim_count: number | null
   created_at: Date
   updated_at: Date
-  // 子表聚合字段
+  // 瀛愯〃鑱氬悎瀛楁
   applicants: PatentApplicantRow[]
   inventors: string[]
   agents: PatentAgentRow[]
@@ -70,7 +70,7 @@ export interface Patent {
   claims_structured: PatentClaimRow[]
 }
 
-// 列表视图轻量类型
+// 鍒楄〃瑙嗗浘杞婚噺绫诲瀷
 export interface PatentListItem {
   id: string
   doc_number: string
@@ -80,7 +80,7 @@ export interface PatentListItem {
   applicants: PatentApplicantRow[]
 }
 
-// IPC/CPC 分类字典
+// IPC/CPC 鍒嗙被瀛楀吀
 export type ClassificationType = 'ipc' | 'cpc'
 export type ClassificationSearchMode = 'keyword' | 'semantic'
 export type ClassificationEmbeddingLocale = 'en' | 'zh' | 'mixed'
@@ -131,7 +131,7 @@ export interface ClassificationTreeResponse {
   is_search: boolean
 }
 
-// 子表行类型
+// 瀛愯〃琛岀被鍨?
 export interface PatentApplicantRow {
   name: string
   address?: string
@@ -163,24 +163,37 @@ export interface PatentClaimRow {
 export interface PatentImage {
   id: string
   patent_id: string
+  asset_id: string | null
   file_name: string
   oss_key: string
+  content_hash: string | null
+  perceptual_hash: string | null
   content_type: string
   size: number
   width: number | null
   height: number | null
   is_abstract: boolean
+  display_rotation: number
+  match_method: string | null
+  match_score: number | null
+  matched_file_name: string | null
   created_at: Date
 }
 
 export interface ParsedPatentImage {
   file_name: string
   oss_key: string
+  content_hash?: string
+  perceptual_hash?: string
   content_type: string
   size: number
   width?: number
   height?: number
   is_abstract: boolean
+  display_rotation?: number
+  match_method?: string
+  match_score?: number
+  matched_file_name?: string
 }
 
 export interface PatentImportFailure {
@@ -196,7 +209,7 @@ export interface PatentImportResult {
   failures: PatentImportFailure[]
 }
 
-// 同步日志
+// 鍚屾鏃ュ織
 export interface SyncLog {
   id: number
   batch_code: string
@@ -206,7 +219,7 @@ export interface SyncLog {
   created_at: Date
 }
 
-// FTP 文件/文件夹信息
+// FTP 鏂囦欢/鏂囦欢澶逛俊鎭?
 export interface FtpEntry {
   name: string
   type: 'file' | 'directory'
@@ -215,7 +228,7 @@ export interface FtpEntry {
   path: string
 }
 
-// FTP 配置
+// FTP 閰嶇疆
 export interface FtpConfig {
   host: string
   port: number
@@ -225,7 +238,7 @@ export interface FtpConfig {
   timeout?: number
 }
 
-// 结构化申请人
+// 缁撴瀯鍖栫敵璇蜂汉
 export interface ParsedApplicant {
   name: string
   address?: string
@@ -236,13 +249,13 @@ export interface ParsedApplicant {
   country?: string
 }
 
-// 结构化代理人/机构（保留配对关系）
+// 缁撴瀯鍖栦唬鐞嗕汉/鏈烘瀯锛堜繚鐣欓厤瀵瑰叧绯伙級
 export interface ParsedAgent {
   agent_name: string
   agency_name: string
 }
 
-// 结构化引用文献
+// 缁撴瀯鍖栧紩鐢ㄦ枃鐚?
 export interface ParsedCitation {
   country?: string
   doc_number?: string
@@ -250,14 +263,14 @@ export interface ParsedCitation {
   pub_date?: string
 }
 
-// 结构化权利要求
+// 缁撴瀯鍖栨潈鍒╄姹?
 export interface ParsedClaim {
   num: string
   texts: string[]
   is_independent?: boolean
 }
 
-// 结构化说明书
+// 缁撴瀯鍖栬鏄庝功
 export interface ParsedDescription {
   technical_field?: string
   background_art?: string
@@ -270,7 +283,7 @@ export interface ParsedDescription {
   referenced_documents?: string[]
 }
 
-// 解析后的专利数据 (用于插入数据库前)
+// 瑙ｆ瀽鍚庣殑涓撳埄鏁版嵁 (鐢ㄤ簬鎻掑叆鏁版嵁搴撳墠)
 export interface ParsedPatent {
   patent_number: string
   patent_type: PatentType
@@ -291,7 +304,7 @@ export interface ParsedPatent {
   priority_info?: Record<string, unknown>
   raw_xml?: string
 
-  // === 新增字段 ===
+  // === 鏂板瀛楁 ===
   kind?: string
   pub_country?: string
   app_country?: string
@@ -316,7 +329,7 @@ export interface ParsedPatent {
   images?: ParsedPatentImage[]
 }
 
-// ETL 进度回调
+// ETL 杩涘害鍥炶皟
 export interface ETLProgress {
   stage:
     | 'connecting'
@@ -333,17 +346,17 @@ export interface ETLProgress {
   percentage?: number
 }
 
-// 单文件下载进度
+// 鍗曟枃浠朵笅杞借繘搴?
 export interface FileDownloadProgress {
   fileName: string
   bytesDownloaded: number
   totalBytes: number
-  speedBytesPerSec: number // 滑动窗口速度，0 = 计算中
-  fileEtaSeconds: number | null // 当前文件剩余秒数
-  batchEtaSeconds: number | null // 整个批次下载剩余秒数
+  speedBytesPerSec: number // 婊戝姩绐楀彛閫熷害锛? = 璁＄畻涓?
+  fileEtaSeconds: number | null // 褰撳墠鏂囦欢鍓╀綑绉掓暟
+  batchEtaSeconds: number | null // 鏁翠釜鎵规涓嬭浇鍓╀綑绉掓暟
 }
 
-// 文件列表中单个文件的下载状态
+// 鏂囦欢鍒楄〃涓崟涓枃浠剁殑涓嬭浇鐘舵€?
 export type FileDownloadStatus =
   | 'pending'
   | 'partial'
@@ -378,7 +391,7 @@ export interface ProcessProgress {
   updatedAt: number
 }
 
-// API 响应
+// API 鍝嶅簲
 export interface ApiResponse<T = unknown> {
   success: boolean
   data?: T
@@ -386,7 +399,7 @@ export interface ApiResponse<T = unknown> {
   message?: string
 }
 
-// 分页参数
+// 鍒嗛〉鍙傛暟
 export interface PaginationParams {
   page: number
   limit: number
@@ -394,7 +407,7 @@ export interface PaginationParams {
   sort_order?: 'asc' | 'desc'
 }
 
-// 分页响应
+// 鍒嗛〉鍝嶅簲
 export interface PaginatedResponse<T> {
   items: T[]
   total: number
@@ -403,7 +416,7 @@ export interface PaginatedResponse<T> {
   total_pages: number
 }
 
-// 专利查询筛选
+// 涓撳埄鏌ヨ绛涢€?
 export interface PatentFilter {
   kind?: string
   app_type?: string
@@ -416,7 +429,7 @@ export interface PatentFilter {
   ipc?: string
 }
 
-// 仪表盘统计
+// 浠〃鐩樼粺璁?
 export interface DashboardStats {
   total_batches: number
   total_patents: number

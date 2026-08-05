@@ -49,11 +49,10 @@ function formatImportFailureMessage(
   totalPatents: number,
   failures: PatentImportFailure[],
 ): string {
-  const base = `导入未完成: 已导入 ${importedCount} / ${totalPatents} 条记录`
+  const base = `导入未完成：已导入 ${importedCount} / ${totalPatents} 条记录`
   return failures.length > 0 ? `${base}，失败 ${failures.length} 条` : base
 }
 
-// 步骤 3：导入数据库
 export async function runImportStep(batchCode: string): Promise<StepResult> {
   const batch = await getBatchByCode(batchCode)
   if (!batch) return { success: false, batchCode, error: '批次不存在' }
@@ -99,7 +98,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       await addLog(
         batchCode,
         'info',
-        `导入已完成: ${importedCount} / ${totalPatents} 条记录`,
+        `导入已完成：${importedCount} / ${totalPatents} 条记录`,
       )
       return {
         success: true,
@@ -113,13 +112,13 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       await addLog(
         batchCode,
         'warn',
-        `导入前去重: parsed.json ${parsedPatents.length} 条，唯一专利 ${patents.length} 条`,
+        `导入前去重：parsed.json ${parsedPatents.length} 条，唯一专利 ${patents.length} 条`,
       )
     }
     await addLog(
       batchCode,
       'info',
-      `开始导入步骤: 已导入 ${importedCount} / ${totalPatents} 条记录`,
+      `开始导入步骤：已导入 ${importedCount} / ${totalPatents} 条记录`,
     )
 
     const importedKeys = await getImportedPatentKeysByBatch(batchCode)
@@ -133,13 +132,11 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       parseInt(process.env.IMPORT_CONCURRENCY || '3', 10) || 3,
     )
 
-    // 将剩余专利分块
     const chunks: ParsedPatent[][] = []
     for (let i = 0; i < remainingPatents.length; i += BATCH_SIZE) {
       chunks.push(remainingPatents.slice(i, i + BATCH_SIZE))
     }
 
-    // 受控并发导入
     for (let i = 0; i < chunks.length; i += CONCURRENCY) {
       if (cancelled) throw new Error('任务已取消')
 
@@ -215,7 +212,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     await addLog(
       batchCode,
       'info',
-      `导入完成: ${importedCount} / ${totalPatents} 条记录`,
+      `导入完成：${importedCount} / ${totalPatents} 条记录`,
     )
 
     if (importedCount < totalPatents) {
@@ -242,9 +239,9 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     }
   } catch (error) {
     const errorMessage =
-      error instanceof Error ? error.message : 'Unknown error'
+      error instanceof Error ? error.message : '未知错误'
     await updateBatchStatus(batchCode, 'failed', errorMessage)
-    await addLog(batchCode, 'error', `导入失败: ${errorMessage}`)
+    await addLog(batchCode, 'error', `导入失败：${errorMessage}`)
     return { success: false, batchCode, error: errorMessage }
   } finally {
     runningTasks.delete(batchCode)
