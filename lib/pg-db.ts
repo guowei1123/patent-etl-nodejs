@@ -68,7 +68,7 @@ type DependentView = {
   definition: string
 }
 
-// 测试数据库连接
+// 濞村鐦弫鐗堝祦鎼存捁绻涢幒?
 export async function testConnection(): Promise<{
   success: boolean
   error?: string
@@ -122,7 +122,7 @@ async function getDependentViewsForColumns(
   return rows
 }
 
-// 仅在列存在且类型不是 text 时才 ALTER，避免每次请求重复 DDL
+// 娴犲懎婀崚妤€鐡ㄩ崷銊ょ瑬缁鐎锋稉宥嗘Ц text 閺冭埖澧?ALTER閿涘矂浼╅崗宥嗙槨濞喡ゎ嚞濮瑰倿鍣告径?DDL
 async function alterColumnsToTextIfNeeded(
   client: PoolClient,
   tableFqcn: string,
@@ -192,7 +192,7 @@ async function relaxPatentKindConstraintIfNeeded(
   )
 }
 
-// 初始化数据库表（public: sync_batches + sync_logs; cnipa: patent + 子表）
+// 閸掓繂顫愰崠鏍ㄦ殶閹诡喖绨辩悰顭掔礄public: sync_batches + sync_logs; cnipa: patent + 鐎涙劘銆冮敍?
 export async function initializeDatabase(): Promise<void> {
   const client = await pool.connect()
   try {
@@ -232,7 +232,7 @@ export async function initializeDatabase(): Promise<void> {
     // === cnipa schema ===
     await client.query('CREATE SCHEMA IF NOT EXISTS cnipa')
 
-    // 主表：全新数据库时需要创建
+    // 娑撴槒銆冮敍姘弿閺傜増鏆熼幑顔肩氨閺冨爼娓剁憰浣稿灡瀵?
     await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent (
         id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -265,7 +265,7 @@ export async function initializeDatabase(): Promise<void> {
       )
     `)
 
-    // 兼容旧库:为已有专利表补充新增列(lang/claim_count/independent_claim_count)
+    // 閸忕厧顔愰弮褍绨?娑撳搫鍑￠張澶夌瑩閸掆晞銆冪悰銉ュ帠閺傛澘顤冮崚?lang/claim_count/independent_claim_count)
     await client.query(`
       ALTER TABLE cnipa.patent
         ADD COLUMN IF NOT EXISTS lang TEXT,
@@ -273,7 +273,7 @@ export async function initializeDatabase(): Promise<void> {
         ADD COLUMN IF NOT EXISTS independent_claim_count INTEGER
     `)
 
-    // 兼容旧库的 CHAR(1) kind 列；CNIPA 授权公告可能出现 B8、B9 等多字符 kind
+    // 閸忕厧顔愰弮褍绨遍惃?CHAR(1) kind 閸掓绱盋NIPA 閹哄牊娼堥崗顒€鎲￠崣顖濆厴閸戣櫣骞?B8閵嗕竻9 缁涘顦跨€涙顑?kind
     await alterColumnsToTextIfNeeded(client, 'cnipa.patent', ['kind'])
     await relaxPatentKindConstraintIfNeeded(client)
 
@@ -302,7 +302,7 @@ export async function initializeDatabase(): Promise<void> {
       'postcode',
       'country',
     ])
-    // 兼容旧库:patent_applicant 补充 country 列
+    // 閸忕厧顔愰弮褍绨?patent_applicant 鐞涖儱鍘?country 閸?
     await client.query(`
       ALTER TABLE cnipa.patent_applicant
         ADD COLUMN IF NOT EXISTS country TEXT
@@ -429,7 +429,7 @@ export async function initializeDatabase(): Promise<void> {
         pub_date    DATE
       )
     `)
-    // 发明授权引用文献可能包含 A1、B2 等多字符 kind；兼容旧库的 CHAR(1) 列。
+    // 閸欐垶妲戦幒鍫熸綀瀵洜鏁ら弬鍥╁盀閸欘垵鍏橀崠鍛儓 A1閵嗕竻2 缁涘顦跨€涙顑?kind閿涙稑鍚嬬€硅妫惔鎾舵畱 CHAR(1) 閸掓ぜ鈧?
     await alterColumnsToTextIfNeeded(client, 'cnipa.patent_citation', ['kind'])
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pc_patent_id ON cnipa.patent_citation(patent_id)',
@@ -469,7 +469,7 @@ export async function initializeDatabase(): Promise<void> {
       'postcode',
       'country',
     ])
-    // 兼容旧库:patent_assignee 补充 country 列
+    // 閸忕厧顔愰弮褍绨?patent_assignee 鐞涖儱鍘?country 閸?
     await client.query(`
       ALTER TABLE cnipa.patent_assignee
         ADD COLUMN IF NOT EXISTS country TEXT
@@ -487,38 +487,106 @@ export async function initializeDatabase(): Promise<void> {
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pcl_patent_id ON cnipa.patent_claim(patent_id)',
     )
-    // 兼容旧库:patent_claim 补充 is_independent 列
+    // 閸忕厧顔愰弮褍绨?patent_claim 鐞涖儱鍘?is_independent 閸?
     await client.query(`
       ALTER TABLE cnipa.patent_claim
         ADD COLUMN IF NOT EXISTS is_independent BOOLEAN NOT NULL DEFAULT FALSE
     `)
 
     await client.query(`
+      CREATE TABLE IF NOT EXISTS cnipa.image_asset (
+        id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        oss_key         TEXT NOT NULL UNIQUE,
+        content_hash    TEXT NOT NULL,
+        perceptual_hash TEXT,
+        content_type    TEXT NOT NULL,
+        size            INTEGER NOT NULL,
+        width           INTEGER,
+        height          INTEGER,
+        created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_image_asset_content_hash ON cnipa.image_asset(content_hash)',
+    )
+    await client.query(
+      'CREATE INDEX IF NOT EXISTS idx_image_asset_perceptual_hash ON cnipa.image_asset(perceptual_hash)',
+    )
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS cnipa.patent_image (
         id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         patent_id    UUID NOT NULL REFERENCES cnipa.patent(id) ON DELETE CASCADE,
+        asset_id     UUID NOT NULL REFERENCES cnipa.image_asset(id) ON DELETE RESTRICT,
         file_name    TEXT NOT NULL,
-        oss_key      TEXT NOT NULL,
-        content_type TEXT NOT NULL,
-        size         INTEGER NOT NULL,
+        oss_key      TEXT,
+        content_type TEXT,
+        size         INTEGER,
         width        INTEGER,
         height       INTEGER,
         is_abstract  BOOLEAN NOT NULL DEFAULT FALSE,
+        display_rotation INTEGER NOT NULL DEFAULT 0,
+        match_method TEXT,
+        match_score DOUBLE PRECISION,
+        matched_file_name TEXT,
+        sort_order   INTEGER,
         created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `)
+    await client.query(`
+      ALTER TABLE cnipa.patent_image
+        ADD COLUMN IF NOT EXISTS asset_id UUID REFERENCES cnipa.image_asset(id) ON DELETE RESTRICT,
+        ADD COLUMN IF NOT EXISTS sort_order INTEGER,
+        ADD COLUMN IF NOT EXISTS oss_key TEXT,
+        ADD COLUMN IF NOT EXISTS content_type TEXT,
+        ADD COLUMN IF NOT EXISTS size INTEGER,
+        ADD COLUMN IF NOT EXISTS width INTEGER,
+        ADD COLUMN IF NOT EXISTS height INTEGER,
+        ADD COLUMN IF NOT EXISTS display_rotation INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS match_method TEXT,
+        ADD COLUMN IF NOT EXISTS match_score DOUBLE PRECISION,
+        ADD COLUMN IF NOT EXISTS matched_file_name TEXT
+    `)
+    await client.query('DROP INDEX IF EXISTS cnipa.idx_pimg_oss_key')
+    await client.query(`
+      INSERT INTO cnipa.image_asset (
+        oss_key,
+        content_hash,
+        content_type,
+        size,
+        width,
+        height
+      )
+      SELECT DISTINCT
+        pimg.oss_key,
+        'legacy:' || md5(pimg.oss_key),
+        COALESCE(pimg.content_type, 'image/jpeg'),
+        COALESCE(pimg.size, 0),
+        pimg.width,
+        pimg.height
+      FROM cnipa.patent_image pimg
+      WHERE pimg.asset_id IS NULL AND pimg.oss_key IS NOT NULL
+      ON CONFLICT (oss_key) DO NOTHING
+    `)
+    await client.query(`
+      UPDATE cnipa.patent_image pimg
+         SET asset_id = asset.id
+        FROM cnipa.image_asset asset
+       WHERE pimg.asset_id IS NULL
+         AND pimg.oss_key = asset.oss_key
     `)
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_pimg_patent_id ON cnipa.patent_image(patent_id)',
     )
     await client.query(
-      'CREATE UNIQUE INDEX IF NOT EXISTS idx_pimg_oss_key ON cnipa.patent_image(oss_key)',
+      'CREATE INDEX IF NOT EXISTS idx_pimg_asset_id ON cnipa.patent_image(asset_id)',
     )
   } finally {
     client.release()
   }
 }
 
-// ============ Batch 操作（public schema，不变） ============
+// ============ Batch 閹垮秳缍旈敍鍧blic schema閿涘奔绗夐崣姗堢礆 ============
 
 export async function createBatch(
   batchCode: string,
@@ -724,7 +792,7 @@ export async function deleteBatch(batchCode: string): Promise<{
   }
 }
 
-// ============ Patent 操作（cnipa schema） ============
+// ============ Patent 閹垮秳缍旈敍鍧坣ipa schema閿?============
 
 function buildMultiRowInsert(
   table: string,
@@ -775,6 +843,61 @@ function uniqueRows(rows: unknown[][]): unknown[][] {
   })
 }
 
+function uniqueRowsByColumn(rows: unknown[][], columnIndex: number): unknown[][] {
+  const seen = new Set<unknown>()
+  return rows.filter((row) => {
+    const key = row[columnIndex]
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+async function upsertImageAssets(
+  client: PoolClient,
+  rows: unknown[][],
+): Promise<Map<string, string>> {
+  const uniqueAssetRows = uniqueRowsByColumn(rows, 0)
+  const assetIdsByOssKey = new Map<string, string>()
+  if (uniqueAssetRows.length === 0) return assetIdsByOssKey
+
+  const columns = [
+    'oss_key',
+    'content_hash',
+    'perceptual_hash',
+    'content_type',
+    'size',
+    'width',
+    'height',
+  ]
+  const colCount = columns.length
+  const MAX_PARAMS = 30000
+  const chunkSize = Math.max(1, Math.floor(MAX_PARAMS / colCount))
+
+  for (let offset = 0; offset < uniqueAssetRows.length; offset += chunkSize) {
+    const chunk = uniqueAssetRows.slice(offset, offset + chunkSize)
+    const q = buildMultiRowInsert('cnipa.image_asset', columns, chunk)
+    if (!q) continue
+    const result = await client.query<{ id: string; oss_key: string }>(
+      `${q.sql}
+       ON CONFLICT (oss_key) DO UPDATE SET
+         content_hash = EXCLUDED.content_hash,
+         perceptual_hash = COALESCE(EXCLUDED.perceptual_hash, cnipa.image_asset.perceptual_hash),
+         content_type = EXCLUDED.content_type,
+         size = EXCLUDED.size,
+         width = EXCLUDED.width,
+         height = EXCLUDED.height
+       RETURNING id, oss_key`,
+      q.params,
+    )
+    for (const row of result.rows) {
+      assetIdsByOssKey.set(row.oss_key, row.id)
+    }
+  }
+
+  return assetIdsByOssKey
+}
+
 function getPatentKind(p: ParsedPatent): string {
   return p.kind || (p.patent_type === 'invention' ? 'B' : 'U')
 }
@@ -815,7 +938,7 @@ function getPatentDescriptionJson(p: ParsedPatent): string | null {
   return Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null
 }
 
-// 将 ParsedPatent 写入 cnipa.patent + 子表
+// 鐏?ParsedPatent 閸愭瑥鍙?cnipa.patent + 鐎涙劘銆?
 export async function insertPatents(
   batchCode: string,
   patents: ParsedPatent[],
@@ -952,6 +1075,7 @@ export async function insertPatents(
     const examinerRows: unknown[][] = []
     const assigneeRows: unknown[][] = []
     const claimRows: unknown[][] = []
+    const imageAssetRows: unknown[][] = []
     const imageRows: unknown[][] = []
 
     for (const [key, p] of patentsByKey) {
@@ -1019,15 +1143,25 @@ export async function insertPatents(
           ])
       }
       for (const image of p.images || []) {
-        imageRows.push([
-          patentId,
-          image.file_name,
+        const contentHash = image.content_hash || 'legacy:' + image.oss_key
+        imageAssetRows.push([
           image.oss_key,
+          contentHash,
+          image.perceptual_hash || null,
           image.content_type,
           image.size,
           image.width || null,
           image.height || null,
+        ])
+        imageRows.push([
+          patentId,
+          image.oss_key,
+          image.file_name,
           image.is_abstract,
+          image.display_rotation || 0,
+          image.match_method || null,
+          image.match_score || null,
+          image.matched_file_name || null,
         ])
       }
     }
@@ -1089,20 +1223,30 @@ export async function insertPatents(
       ['patent_id', 'claim_num', 'claim_text', 'is_independent'],
       uniqueRows(claimRows),
     )
+    const assetIdsByOssKey = await upsertImageAssets(client, imageAssetRows)
+    const patentImageRows = imageRows
+      .map(([patentId, ossKey, fileName, isAbstract, displayRotation, matchMethod, matchScore, matchedFileName]) => {
+        const assetId = assetIdsByOssKey.get(String(ossKey))
+        return assetId
+          ? [patentId, assetId, fileName, isAbstract, displayRotation, matchMethod, matchScore, matchedFileName]
+          : null
+      })
+      .filter((row): row is unknown[] => row !== null)
+
     await multiRowInsert(
       client,
       'cnipa.patent_image',
       [
         'patent_id',
+        'asset_id',
         'file_name',
-        'oss_key',
-        'content_type',
-        'size',
-        'width',
-        'height',
         'is_abstract',
+        'display_rotation',
+        'match_method',
+        'match_score',
+        'matched_file_name',
       ],
-      uniqueRows(imageRows),
+      uniqueRows(patentImageRows),
     )
 
     await client.query('COMMIT')
@@ -1128,7 +1272,7 @@ export async function insertPatents(
   }
 }
 
-// 将数据库行转为 Patent 对象（主表 + 子表聚合）
+// 鐏忓棙鏆熼幑顔肩氨鐞涘矁娴嗘稉?Patent 鐎电钖勯敍鍫滃瘜鐞?+ 鐎涙劘銆冮懕姘値閿?
 function rowToPatent(row: Record<string, unknown>): Patent {
   return {
     id: row.id as string,
@@ -1160,7 +1304,7 @@ function rowToPatent(row: Record<string, unknown>): Patent {
     independent_claim_count: (row.independent_claim_count as number) ?? null,
     created_at: row.created_at as Date,
     updated_at: row.updated_at as Date,
-    // 子表聚合（由查询填充）
+    // 鐎涙劘銆冮懕姘値閿涘牏鏁遍弻銉嚄婵夘偄鍘栭敍?
     applicants: (row.applicants as PatentApplicantRow[]) || [],
     inventors: (row.inventors as string[]) || [],
     agents: (row.agents as PatentAgentRow[]) || [],
@@ -1269,7 +1413,7 @@ export async function getClassificationSemanticList(
 ): Promise<PaginatedResponse<ClassificationSemanticRow>> {
   const query = filter.q?.trim()
   if (!query) {
-    throw new Error('语义搜索需要输入技术描述或关键词')
+    throw new Error('Semantic search requires a query')
   }
 
   const normalizedLimit = Math.min(Math.max(1, limit), 50)
@@ -1598,7 +1742,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
         FILTER (WHERE pcl.id IS NOT NULL), '[]'
       ) AS claims_structured,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('id', pimg.id, 'patent_id', pimg.patent_id, 'file_name', pimg.file_name, 'oss_key', pimg.oss_key, 'content_type', pimg.content_type, 'size', pimg.size, 'width', pimg.width, 'height', pimg.height, 'is_abstract', pimg.is_abstract, 'created_at', pimg.created_at))
+        json_agg(DISTINCT jsonb_build_object('id', pimg.id, 'patent_id', pimg.patent_id, 'asset_id', pimg.asset_id, 'file_name', pimg.file_name, 'oss_key', COALESCE(asset.oss_key, pimg.oss_key), 'content_hash', asset.content_hash, 'perceptual_hash', asset.perceptual_hash, 'content_type', COALESCE(asset.content_type, pimg.content_type), 'size', COALESCE(asset.size, pimg.size), 'width', COALESCE(asset.width, pimg.width), 'height', COALESCE(asset.height, pimg.height), 'is_abstract', pimg.is_abstract, 'display_rotation', pimg.display_rotation, 'match_method', pimg.match_method, 'match_score', pimg.match_score, 'matched_file_name', pimg.matched_file_name, 'created_at', pimg.created_at))
         FILTER (WHERE pimg.id IS NOT NULL), '[]'
       ) AS images
     FROM cnipa.patent p
@@ -1611,6 +1755,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
     LEFT JOIN cnipa.patent_assignee pas ON pas.patent_id = p.id
     LEFT JOIN cnipa.patent_claim pcl ON pcl.patent_id = p.id
     LEFT JOIN cnipa.patent_image pimg ON pimg.patent_id = p.id
+    LEFT JOIN cnipa.image_asset asset ON asset.id = pimg.asset_id
     WHERE p.id = $1
     GROUP BY p.id`,
     [id],
@@ -1624,17 +1769,78 @@ export async function getPatentImageById(
   id: string,
 ): Promise<PatentImage | null> {
   const result = await pool.query<PatentImage>(
-    `SELECT id, patent_id, file_name, oss_key, content_type, size, width, height, is_abstract, created_at
-       FROM cnipa.patent_image
-      WHERE id = $1`,
+    `SELECT pimg.id, pimg.patent_id, pimg.asset_id, pimg.file_name,
+            COALESCE(asset.oss_key, pimg.oss_key) AS oss_key,
+            asset.content_hash,
+            asset.perceptual_hash,
+            COALESCE(asset.content_type, pimg.content_type) AS content_type,
+            COALESCE(asset.size, pimg.size) AS size,
+            COALESCE(asset.width, pimg.width) AS width,
+            COALESCE(asset.height, pimg.height) AS height,
+            pimg.is_abstract,
+            pimg.display_rotation,
+            pimg.match_method,
+            pimg.match_score,
+            pimg.matched_file_name,
+            pimg.created_at
+       FROM cnipa.patent_image pimg
+       LEFT JOIN cnipa.image_asset asset ON asset.id = pimg.asset_id
+      WHERE pimg.id = $1`,
     [id],
   )
 
   return result.rows[0] || null
 }
 
-// ============ Log 操作（public schema，不变） ============
+// ============ Log 閹垮秳缍旈敍鍧blic schema閿涘奔绗夐崣姗堢礆 ============
 
+function normalizeSyncLogMessage(message: string): string {
+  let match: RegExpMatchArray | null
+
+  if (message === 'Start processing step') return '开始处理步骤'
+  if ((match = message.match(/^Extract outer archive package: (\d+) file\(s\)$/))) {
+    return `解压外层压缩包：${match[1]} 个文件`
+  }
+  if ((match = message.match(/^(.+\.ZIP): parsed (\d+) XML, raw patents (\d+), filtered patents (\d+), referenced image files (\d+)$/))) {
+    return `${match[1]}：已解析 ${match[2]} 个 XML，原始专利 ${match[3]} 条，筛选后 ${match[4]} 条，引用附图文件 ${match[5]} 个`
+  }
+  if ((match = message.match(/^(.+\.ZIP): parsed (\d+) XML, processed (\d+) referenced image\(s\), uploaded (\d+), skipped (\d+), failed (\d+), total patents (\d+)$/))) {
+    return `${match[1]}：已解析 ${match[2]} 个 XML，处理引用附图 ${match[3]} 张，上传 ${match[4]} 张，跳过 ${match[5]} 张，失败 ${match[6]} 张，累计专利 ${match[7]} 条`
+  }
+  if ((match = message.match(/^(.+\.ZIP): parsed (\d+) XML, filtered patents (\d+), skipped image upload, total patents (\d+)$/))) {
+    return `${match[1]}：已解析 ${match[2]} 个 XML，筛选后专利 ${match[3]} 条，已跳过附图上传，累计专利 ${match[4]} 条`
+  }
+  if ((match = message.match(/^Processing completed: patents=(\d+), uploadedImages=(\d+), skippedImages=(\d+), filteredOut=(\d+)$/))) {
+    return `处理完成：${match[1]} 条专利，上传附图 ${match[2]} 张，跳过附图 ${match[3]} 张，过滤掉 ${match[4]} 条不符合条件的专利`
+  }
+
+  const zipFile = message.match(/^(.+?\.ZIP)/)?.[1]
+  if (zipFile) {
+    const numbers = message.slice(message.indexOf('.ZIP') + 4).match(/\d+/g) || []
+    if (message.includes('/') && numbers.length >= 5 && !message.includes('XML')) {
+      return `${zipFile}: 附图上传进度 ${numbers[0]}/${numbers[1]}，上传 ${numbers[2]}，跳过 ${numbers[3]}，失败 ${numbers[4]}`
+    }
+    if (message.includes('XML') && message.includes('????') && numbers.length === 4) {
+      return `${zipFile}：已解析 ${numbers[0]} 个 XML，原始专利 ${numbers[1]} 条，筛选后 ${numbers[2]} 条，引用附图文件 ${numbers[3]} 个`
+    }
+    if (message.includes('XML') && message.includes('????') && numbers.length >= 6) {
+      return `${zipFile}：已解析 ${numbers[0]} 个 XML，处理引用附图 ${numbers[1]} 张，上传 ${numbers[2]} 张，跳过 ${numbers[3]} 张，失败 ${numbers[4]} 张，累计专利 ${numbers[5]} 条`
+    }
+  }
+
+  if ((match = message.match(/^.*ZIP:\s*([^\s]+\.ZIP)$/)) && !message.startsWith('开始')) {
+    return `开始处理内层 ZIP：${match[1]}`
+  }
+
+  let normalized = message
+    .replace(/^澶勭悊澶辫触:/, '处理失败：')
+    .replace(/^瀵煎叆澶辫触:/, '导入失败：')
+    .replace(/^婢跺嫮鎮婃径杈Е:/, '处理失败：')
+    .replace('涓撳埄闄勫浘涓婁紶澶辫触', '专利附图上传失败')
+    .replace('You did not provide the number of bytes specified by the Content-Length HTTP header.', '对象存储上传失败：请求体长度与 Content-Length 不一致')
+
+  return normalized
+}
 export async function addLog(
   batchCode: string,
   level: LogLevel,
@@ -1643,7 +1849,7 @@ export async function addLog(
 ): Promise<void> {
   await pool.query(
     'INSERT INTO sync_logs (batch_code, level, message, details) VALUES ($1, $2, $3, $4)',
-    [batchCode, level, message, details ? JSON.stringify(details) : null],
+    [batchCode, level, normalizeSyncLogMessage(message), details ? JSON.stringify(details) : null],
   )
 }
 
@@ -1655,10 +1861,13 @@ export async function getLogsByBatch(
     'SELECT * FROM sync_logs WHERE batch_code = $1 ORDER BY created_at DESC LIMIT $2',
     [batchCode, limit],
   )
-  return result.rows
+  return result.rows.map((row) => ({
+    ...row,
+    message: normalizeSyncLogMessage(row.message),
+  }))
 }
 
-// ============ 统计 ============
+// ============ 缂佺喕顓?============
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   const client = await pool.connect()

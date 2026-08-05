@@ -40,6 +40,15 @@ vi.mock('../db', () => dbMock)
 vi.mock('../integrity', () => integrityMock)
 vi.mock('../xml-parser', () => parserMock)
 vi.mock('../oss-client', () => ossMock)
+vi.mock('../filter-config', () => ({
+  filterPatents: vi.fn((patents) => ({
+    filtered: patents,
+    skipped: 0,
+    ipcMatched: patents.length,
+    entityMatched: 0,
+    bothMatched: 0,
+  })),
+}))
 vi.mock('../file-processor', () => ({
   extractFiles: fileMock.extractFiles,
   forEachZipEntryBuffer: fileMock.forEachZipEntryBuffer,

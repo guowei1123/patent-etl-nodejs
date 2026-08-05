@@ -154,6 +154,18 @@ describe('insertPatents import result', () => {
         }
       }
 
+      if (sql.includes('INSERT INTO cnipa.image_asset')) {
+        return {
+          rows: [
+            {
+              id: 'asset-id-1',
+              oss_key: 'patents/batch-1/100001/100001.jpg',
+            },
+          ],
+          rowCount: 1,
+        }
+      }
+
       return { rows: [], rowCount: 0 }
     })
     pgMock.connect.mockResolvedValue(client)
@@ -179,17 +191,20 @@ describe('insertPatents import result', () => {
       [['patent-id-1']],
     )
     expect(client.query).toHaveBeenCalledWith(
-      expect.stringContaining('INSERT INTO cnipa.patent_image'),
+      expect.stringContaining('INSERT INTO cnipa.image_asset'),
       [
-        'patent-id-1',
-        '100001.jpg',
         'patents/batch-1/100001/100001.jpg',
+        'legacy:patents/batch-1/100001/100001.jpg',
+        null,
         'image/jpeg',
         4,
         null,
         null,
-        true,
       ],
+    )
+    expect(client.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO cnipa.patent_image'),
+      ['patent-id-1', 'asset-id-1', '100001.jpg', true, 0, null, null, null],
     )
   })
 })

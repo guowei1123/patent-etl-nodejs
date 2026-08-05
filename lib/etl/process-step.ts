@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import * as path from 'path'
+import { createHash } from 'crypto'
 import {
   extractFiles,
   forEachZipEntryBuffer,
@@ -35,9 +36,15 @@ import {
   setProcessProgress,
 } from './task-state'
 import { filterPatents } from '../filter-config'
+import {
+  buildImageKey,
+  matchPatentAbstractToDrawing,
+} from '../patent-image-matcher'
 
 type ZipImageEntry = {
   fileName: string
+  contentHash: string
+  perceptualHash?: string
   contentType: string
   size: number
   width?: number
@@ -46,7 +53,21 @@ type ZipImageEntry = {
 
 type PatentImageReference = {
   patent: ParsedPatent
+  imageKey: string
   isAbstract: boolean
+}
+
+type ReferencedZipImage = {
+  image: ZipImageEntry
+  content: Buffer
+}
+
+type ImageAssetMatch = {
+  canonicalImageKey: string
+  displayRotation: number
+  matchMethod?: string
+  matchScore?: number
+  matchedFileName?: string
 }
 
 type ImageUploadResult = 'uploaded' | 'skipped'
@@ -80,11 +101,15 @@ function shouldUploadImagesDuringProcess(): boolean {
 }
 
 function getImageMapKey(fileName: string): string {
-  return path.basename(fileName).toLowerCase()
+  return buildImageKey(fileName)
 }
 
 function getImageContentType(fileName: string): string {
   return fileName.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/jpeg'
+}
+
+function getImageContentHash(content: Buffer): string {
+  return createHash('sha256').update(content).digest('hex')
 }
 
 function getJpegDimensions(content: Buffer): {
@@ -148,6 +173,7 @@ function addPatentImageReferences(
     const refs = referencesByName.get(imageKey) || []
     refs.push({
       patent,
+      imageKey,
       isAbstract: abstractKey === imageKey,
     })
     referencesByName.set(imageKey, refs)
@@ -157,34 +183,109 @@ function addPatentImageReferences(
 async function attachPatentImage(
   batchCode: string,
   reference: PatentImageReference,
-  image: ZipImageEntry,
-  content: Buffer,
+  usageImage: ZipImageEntry,
+  assetImage: ZipImageEntry,
+  assetContent: Buffer,
+  assetKeyByPatentHash: Map<string, string>,
+  match?: ImageAssetMatch,
 ): Promise<{ ossKey: string; result: ImageUploadResult }> {
-  const ossKey = buildPatentImageKey(
-    batchCode,
-    reference.patent.patent_number,
-    image.fileName,
-  )
-  const exists = await patentImageExists(ossKey)
-  if (!exists) {
-    await putPatentImage(ossKey, content, image.contentType)
+  const patentHashKey =
+    reference.patent.patent_number + '\u0000' + assetImage.contentHash
+  const existingAssetKey = assetKeyByPatentHash.get(patentHashKey)
+  const ossKey =
+    existingAssetKey ||
+    buildPatentImageKey(
+      batchCode,
+      reference.patent.patent_number,
+      assetImage.fileName,
+    )
+
+  let exists = false
+  if (!existingAssetKey) {
+    exists = await patentImageExists(ossKey)
+    if (!exists) {
+      await putPatentImage(ossKey, assetContent, assetImage.contentType)
+    }
+    assetKeyByPatentHash.set(patentHashKey, ossKey)
   }
 
   const patentImages = reference.patent.images || []
   patentImages.push({
-    file_name: path.basename(image.fileName),
+    file_name: path.basename(usageImage.fileName),
     oss_key: ossKey,
-    content_type: image.contentType,
-    size: image.size,
-    width: image.width,
-    height: image.height,
+    content_hash: assetImage.contentHash,
+    perceptual_hash: assetImage.perceptualHash,
+    content_type: assetImage.contentType,
+    size: assetImage.size,
+    width: assetImage.width,
+    height: assetImage.height,
     is_abstract: reference.isAbstract,
+    display_rotation: match?.displayRotation || 0,
+    match_method: match?.matchMethod,
+    match_score: match?.matchScore,
+    matched_file_name: match?.matchedFileName,
   })
   reference.patent.images = patentImages
 
-  return { ossKey, result: exists ? 'skipped' : 'uploaded' }
+  return { ossKey, result: existingAssetKey || exists ? 'skipped' : 'uploaded' }
 }
 
+function getPatentImageMatchKey(patentNumber: string, imageKey: string): string {
+  return patentNumber + '\u0000' + imageKey
+}
+
+function toMatcherImage(entry: ReferencedZipImage) {
+  return {
+    fileName: entry.image.fileName,
+    content: entry.content,
+    contentHash: entry.image.contentHash,
+    width: entry.image.width,
+    height: entry.image.height,
+  }
+}
+
+async function buildImageAssetMatches(
+  referencesByName: Map<string, PatentImageReference[]>,
+  imagesByName: Map<string, ReferencedZipImage>,
+): Promise<Map<string, ImageAssetMatch>> {
+  const patentsByNumber = new Map<string, ParsedPatent>()
+  for (const references of referencesByName.values()) {
+    for (const reference of references) {
+      patentsByNumber.set(reference.patent.patent_number, reference.patent)
+    }
+  }
+
+  const matches = new Map<string, ImageAssetMatch>()
+  for (const patent of patentsByNumber.values()) {
+    if (!patent.abstract_figure) continue
+    const abstractKey = getImageMapKey(patent.abstract_figure)
+    const abstractEntry = imagesByName.get(abstractKey)
+    if (!abstractEntry) continue
+
+    const drawingEntries = (patent.image_files || [])
+      .map((fileName) => getImageMapKey(fileName))
+      .filter((imageKey) => imageKey !== abstractKey)
+      .map((imageKey) => imagesByName.get(imageKey))
+      .filter((entry): entry is ReferencedZipImage => Boolean(entry))
+
+    const match = await matchPatentAbstractToDrawing(
+      toMatcherImage(abstractEntry),
+      drawingEntries.map(toMatcherImage),
+    )
+    if (!match) continue
+
+    const canonicalImageKey = getImageMapKey(match.drawingFileName)
+    matches.set(getPatentImageMatchKey(patent.patent_number, abstractKey), {
+      canonicalImageKey,
+      displayRotation: match.rotation,
+      matchMethod: match.method,
+      matchScore: match.score,
+      matchedFileName: path.basename(match.drawingFileName),
+    })
+  }
+
+  return matches
+}
 async function uploadReferencedPatentImages(
   batchCode: string,
   zipFile: string,
@@ -211,6 +312,7 @@ async function uploadReferencedPatentImages(
   const failures: ImageUploadFailure[] = []
   const active = new Set<Promise<void>>()
   const seenImageKeys = new Set<string>()
+  const assetKeyByPatentHash = new Map<string, string>()
 
   const updateProgress = () => {
     patchProcessProgress(batchCode, {
@@ -233,8 +335,9 @@ async function uploadReferencedPatentImages(
 
   const schedule = async (
     reference: PatentImageReference,
-    image: ZipImageEntry,
-    content: Buffer,
+    usageEntry: ReferencedZipImage,
+    assetEntry: ReferencedZipImage,
+    match?: ImageAssetMatch,
   ) => {
     await waitForSlot()
     if (isCancelled()) return
@@ -243,24 +346,27 @@ async function uploadReferencedPatentImages(
       const ossKey = buildPatentImageKey(
         batchCode,
         reference.patent.patent_number,
-        image.fileName,
+        assetEntry.image.fileName,
       )
       try {
         const result = await attachPatentImage(
           batchCode,
           reference,
-          image,
-          content,
+          usageEntry.image,
+          assetEntry.image,
+          assetEntry.content,
+          assetKeyByPatentHash,
+          match,
         )
         if (result.result === 'skipped') stats.skipped++
         else stats.uploaded++
       } catch (error) {
         stats.failed++
         failures.push({
-          fileName: image.fileName,
+          fileName: usageEntry.image.fileName,
           patentNumber: reference.patent.patent_number,
           ossKey,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: error instanceof Error ? error.message : '未知错误',
         })
       } finally {
         updateProgress()
@@ -280,6 +386,7 @@ async function uploadReferencedPatentImages(
 
   updateProgress()
 
+  const imagesByName = new Map<string, ReferencedZipImage>()
   const result = await forEachZipEntryBuffer(
     zipFile,
     async (fileName, content) => {
@@ -290,26 +397,46 @@ async function uploadReferencedPatentImages(
       if (seenImageKeys.has(imageKey)) return
       seenImageKeys.add(imageKey)
 
-      const image: ZipImageEntry = {
-        fileName,
-        contentType: getImageContentType(fileName),
-        size: content.length,
-        ...getJpegDimensions(content),
-      }
-
-      for (const reference of references) {
-        await schedule(reference, image, content)
-      }
+      imagesByName.set(imageKey, {
+        image: {
+          fileName,
+          contentHash: getImageContentHash(content),
+          contentType: getImageContentType(fileName),
+          size: content.length,
+          ...getJpegDimensions(content),
+        },
+        content,
+      })
     },
     (fileName) =>
       isPatentImageFile(fileName) &&
       referencesByName.has(getImageMapKey(fileName)),
   )
 
+  const matchesByPatentImage = await buildImageAssetMatches(
+    referencesByName,
+    imagesByName,
+  )
+
+  for (const [imageKey, references] of referencesByName) {
+    const usageEntry = imagesByName.get(imageKey)
+    if (!usageEntry) continue
+
+    for (const reference of references) {
+      const match = matchesByPatentImage.get(
+        getPatentImageMatchKey(reference.patent.patent_number, imageKey),
+      )
+      const assetEntry = match
+        ? imagesByName.get(match.canonicalImageKey) || usageEntry
+        : usageEntry
+      await schedule(reference, usageEntry, assetEntry, match)
+    }
+  }
+
   await Promise.all(active)
 
   if (isCancelled()) {
-    throw new Error('任务已取消')
+    throw new Error('Task cancelled')
   }
 
   if (failures.length > 0) {
@@ -359,15 +486,12 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     const tempPath = getTempPath(batchCode)
     const extractDir = getTempPath(`${batchCode}/extracted`)
 
-    // === 阶段 1：外层解压（内层 ZIP 仍写磁盘，用于 CRC 校验） ===
-
     let innerZips = fs.existsSync(extractDir)
       ? fs
           .readdirSync(extractDir)
           .filter((f) => f.toUpperCase().endsWith('.ZIP'))
       : []
 
-    // 跳过解压前验证已有内层 ZIP 的结构完整性
     if (innerZips.length > 0) {
       let allValid = true
       for (const f of innerZips) {
@@ -382,7 +506,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         await addLog(
           batchCode,
           'warn',
-          '已解压文件中存在损坏的 ZIP，将重新解压',
+          '已解压目录中存在损坏的内层 ZIP，将重新解压',
         )
         fs.rmSync(extractDir, { recursive: true, force: true })
         fs.mkdirSync(extractDir, { recursive: true })
@@ -397,7 +521,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           await addLog(
             batchCode,
             'info',
-            `解压外层压缩包: ${filesToExtract.length} 个文件`,
+            `解压外层压缩包：${filesToExtract.length} 个文件`,
           )
 
           await extractFiles(
@@ -414,7 +538,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
             await addLog(
               batchCode,
               'info',
-              `合并分卷 ZIP: ${group.baseName} (${group.splitParts.length + 1} 个文件)`,
+              `合并分卷 ZIP：${group.baseName}（${group.splitParts.length + 1} 个文件）`,
             )
           },
         },
@@ -427,27 +551,23 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     if (cancelled) throw new Error('任务已取消')
 
-    // === 阶段 2：CRC 校验（验证内层 ZIP 完整性） ===
-
     await runExtractedFilesVerification(batchCode, extractDir)
 
     if (innerZips.length === 0) {
       throw new Error('未找到内层 ZIP 文件')
     }
 
-    // === 阶段 3：流式解析 XML（不写磁盘） ===
-
-    await addLog(batchCode, 'info', `流式解析 ${innerZips.length} 个内层 ZIP`)
+    await addLog(batchCode, 'info', `开始流式解析 ${innerZips.length} 个内层 ZIP`)
 
     const uploadImages = shouldUploadImagesDuringProcess()
     if (uploadImages && !isOssConfigured()) {
-      throw new Error('OSS 配置未设置，无法存储专利附图')
+      throw new Error('OSS/MinIO 未配置，无法存储专利附图')
     }
     if (!uploadImages) {
       await addLog(
         batchCode,
         'info',
-        '处理步骤跳过附图上传，仅解析 XML 生成 parsed.json',
+        '处理步骤已跳过附图上传，仅解析 XML 并生成 parsed.json',
       )
     }
 
@@ -488,7 +608,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         imageSkipped: skippedImageCount,
         imageFailed: 0,
       })
-      await addLog(batchCode, 'info', `开始处理内层 ZIP: ${innerZips[i]}`)
+      await addLog(batchCode, 'info', `开始处理内层 ZIP：${innerZips[i]}`)
       const xmlResult = await forEachZipEntryBuffer(
         zipFile,
         (fileName, content) => {
@@ -502,16 +622,13 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         isPatentXmlFile,
       )
 
-      // 过滤专利：只保留符合 IPC 或实体白名单的专利
       const filterResult = filterPatents(zipPatents)
       totalFilteredOut += filterResult.skipped
 
-      // 将过滤后的专利加入累计数组
       for (const patent of filterResult.filtered) {
         patents.push(patent)
       }
 
-      // 为过滤后的专利构建附图引用
       const referencesByName = new Map<string, PatentImageReference[]>()
       for (const patent of filterResult.filtered) {
         addPatentImageReferences(referencesByName, patent)
@@ -529,7 +646,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       await addLog(
         batchCode,
         'info',
-        `${innerZips[i]}: XML 解析 ${xmlResult.processed} 个, 原始专利 ${zipPatents.length} 条, 过滤后 ${filterResult.filtered.length} 条 (IPC匹配${filterResult.ipcMatched} + 实体匹配${filterResult.entityMatched} + 双重匹配${filterResult.bothMatched}, 过滤掉 ${filterResult.skipped} 条), 引用附图 ${referencesByName.size} 个文件`,
+        `${innerZips[i]}：已解析 ${xmlResult.processed} 个 XML，原始专利 ${zipPatents.length} 条，筛选后 ${filterResult.filtered.length} 条，引用附图文件 ${referencesByName.size} 个`,
       )
 
       if (cancelled) throw new Error('任务已取消')
@@ -549,13 +666,13 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
         await addLog(
           batchCode,
           'info',
-          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${imageResult.processed} 张引用附图处理, ${filterResult.filtered.length} 条专利, 上传 ${imageResult.stats.uploaded} 张, 跳过 ${imageResult.stats.skipped} 张, 失败 ${imageResult.stats.failed} 张, ${patents.length} 条累计专利`,
+          `${innerZips[i]}：已解析 ${xmlResult.processed} 个 XML，处理引用附图 ${imageResult.processed} 张，上传 ${imageResult.stats.uploaded} 张，跳过 ${imageResult.stats.skipped} 张，失败 ${imageResult.stats.failed} 张，累计专利 ${patents.length} 条`,
         )
       } else {
         await addLog(
           batchCode,
           'info',
-          `${innerZips[i]}: ${xmlResult.processed} 个 XML 处理, ${filterResult.filtered.length} 条专利, 跳过附图上传, ${patents.length} 条累计专利`,
+          `${innerZips[i]}：已解析 ${xmlResult.processed} 个 XML，筛选后专利 ${filterResult.filtered.length} 条，已跳过附图上传，累计专利 ${patents.length} 条`,
         )
       }
       updateBatchProgress(batchCode, undefined, i + 1)
@@ -567,11 +684,9 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     }
 
     if (patents.length === 0) {
-      throw new Error('未解析到任何符合过滤条件的专利数据')
+      throw new Error('没有符合筛选条件的专利')
     }
 
-    // 将解析结果写入中间文件，供导入步骤使用
-    // 清除冗余的 description（与 description_structured 内容重复），避免 parsed.json 超过 V8 字符串上限
     for (const p of patents) {
       if (p.description_structured) {
         p.description = undefined
@@ -585,7 +700,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     await addLog(
       batchCode,
       'info',
-      `处理完成: ${patents.length} 条专利数据, ${uploadedImageCount} 张附图上传, ${skippedImageCount} 张已存在跳过, 过滤掉 ${totalFilteredOut} 条不符合条件的专利`,
+      `处理完成：${patents.length} 条专利，上传附图 ${uploadedImageCount} 张，跳过附图 ${skippedImageCount} 张，过滤掉 ${totalFilteredOut} 条不符合条件的专利`,
     )
 
     return {
@@ -601,9 +716,9 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
     }
   } catch (error) {
     const errorMessage =
-      error instanceof Error ? error.message : 'Unknown error'
+      error instanceof Error ? error.message : '未知错误'
     await updateBatchStatus(batchCode, 'failed', errorMessage)
-    await addLog(batchCode, 'error', `处理失败: ${errorMessage}`)
+    await addLog(batchCode, 'error', `处理失败：${errorMessage}`)
     return { success: false, batchCode, error: errorMessage }
   } finally {
     runningTasks.delete(batchCode)
@@ -611,7 +726,6 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
   }
 }
 
-// 解压完成后自动校验内层 ZIP 的 CRC 和结构完整性。
 export async function runExtractedFilesVerification(
   batchCode: string,
   extractDir: string,
@@ -621,13 +735,13 @@ export async function runExtractedFilesVerification(
     batchCode,
     extractCheck.passed ? 'info' : 'error',
     extractCheck.passed
-      ? `[自动校验] 解压文件 CRC 通过: ${extractCheck.checkedFiles} 个文件`
-      : `[自动校验] 解压文件 CRC 失败: ${extractCheck.failures.length} 个问题`,
+      ? `[自动校验] 解压文件 CRC 通过：${extractCheck.checkedFiles} 个文件`
+      : `[自动校验] 解压文件 CRC 失败：${extractCheck.failures.length} 个问题`,
     extractCheck.passed ? undefined : { failures: extractCheck.failures },
   )
   if (!extractCheck.passed) {
     throw new Error(
-      `CRC 完整性检测失败:\n${formatIntegrityReport(extractCheck)}`,
+      'CRC 完整性检测失败：\n' + formatIntegrityReport(extractCheck),
     )
   }
 }

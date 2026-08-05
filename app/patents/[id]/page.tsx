@@ -1,6 +1,6 @@
 'use client'
 
-import { use } from 'react'
+import { use, type CSSProperties } from 'react'
 import useSWR from 'swr'
 import Link from 'next/link'
 import Image from 'next/image'
@@ -53,6 +53,12 @@ const fetcher = async (url: string) => {
     throw error
   }
   return res.json()
+}
+
+function getImageRotationStyle(rotation?: number | null): CSSProperties | undefined {
+  const normalized = (((rotation || 0) % 360) + 360) % 360
+  if (normalized === 0) return undefined
+  return { transform: `rotate(${normalized}deg)` }
 }
 
 function DescriptionSection({
@@ -180,7 +186,7 @@ function parseDrawingCaptions(
   const regex = /(?:图|Figure|Fig\.?)\s*(\d+|[一二三四五六七八九十百千]+)\s*(?:[:：是为]?\s*)([^；。\n\r]+)/gi
   let match
   while ((match = regex.exec(text)) !== null) {
-    let numStr = match[1]
+    const numStr = match[1]
     let num: number
 
     // 转换中文数字
@@ -709,6 +715,7 @@ export default function PatentDetailPage({
                               unoptimized
                               sizes="(max-width: 1280px) 100vw, 896px"
                               className="object-contain"
+                              style={getImageRotationStyle(abstractImage.display_rotation)}
                             />
                           </div>
                           <figcaption className="text-muted-foreground border-t px-4 py-2 text-xs">
@@ -760,6 +767,7 @@ export default function PatentDetailPage({
                                 unoptimized
                                 sizes="(max-width: 768px) 100vw, 50vw"
                                 className="object-contain"
+                                style={getImageRotationStyle(image.display_rotation)}
                               />
                             </div>
                             <figcaption className="text-muted-foreground flex items-center justify-between gap-3 border-t px-3 py-2 text-xs">
