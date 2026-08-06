@@ -361,6 +361,26 @@ describe('xml-parser — 完整字段解析', () => {
       expect(p.image_files).toContain('201510163325.JPG')
     })
 
+    it('提取 TIFF 附图', () => {
+      const xml = inventionXml
+        .replace(
+          '<Image he="341" wi="1000" file="201510163325.JPG" imgContent="undefined" imgFormat="JPEG"/>',
+          '<Image he="341" wi="1000" file="202080024123.TIF" imgContent="undefined" imgFormat="TIFF"/>',
+        )
+        .replace(
+          '<Description>',
+          '<Description><Paragraphs><Image id="if0001" file="312390.TIF" imgContent="drawing" imgFormat="TIFF"/><Image id="if0002" file="figure.PNG" imgContent="drawing" imgFormat="PNG"/><Image id="if0003" file="diagram.webp" imgContent="drawing" imgFormat="WEBP"/></Paragraphs>',
+        )
+      const p = parsePatentXml(xml, 'invention')!
+      expect(p.abstract_figure).toBe('202080024123.TIF')
+      expect(p.image_files).toEqual([
+        '202080024123.TIF',
+        '312390.TIF',
+        'figure.PNG',
+        'diagram.webp',
+      ])
+    })
+
     it('提取结构化权利要求', () => {
       const p = parsePatentXml(inventionXml, 'invention')!
       expect(p.claims_structured).toHaveLength(2)

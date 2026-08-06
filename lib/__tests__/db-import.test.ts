@@ -86,8 +86,9 @@ describe('insertPatents import result', () => {
   })
 
   it('keeps successful recursive inserts and preserves failed patent details', async () => {
-    pgMock.connect.mockImplementation(async () =>
-      createClient((sql, params = []) => {
+    const clients: MockClient[] = []
+    pgMock.connect.mockImplementation(async () => {
+      const client = createClient((sql, params = []) => {
         if (!sql.includes('INSERT INTO cnipa.patent')) {
           return { rows: [], rowCount: 0 }
         }
@@ -114,8 +115,10 @@ describe('insertPatents import result', () => {
           ],
           rowCount: 1,
         }
-      }),
-    )
+      })
+      clients.push(client)
+      return client
+    })
 
     const { insertPatents } = await import('../db')
     const result = await insertPatents('batch-1', [
@@ -134,6 +137,10 @@ describe('insertPatents import result', () => {
         error: 'invalid input syntax for type date',
       },
     ])
+    expect(clients[0]?.release).toHaveBeenCalled()
+    expect(clients[0]!.release.mock.invocationCallOrder[0]).toBeLessThan(
+      pgMock.connect.mock.invocationCallOrder[1],
+    )
   })
 
   it('stores patent images and refreshes abstract figure on upsert', async () => {
@@ -204,7 +211,21 @@ describe('insertPatents import result', () => {
     )
     expect(client.query).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO cnipa.patent_image'),
-      ['patent-id-1', 'asset-id-1', '100001.jpg', true, 0, null, null, null],
+      [
+        'patent-id-1',
+        'asset-id-1',
+        '100001.jpg',
+        'patents/batch-1/100001/100001.jpg',
+        'image/jpeg',
+        4,
+        null,
+        null,
+        true,
+        0,
+        null,
+        null,
+        null,
+      ],
     )
   })
 })

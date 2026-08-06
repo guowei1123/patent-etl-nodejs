@@ -105,7 +105,17 @@ function getImageMapKey(fileName: string): string {
 }
 
 function getImageContentType(fileName: string): string {
-  return fileName.toLowerCase().endsWith('.jpeg') ? 'image/jpeg' : 'image/jpeg'
+  const lowerName = fileName.toLowerCase()
+  if (lowerName.endsWith('.png')) return 'image/png'
+  if (lowerName.endsWith('.gif')) return 'image/gif'
+  if (lowerName.endsWith('.bmp')) return 'image/bmp'
+  if (lowerName.endsWith('.webp')) return 'image/webp'
+  if (lowerName.endsWith('.tif') || lowerName.endsWith('.tiff'))
+    return 'image/tiff'
+  if (lowerName.endsWith('.jp2') || lowerName.endsWith('.j2k'))
+    return 'image/jp2'
+  if (lowerName.endsWith('.svg')) return 'image/svg+xml'
+  return 'image/jpeg'
 }
 
 function getImageContentHash(content: Buffer): string {
@@ -230,7 +240,10 @@ async function attachPatentImage(
   return { ossKey, result: existingAssetKey || exists ? 'skipped' : 'uploaded' }
 }
 
-function getPatentImageMatchKey(patentNumber: string, imageKey: string): string {
+function getPatentImageMatchKey(
+  patentNumber: string,
+  imageKey: string,
+): string {
   return patentNumber + '\u0000' + imageKey
 }
 
@@ -245,6 +258,8 @@ function toMatcherImage(entry: ReferencedZipImage) {
 }
 
 async function buildImageAssetMatches(
+  batchCode: string,
+  zipFile: string,
   referencesByName: Map<string, PatentImageReference[]>,
   imagesByName: Map<string, ReferencedZipImage>,
 ): Promise<Map<string, ImageAssetMatch>> {
@@ -255,12 +270,24 @@ async function buildImageAssetMatches(
     }
   }
 
+  const allPatents = Array.from(patentsByNumber.values())
+  const totalPatents = allPatents.length
+  const matchLogInterval = 200
+  let processed = 0
+  let matched = 0
+
   const matches = new Map<string, ImageAssetMatch>()
-  for (const patent of patentsByNumber.values()) {
-    if (!patent.abstract_figure) continue
+  for (const patent of allPatents) {
+    if (!patent.abstract_figure) {
+      processed++
+      continue
+    }
     const abstractKey = getImageMapKey(patent.abstract_figure)
     const abstractEntry = imagesByName.get(abstractKey)
-    if (!abstractEntry) continue
+    if (!abstractEntry) {
+      processed++
+      continue
+    }
 
     const drawingEntries = (patent.image_files || [])
       .map((fileName) => getImageMapKey(fileName))
@@ -272,16 +299,26 @@ async function buildImageAssetMatches(
       toMatcherImage(abstractEntry),
       drawingEntries.map(toMatcherImage),
     )
-    if (!match) continue
+    processed++
+    if (match) {
+      matched++
+      const canonicalImageKey = getImageMapKey(match.drawingFileName)
+      matches.set(getPatentImageMatchKey(patent.patent_number, abstractKey), {
+        canonicalImageKey,
+        displayRotation: match.rotation,
+        matchMethod: match.method,
+        matchScore: match.score,
+        matchedFileName: path.basename(match.drawingFileName),
+      })
+    }
 
-    const canonicalImageKey = getImageMapKey(match.drawingFileName)
-    matches.set(getPatentImageMatchKey(patent.patent_number, abstractKey), {
-      canonicalImageKey,
-      displayRotation: match.rotation,
-      matchMethod: match.method,
-      matchScore: match.score,
-      matchedFileName: path.basename(match.drawingFileName),
-    })
+    if (processed % matchLogInterval === 0 || processed === totalPatents) {
+      await addLog(
+        batchCode,
+        'info',
+        `${path.basename(zipFile)}: 附图去重匹配进度 ${processed}/${totalPatents}，已命中重复 ${matched} 个`,
+      )
+    }
   }
 
   return matches
@@ -414,6 +451,8 @@ async function uploadReferencedPatentImages(
   )
 
   const matchesByPatentImage = await buildImageAssetMatches(
+    batchCode,
+    zipFile,
     referencesByName,
     imagesByName,
   )
@@ -440,7 +479,9 @@ async function uploadReferencedPatentImages(
   }
 
   if (failures.length > 0) {
-    throw new Error(`专利附图上传失败: ${JSON.stringify(failures.slice(0, 10))}`)
+    throw new Error(
+      `专利附图上传失败: ${JSON.stringify(failures.slice(0, 10))}`,
+    )
   }
 
   for (const references of referencesByName.values()) {
@@ -557,7 +598,11 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       throw new Error('未找到内层 ZIP 文件')
     }
 
-    await addLog(batchCode, 'info', `开始流式解析 ${innerZips.length} 个内层 ZIP`)
+    await addLog(
+      batchCode,
+      'info',
+      `开始流式解析 ${innerZips.length} 个内层 ZIP`,
+    )
 
     const uploadImages = shouldUploadImagesDuringProcess()
     if (uploadImages && !isOssConfigured()) {
@@ -715,8 +760,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       },
     }
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : '未知错误'
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
     await updateBatchStatus(batchCode, 'failed', errorMessage)
     await addLog(batchCode, 'error', `处理失败：${errorMessage}`)
     return { success: false, batchCode, error: errorMessage }
@@ -730,18 +774,50 @@ export async function runExtractedFilesVerification(
   batchCode: string,
   extractDir: string,
 ): Promise<void> {
-  const extractCheck = await verifyExtractedFilesCrc(extractDir)
+  setProcessProgress(batchCode, {
+    phase: 'verifying_crc',
+    currentZip: null,
+    processedZips: 0,
+    totalZips: 0,
+    xmlProcessed: 0,
+    patentCount: 0,
+    imageTotal: 0,
+    imageUploaded: 0,
+    imageSkipped: 0,
+    imageFailed: 0,
+  })
+
+  let lastLoggedCount = 0
+  const extractCheck = await verifyExtractedFilesCrc(
+    extractDir,
+    ({ currentFile, checkedCount, totalFiles }) => {
+      patchProcessProgress(batchCode, {
+        phase: 'verifying_crc',
+        currentZip: currentFile,
+        processedZips: checkedCount,
+        totalZips: totalFiles,
+      })
+      if (checkedCount - lastLoggedCount >= 1 || checkedCount === totalFiles) {
+        lastLoggedCount = checkedCount
+        void addLog(
+          batchCode,
+          'info',
+          `CRC 校验进度 ${checkedCount}/${totalFiles}: ${currentFile}`,
+        )
+      }
+    },
+  )
   await addLog(
     batchCode,
     extractCheck.passed ? 'info' : 'error',
     extractCheck.passed
-      ? `[自动校验] 解压文件 CRC 通过：${extractCheck.checkedFiles} 个文件`
-      : `[自动校验] 解压文件 CRC 失败：${extractCheck.failures.length} 个问题`,
+      ? `[自动校验] 解压文件 CRC 通过: ${extractCheck.checkedFiles} 个文件`
+      : `[自动校验] 解压文件 CRC 失败: ${extractCheck.failures.length} 个问题`,
     extractCheck.passed ? undefined : { failures: extractCheck.failures },
   )
   if (!extractCheck.passed) {
     throw new Error(
-      'CRC 完整性检测失败：\n' + formatIntegrityReport(extractCheck),
+      'CRC 完整性检测失败:\n' + formatIntegrityReport(extractCheck),
     )
   }
 }

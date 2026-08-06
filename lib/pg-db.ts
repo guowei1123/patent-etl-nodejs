@@ -946,6 +946,13 @@ export async function insertPatents(
   if (patents.length === 0) return { insertedCount: 0, failures: [] }
 
   const client = await pool.connect()
+  let clientReleased = false
+  const releaseClient = () => {
+    if (!clientReleased) {
+      client.release()
+      clientReleased = true
+    }
+  }
 
   try {
     await client.query('BEGIN')
@@ -1157,6 +1164,10 @@ export async function insertPatents(
           patentId,
           image.oss_key,
           image.file_name,
+          image.content_type,
+          image.size,
+          image.width || null,
+          image.height || null,
           image.is_abstract,
           image.display_rotation || 0,
           image.match_method || null,
@@ -1225,12 +1236,41 @@ export async function insertPatents(
     )
     const assetIdsByOssKey = await upsertImageAssets(client, imageAssetRows)
     const patentImageRows = imageRows
-      .map(([patentId, ossKey, fileName, isAbstract, displayRotation, matchMethod, matchScore, matchedFileName]) => {
-        const assetId = assetIdsByOssKey.get(String(ossKey))
-        return assetId
-          ? [patentId, assetId, fileName, isAbstract, displayRotation, matchMethod, matchScore, matchedFileName]
-          : null
-      })
+      .map(
+        ([
+          patentId,
+          ossKey,
+          fileName,
+          contentType,
+          size,
+          width,
+          height,
+          isAbstract,
+          displayRotation,
+          matchMethod,
+          matchScore,
+          matchedFileName,
+        ]) => {
+          const assetId = assetIdsByOssKey.get(String(ossKey))
+          return assetId
+            ? [
+                patentId,
+                assetId,
+                fileName,
+                ossKey,
+                contentType,
+                size,
+                width,
+                height,
+                isAbstract,
+                displayRotation,
+                matchMethod,
+                matchScore,
+                matchedFileName,
+              ]
+            : null
+        },
+      )
       .filter((row): row is unknown[] => row !== null)
 
     await multiRowInsert(
@@ -1240,6 +1280,11 @@ export async function insertPatents(
         'patent_id',
         'asset_id',
         'file_name',
+        'oss_key',
+        'content_type',
+        'size',
+        'width',
+        'height',
         'is_abstract',
         'display_rotation',
         'match_method',
@@ -1260,6 +1305,7 @@ export async function insertPatents(
       }
     }
 
+    releaseClient()
     const mid = Math.floor(patents.length / 2)
     const left = await insertPatents(batchCode, patents.slice(0, mid))
     const right = await insertPatents(batchCode, patents.slice(mid))
@@ -1268,7 +1314,7 @@ export async function insertPatents(
       failures: [...left.failures, ...right.failures],
     }
   } finally {
-    client.release()
+    releaseClient()
   }
 }
 
@@ -1832,7 +1878,7 @@ function normalizeSyncLogMessage(message: string): string {
     return `开始处理内层 ZIP：${match[1]}`
   }
 
-  let normalized = message
+  const normalized = message
     .replace(/^澶勭悊澶辫触:/, '处理失败：')
     .replace(/^瀵煎叆澶辫触:/, '导入失败：')
     .replace(/^婢跺嫮鎮婃径杈Е:/, '处理失败：')

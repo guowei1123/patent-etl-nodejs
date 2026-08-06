@@ -417,6 +417,7 @@ function DownloadFileList({
 function ProcessProgressCard({ progress }: { progress: ProcessProgress }) {
   const phaseLabels: Record<ProcessProgress['phase'], string> = {
     preparing: '准备处理',
+    verifying_crc: 'CRC 校验',
     parsing_xml: '解析 XML',
     uploading_images: '上传附图',
   }
@@ -462,6 +463,33 @@ function ProcessProgressCard({ progress }: { progress: ProcessProgress }) {
             </p>
           </div>
         </div>
+
+        {progress.phase === 'verifying_crc' && progress.totalZips > 0 && (
+          <div>
+            <div className="text-muted-foreground mb-2 flex items-center justify-between text-xs">
+              <span>
+                CRC 校验 {progress.processedZips.toLocaleString()} /{' '}
+                {progress.totalZips.toLocaleString()}
+              </span>
+              <span>
+                {Math.round(
+                  (progress.processedZips / progress.totalZips) * 100,
+                )}
+                %
+              </span>
+            </div>
+            <Progress
+              value={
+                progress.totalZips > 0
+                  ? Math.round(
+                      (progress.processedZips / progress.totalZips) * 100,
+                    )
+                  : 0
+              }
+              className="h-2"
+            />
+          </div>
+        )}
 
         {progress.phase === 'uploading_images' && progress.imageTotal > 0 && (
           <div>

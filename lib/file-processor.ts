@@ -780,7 +780,7 @@ export function isPatentXmlFile(fileName: string): boolean {
 
 export function isPatentImageFile(fileName: string): boolean {
   const lowerName = fileName.toLowerCase()
-  return lowerName.endsWith('.jpg') || lowerName.endsWith('.jpeg')
+  return /\.(jpe?g|png|gif|bmp|webp|tiff?|jp2|j2k|svg)$/i.test(lowerName)
 }
 
 // 流式遍历 ZIP 中的文件 entry，将内容收集为 Buffer 后回调，不写磁盘

@@ -373,6 +373,7 @@ export interface FileDownloadItem {
 
 export type ProcessProgressPhase =
   | 'preparing'
+  | 'verifying_crc'
   | 'parsing_xml'
   | 'uploading_images'
 

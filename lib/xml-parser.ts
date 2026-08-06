@@ -229,7 +229,8 @@ function extractImageFiles(root: unknown): string[] {
     const obj = node as Record<string, unknown>
     if (parentKey === 'Image') {
       const file = extractText(obj['@_file'])
-      if (file && /\.(jpe?g)$/i.test(file)) files.push(file)
+      if (file && /\.(jpe?g|png|gif|bmp|webp|tiff?|jp2|j2k|svg)$/i.test(file))
+        files.push(file)
     }
 
     for (const [key, value] of Object.entries(obj)) {
@@ -349,9 +350,7 @@ function extractParagraphsUnder(section: unknown): string[] {
 
 // 从 Disclosure(发明内容)文本中拆分技术问题/技术方案/有益效果
 // CNIPA V2.2.1 schema 下这三类信息以 Paragraphs 平铺,靠段落文本语义切分
-function splitDisclosureSections(
-  paragraphs: string[],
-): {
+function splitDisclosureSections(paragraphs: string[]): {
   technical_problem?: string
   technical_solution?: string
   beneficial_effect?: string
@@ -399,8 +398,7 @@ function splitDisclosureSections(
       problemIdx = i
     if (solutionIdx < 0 && solutionMarkers.some((re) => re.test(p)))
       solutionIdx = i
-    if (effectIdx < 0 && effectMarkers.some((re) => re.test(p)))
-      effectIdx = i
+    if (effectIdx < 0 && effectMarkers.some((re) => re.test(p))) effectIdx = i
   }
 
   const result: {
@@ -428,7 +426,11 @@ function splitDisclosureSections(
   }
 
   // 兜底: 若未识别到 problem 但有 solution,effect 之前的内容视为问题
-  if (!result.technical_problem && result.technical_solution && problemIdx < 0) {
+  if (
+    !result.technical_problem &&
+    result.technical_solution &&
+    problemIdx < 0
+  ) {
     const end = solutionIdx >= 0 ? solutionIdx : paragraphs.length
     const seg = paragraphs.slice(0, end).join('\n').trim()
     if (seg) result.technical_problem = seg
@@ -485,8 +487,7 @@ function extractDescription(root: unknown): {
 
   const technicalField = extractSection('TechnicalField') || undefined
   const backgroundArt = extractSection('BackgroundArt') || undefined
-  const drawingsDescription =
-    extractSection('DrawingsDescription') || undefined
+  const drawingsDescription = extractSection('DrawingsDescription') || undefined
   const embodiment =
     extractSection('InventionMode') ||
     extractSection('ModeForInvention') ||

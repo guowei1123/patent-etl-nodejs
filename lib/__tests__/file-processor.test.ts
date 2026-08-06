@@ -7,6 +7,7 @@ import {
   mergeSplitZip,
   withPreparedArchiveFiles,
   patchMergedZipEOCD,
+  isPatentImageFile,
 } from '../file-processor'
 import type { SplitArchiveGroup } from '../file-processor'
 
@@ -24,6 +25,23 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true })
+})
+
+describe('isPatentImageFile', () => {
+  it('accepts common patent image files', () => {
+    expect(isPatentImageFile('drawing.JPG')).toBe(true)
+    expect(isPatentImageFile('drawing.jpeg')).toBe(true)
+    expect(isPatentImageFile('drawing.PNG')).toBe(true)
+    expect(isPatentImageFile('drawing.gif')).toBe(true)
+    expect(isPatentImageFile('drawing.bmp')).toBe(true)
+    expect(isPatentImageFile('drawing.webp')).toBe(true)
+    expect(isPatentImageFile('drawing.TIF')).toBe(true)
+    expect(isPatentImageFile('drawing.tiff')).toBe(true)
+    expect(isPatentImageFile('drawing.jp2')).toBe(true)
+    expect(isPatentImageFile('drawing.j2k')).toBe(true)
+    expect(isPatentImageFile('drawing.svg')).toBe(true)
+    expect(isPatentImageFile('drawing.txt')).toBe(false)
+  })
 })
 
 describe('groupArchiveFiles', () => {

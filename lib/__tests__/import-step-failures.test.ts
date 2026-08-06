@@ -21,7 +21,9 @@ const fileMock = vi.hoisted(() => ({
 vi.mock('../db', () => dbMock)
 vi.mock('../file-processor', () => ({
   getTempPath: (subdir?: string) => {
-    const target = subdir ? path.join(fileMock.tempRoot, subdir) : fileMock.tempRoot
+    const target = subdir
+      ? path.join(fileMock.tempRoot, subdir)
+      : fileMock.tempRoot
     fs.mkdirSync(target, { recursive: true })
     return target
   },
@@ -47,7 +49,10 @@ describe('runImportStep failure details', () => {
     const patents = [patent('ok-1'), patent('bad'), patent('ok-2')]
     const parsedDir = path.join(fileMock.tempRoot, 'batch-1')
     fs.mkdirSync(parsedDir, { recursive: true })
-    fs.writeFileSync(path.join(parsedDir, 'parsed.json'), JSON.stringify(patents))
+    fs.writeFileSync(
+      path.join(parsedDir, 'parsed.json'),
+      JSON.stringify(patents),
+    )
 
     dbMock.getBatchByCode.mockResolvedValue({
       batch_code: 'batch-1',
@@ -74,16 +79,16 @@ describe('runImportStep failure details', () => {
     const result = await runImportStep('batch-1')
 
     expect(result.success).toBe(false)
-    expect(result.error).toBe('导入未完成: 已导入 2 / 3 条记录，失败 1 条')
+    expect(result.error).toBe('导入未完成：已导入 2 / 3 条记录，失败 1 条')
     expect(dbMock.updateBatchStatus).toHaveBeenLastCalledWith(
       'batch-1',
       'failed',
-      '导入未完成: 已导入 2 / 3 条记录，失败 1 条',
+      '导入未完成：已导入 2 / 3 条记录，失败 1 条',
     )
     expect(dbMock.addLog).toHaveBeenLastCalledWith(
       'batch-1',
       'error',
-      '导入未完成: 已导入 2 / 3 条记录，失败 1 条',
+      '导入未完成：已导入 2 / 3 条记录，失败 1 条',
       {
         failures: [
           {

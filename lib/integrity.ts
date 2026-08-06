@@ -197,8 +197,15 @@ export function parseCrcFile(crcFilePath: string): CrcEntry[] {
 
 // ============ 解压数据 CRC 检测 ============
 
+export type CrcProgressCallback = (info: {
+  currentFile: string
+  checkedCount: number
+  totalFiles: number
+}) => void
+
 export async function verifyExtractedFilesCrc(
   extractDir: string,
+  onProgress?: CrcProgressCallback,
 ): Promise<IntegrityCheckResult> {
   const failures: IntegrityFailure[] = []
   let checkedFiles = 0
@@ -211,7 +218,6 @@ export async function verifyExtractedFilesCrc(
     }
   }
 
-  // 查找所有 CRC 文件
   const crcFiles = fs
     .readdirSync(extractDir)
     .filter((f) => f.toUpperCase().endsWith('-CRC.TXT'))
@@ -244,6 +250,11 @@ export async function verifyExtractedFilesCrc(
 
     for (const zf of zipFiles) {
       checkedFiles++
+      onProgress?.({
+        currentFile: zf,
+        checkedCount: checkedFiles,
+        totalFiles: zipFiles.length,
+      })
       try {
         await openZipForVerify(path.join(extractDir, zf))
       } catch (err) {
@@ -295,12 +306,19 @@ export async function verifyExtractedFilesCrc(
     }
   }
 
+  const totalEntries = allEntries.length
   for (const entry of allEntries) {
     checkedFiles++
     const actualFileName =
       actualZipByLowerName.get(entry.relativePath.toLowerCase()) ||
       entry.relativePath
     const zipPath = path.join(extractDir, actualFileName)
+
+    onProgress?.({
+      currentFile: entry.relativePath,
+      checkedCount: checkedFiles,
+      totalFiles: totalEntries,
+    })
 
     if (!fs.existsSync(zipPath)) {
       failures.push({
@@ -311,7 +329,6 @@ export async function verifyExtractedFilesCrc(
       continue
     }
 
-    // 计算 CRC32
     const actualCrc = await computeFileCrc32(zipPath)
 
     if (actualCrc !== entry.expectedCrc) {
@@ -324,7 +341,6 @@ export async function verifyExtractedFilesCrc(
       continue
     }
 
-    // 验证 ZIP 结构完整性
     try {
       await openZipForVerify(zipPath)
     } catch (err) {
