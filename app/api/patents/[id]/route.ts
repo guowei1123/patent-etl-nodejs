@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPatentById } from '@/lib/db'
+import { getPatentById, initializeDatabase } from '@/lib/db'
 
 // GET /api/patents/[id] - 获取专利详情
 export async function GET(
@@ -20,6 +20,7 @@ export async function GET(
       )
     }
 
+    await initializeDatabase()
     const patent = await getPatentById(id)
 
     if (!patent) {

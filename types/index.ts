@@ -173,6 +173,9 @@ export interface PatentImage {
   width: number | null
   height: number | null
   is_abstract: boolean
+  image_role: 'abstract' | 'drawing' | 'inline'
+  figure_label: string | null
+  source_section: string | null
   display_rotation: number
   match_method: string | null
   match_score: number | null
@@ -190,10 +193,20 @@ export interface ParsedPatentImage {
   width?: number
   height?: number
   is_abstract: boolean
+  image_role?: 'abstract' | 'drawing' | 'inline'
+  figure_label?: string
+  source_section?: string
   display_rotation?: number
   match_method?: string
   match_score?: number
   matched_file_name?: string
+}
+
+export interface ParsedPatentImageReference {
+  file_name: string
+  image_role: 'drawing' | 'inline'
+  figure_label?: string
+  source_section?: string
 }
 
 export interface PatentImportFailure {
@@ -326,6 +339,7 @@ export interface ParsedPatent {
   independent_claim_count?: number
   abstract_figure?: string
   image_files?: string[]
+  image_references?: ParsedPatentImageReference[]
   images?: ParsedPatentImage[]
 }
 

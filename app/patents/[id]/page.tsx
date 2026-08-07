@@ -34,7 +34,7 @@ import {
   User,
   Wrench,
 } from 'lucide-react'
-import type { Patent } from '@/types'
+import type { Patent, PatentImage } from '@/types'
 import { cn } from '@/lib/utils'
 import { toClassificationDisplayCode } from '@/lib/classification-code'
 
@@ -61,28 +61,105 @@ function getImageRotationStyle(rotation?: number | null): CSSProperties | undefi
   return { transform: `rotate(${normalized}deg)` }
 }
 
+const INLINE_IMAGE_MARKER = /\[\[PATENT_IMAGE:([^\]]+)\]\]/g
+
+type DescriptionContentPart =
+  | { type: 'text'; value: string; key: string }
+  | { type: 'image'; image: PatentImage; key: string }
+
+function splitDescriptionContent(
+  content: string,
+  images: PatentImage[],
+): DescriptionContentPart[] {
+  const imagesByFile = new Map(
+    images.map((image) => [image.file_name.toLowerCase(), image]),
+  )
+  const parts: DescriptionContentPart[] = []
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  INLINE_IMAGE_MARKER.lastIndex = 0
+
+  while ((match = INLINE_IMAGE_MARKER.exec(content)) !== null) {
+    const text = content.slice(lastIndex, match.index)
+    if (text.trim()) {
+      parts.push({ type: 'text', value: text, key: `text-${lastIndex}` })
+    }
+
+    const fileName = match[1]
+    const image = imagesByFile.get(fileName.toLowerCase())
+    if (image) {
+      parts.push({ type: 'image', image, key: `image-${image.id}` })
+    }
+    lastIndex = match.index + match[0].length
+  }
+
+  const tail = content.slice(lastIndex)
+  if (tail.trim()) {
+    parts.push({ type: 'text', value: tail, key: `text-${lastIndex}` })
+  }
+
+  return parts
+}
+
+function InlinePatentImage({ image }: { image: PatentImage }) {
+  return (
+    <figure className="bg-secondary/30 overflow-hidden rounded-lg border">
+      <div className="bg-background relative aspect-[16/9] min-h-[120px]">
+        <Image
+          src={`/api/patent-images/${image.id}`}
+          alt={image.figure_label || '图片'}
+          fill
+          unoptimized
+          sizes="(max-width: 768px) 100vw, 896px"
+          className="object-contain"
+          style={getImageRotationStyle(image.display_rotation)}
+        />
+      </div>
+      {image.figure_label && (
+        <figcaption className="text-muted-foreground border-t px-3 py-2 text-xs">
+          <span className="block truncate">{image.figure_label}</span>
+        </figcaption>
+      )}
+    </figure>
+  )
+}
+
 function DescriptionSection({
   id,
   title,
   content,
+  images = [],
 }: {
   id: string
   title: string
   content: string
+  images?: PatentImage[]
 }) {
+  const parts = splitDescriptionContent(content, images)
+
   return (
     <section
       id={id}
-      className="scroll-mt-28 flex flex-col gap-2 py-6 first:pt-0 last:pb-0"
+      className="scroll-mt-28 flex flex-col gap-3 py-6 first:pt-0 last:pb-0"
     >
       <h3 className="text-foreground text-base font-medium">{title}</h3>
-      <p className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
-        {content}
-      </p>
+      <div className="flex flex-col gap-3">
+        {parts.map((part) =>
+          part.type === 'text' ? (
+            <p
+              key={part.key}
+              className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap"
+            >
+              {part.value.trim()}
+            </p>
+          ) : (
+            <InlinePatentImage key={part.key} image={part.image} />
+          ),
+        )}
+      </div>
     </section>
   )
 }
-
 function InfoItem({
   icon: Icon,
   label,
@@ -171,45 +248,6 @@ function joinNames(items: Array<{ name: string }> | null | undefined): string {
   return joinText(items?.map((a) => a.name))
 }
 
-function parseDrawingCaptions(
-  drawingsDescription: string | undefined,
-): Map<number, string> {
-  const captions = new Map<number, string>()
-  if (!drawingsDescription) return captions
-
-  const text = drawingsDescription
-
-  // 匹配模式：支持多种格式
-  // 1. 图1是/为/：XXX
-  // 2. 图1 XXX
-  // 3. 图一/二/三... XXX
-  const regex = /(?:图|Figure|Fig\.?)\s*(\d+|[一二三四五六七八九十百千]+)\s*(?:[:：是为]?\s*)([^；。\n\r]+)/gi
-  let match
-  while ((match = regex.exec(text)) !== null) {
-    const numStr = match[1]
-    let num: number
-
-    // 转换中文数字
-    if (/[一二三四五六七八九十百千]/.test(numStr)) {
-      const cnMap: Record<string, number> = {
-        '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-        '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
-        '百': 100, '千': 1000
-      }
-      num = numStr.split('').reduce((acc, ch) => acc + (cnMap[ch] || 0), 0)
-    } else {
-      num = parseInt(numStr, 10)
-    }
-
-    const desc = match[2].trim().replace(/\s+/g, ' ')
-    if (num > 0 && !captions.has(num) && desc.length > 0) {
-      captions.set(num, desc)
-    }
-  }
-
-  return captions
-}
-
 export default function PatentDetailPage({
   params,
 }: {
@@ -290,26 +328,31 @@ export default function PatentDetailPage({
     ? [
         {
           id: 'description-technical-field',
+          sourceSection: 'TechnicalField',
           title: '技术领域',
           content: patent.description.technical_field,
         },
         {
           id: 'description-background-art',
+          sourceSection: 'BackgroundArt',
           title: '背景技术',
           content: patent.description.background_art,
         },
         {
           id: 'description-disclosure',
+          sourceSection: 'Disclosure',
           title: '发明内容',
           content: patent.description.disclosure,
         },
         {
           id: 'description-drawings-description',
+          sourceSection: 'DrawingsDescription',
           title: '附图说明',
           content: patent.description.drawings_description,
         },
         {
           id: 'description-embodiment',
+          sourceSection: 'InventionMode',
           title: '具体实施方式',
           content: patent.description.embodiment,
         },
@@ -320,6 +363,7 @@ export default function PatentDetailPage({
           id: string
           title: string
           content: string
+          sourceSection: string
         } => Boolean(section.content),
       )
     : []
@@ -327,11 +371,21 @@ export default function PatentDetailPage({
   const hasDescription = descriptionSections.length > 0
   const hasCitations = Boolean(patent.citations?.length)
   const images = patent.images ?? []
-  const abstractImage = images.find((image) => image.is_abstract)
-  const bodyImages = images.filter((image) => !image.is_abstract)
-  const drawingCaptions = parseDrawingCaptions(
-    patent.description?.drawings_description,
+  const abstractImage = images.find(
+    (image) => image.is_abstract || image.image_role === 'abstract',
   )
+  const bodyImages = images.filter(
+    (image) => !image.is_abstract && image.image_role !== 'inline',
+  )
+  const inlineImagesBySection = images
+    .filter((image) => image.image_role === 'inline')
+    .reduce((map, image) => {
+      const section = image.source_section || 'InventionMode'
+      const sectionImages = map.get(section) || []
+      sectionImages.push(image)
+      map.set(section, sectionImages)
+      return map
+    }, new Map<string, PatentImage[]>())
   const contentSections = [
     {
       id: 'section-abstract',
@@ -753,7 +807,7 @@ export default function PatentDetailPage({
                     <div className="grid gap-4 md:grid-cols-2">
                       {bodyImages.map((image, index) => {
                         const figureNum = index + 1
-                        const caption = drawingCaptions.get(figureNum)
+                        const figureLabel = image.figure_label || String(figureNum)
                         return (
                           <figure
                             key={image.id}
@@ -762,7 +816,7 @@ export default function PatentDetailPage({
                             <div className="bg-background relative aspect-[4/3]">
                               <Image
                                 src={`/api/patent-images/${image.id}`}
-                                alt={`${patent.title} 图${figureNum}`}
+                                alt={`${patent.title} ${figureLabel}`}
                                 fill
                                 unoptimized
                                 sizes="(max-width: 768px) 100vw, 50vw"
@@ -772,8 +826,7 @@ export default function PatentDetailPage({
                             </div>
                             <figcaption className="text-muted-foreground flex items-center justify-between gap-3 border-t px-3 py-2 text-xs">
                               <span className="truncate">
-                                图{figureNum}
-                                {caption ? `：${caption}` : ''}
+                                {figureLabel}
                               </span>
                             </figcaption>
                           </figure>
@@ -854,6 +907,7 @@ export default function PatentDetailPage({
                         id={section.id}
                         title={section.title}
                         content={section.content}
+                        images={inlineImagesBySection.get(section.sourceSection)}
                       />
                     ))}
                   </CardContent>

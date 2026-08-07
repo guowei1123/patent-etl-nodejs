@@ -27,7 +27,11 @@ import {
   patentImageExists,
   putPatentImage,
 } from '../oss-client'
-import type { ParsedPatent, PatentType } from '@/types'
+import type {
+  ParsedPatent,
+  ParsedPatentImageReference,
+  PatentType,
+} from '@/types'
 import type { StepResult } from './types'
 import {
   clearProcessProgress,
@@ -55,6 +59,9 @@ type PatentImageReference = {
   patent: ParsedPatent
   imageKey: string
   isAbstract: boolean
+  imageRole: 'abstract' | 'drawing' | 'inline'
+  figureLabel?: string
+  sourceSection?: string
 }
 
 type ReferencedZipImage = {
@@ -160,15 +167,19 @@ function getJpegDimensions(content: Buffer): {
   return {}
 }
 
-function getReferencedImageKeys(patent: ParsedPatent): Set<string> {
-  const referencedFiles = new Set<string>()
-  for (const fileName of patent.image_files || []) {
-    referencedFiles.add(getImageMapKey(fileName))
-  }
-  if (patent.abstract_figure) {
-    referencedFiles.add(getImageMapKey(patent.abstract_figure))
-  }
-  return referencedFiles
+function addReference(
+  referencesByName: Map<string, PatentImageReference[]>,
+  patent: ParsedPatent,
+  imageKey: string,
+  reference: Omit<PatentImageReference, 'patent' | 'imageKey'>,
+): void {
+  const refs = referencesByName.get(imageKey) || []
+  refs.push({ patent, imageKey, ...reference })
+  referencesByName.set(imageKey, refs)
+}
+
+function getImageReferenceKey(reference: ParsedPatentImageReference): string {
+  return getImageMapKey(reference.file_name)
 }
 
 function addPatentImageReferences(
@@ -178,15 +189,33 @@ function addPatentImageReferences(
   const abstractKey = patent.abstract_figure
     ? getImageMapKey(patent.abstract_figure)
     : null
+  const referencedKeys = new Set<string>()
 
-  for (const imageKey of getReferencedImageKeys(patent)) {
-    const refs = referencesByName.get(imageKey) || []
-    refs.push({
-      patent,
-      imageKey,
-      isAbstract: abstractKey === imageKey,
+  for (const reference of patent.image_references || []) {
+    const imageKey = getImageReferenceKey(reference)
+    referencedKeys.add(imageKey)
+    addReference(referencesByName, patent, imageKey, {
+      isAbstract: false,
+      imageRole: reference.image_role,
+      figureLabel: reference.figure_label,
+      sourceSection: reference.source_section,
     })
-    referencesByName.set(imageKey, refs)
+  }
+
+  for (const fileName of patent.image_files || []) {
+    const imageKey = getImageMapKey(fileName)
+    if (referencedKeys.has(imageKey)) continue
+    addReference(referencesByName, patent, imageKey, {
+      isAbstract: abstractKey === imageKey,
+      imageRole: abstractKey === imageKey ? 'abstract' : 'drawing',
+    })
+  }
+
+  if (abstractKey) {
+    addReference(referencesByName, patent, abstractKey, {
+      isAbstract: true,
+      imageRole: 'abstract',
+    })
   }
 }
 
@@ -230,6 +259,9 @@ async function attachPatentImage(
     width: assetImage.width,
     height: assetImage.height,
     is_abstract: reference.isAbstract,
+    image_role: reference.imageRole,
+    figure_label: reference.figureLabel,
+    source_section: reference.sourceSection,
     display_rotation: match?.displayRotation || 0,
     match_method: match?.matchMethod,
     match_score: match?.matchScore,
@@ -240,6 +272,13 @@ async function attachPatentImage(
   return { ossKey, result: existingAssetKey || exists ? 'skipped' : 'uploaded' }
 }
 
+function getDrawingImageKeys(patent: ParsedPatent): string[] {
+  const drawingRefs = (patent.image_references || [])
+    .filter((reference) => reference.image_role === 'drawing')
+    .map((reference) => getImageMapKey(reference.file_name))
+  if (drawingRefs.length > 0) return drawingRefs
+  return (patent.image_files || []).map((fileName) => getImageMapKey(fileName))
+}
 function getPatentImageMatchKey(
   patentNumber: string,
   imageKey: string,
@@ -289,8 +328,7 @@ async function buildImageAssetMatches(
       continue
     }
 
-    const drawingEntries = (patent.image_files || [])
-      .map((fileName) => getImageMapKey(fileName))
+    const drawingEntries = getDrawingImageKeys(patent)
       .filter((imageKey) => imageKey !== abstractKey)
       .map((imageKey) => imagesByName.get(imageKey))
       .filter((entry): entry is ReferencedZipImage => Boolean(entry))

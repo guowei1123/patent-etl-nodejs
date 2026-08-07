@@ -358,7 +358,7 @@ describe('xml-parser — 完整字段解析', () => {
     it('提取摘要附图', () => {
       const p = parsePatentXml(inventionXml, 'invention')!
       expect(p.abstract_figure).toBe('201510163325.JPG')
-      expect(p.image_files).toContain('201510163325.JPG')
+      expect(p.image_files).toBeUndefined()
     })
 
     it('提取 TIFF 附图', () => {
@@ -369,18 +369,40 @@ describe('xml-parser — 完整字段解析', () => {
         )
         .replace(
           '<Description>',
-          '<Description><Paragraphs><Image id="if0001" file="312390.TIF" imgContent="drawing" imgFormat="TIFF"/><Image id="if0002" file="figure.PNG" imgContent="drawing" imgFormat="PNG"/><Image id="if0003" file="diagram.webp" imgContent="drawing" imgFormat="WEBP"/></Paragraphs>',
+          '<Description><InventionMode><Paragraphs><Image id="if0003" file="diagram.webp" imgContent="formula" imgFormat="WEBP"/></Paragraphs></InventionMode>',
+        )
+        .replace(
+          '</Description>',
+          '</Description><Drawings><Figure num="0001" figureLabels="图1"><Image id="if0001" file="312390.TIF" imgContent="drawing" imgFormat="TIFF"/></Figure><Figure num="0002" figureLabels="图2"><Image id="if0002" file="figure.PNG" imgContent="drawing" imgFormat="PNG"/></Figure></Drawings>',
         )
       const p = parsePatentXml(xml, 'invention')!
       expect(p.abstract_figure).toBe('202080024123.TIF')
       expect(p.image_files).toEqual([
-        '202080024123.TIF',
         '312390.TIF',
         'figure.PNG',
         'diagram.webp',
       ])
+      expect(p.image_references).toEqual([
+        {
+          file_name: '312390.TIF',
+          image_role: 'drawing',
+          figure_label: '图1',
+        },
+        {
+          file_name: 'figure.PNG',
+          image_role: 'drawing',
+          figure_label: '图2',
+        },
+        {
+          file_name: 'diagram.webp',
+          image_role: 'inline',
+          source_section: 'InventionMode',
+        },
+      ])
+      expect(p.description_structured!.embodiment).toContain(
+        '[[PATENT_IMAGE:diagram.webp]]',
+      )
     })
-
     it('提取结构化权利要求', () => {
       const p = parsePatentXml(inventionXml, 'invention')!
       expect(p.claims_structured).toHaveLength(2)

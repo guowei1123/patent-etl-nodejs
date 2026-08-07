@@ -186,6 +186,7 @@ describe('insertPatents import result', () => {
         content_type: 'image/jpeg',
         size: 4,
         is_abstract: true,
+        image_role: 'abstract',
       },
     ]
 
@@ -221,6 +222,9 @@ describe('insertPatents import result', () => {
         null,
         null,
         true,
+        'abstract',
+        null,
+        null,
         0,
         null,
         null,

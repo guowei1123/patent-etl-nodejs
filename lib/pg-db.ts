@@ -525,6 +525,9 @@ export async function initializeDatabase(): Promise<void> {
         width        INTEGER,
         height       INTEGER,
         is_abstract  BOOLEAN NOT NULL DEFAULT FALSE,
+        image_role   TEXT NOT NULL DEFAULT 'drawing',
+        figure_label TEXT,
+        source_section TEXT,
         display_rotation INTEGER NOT NULL DEFAULT 0,
         match_method TEXT,
         match_score DOUBLE PRECISION,
@@ -542,6 +545,9 @@ export async function initializeDatabase(): Promise<void> {
         ADD COLUMN IF NOT EXISTS size INTEGER,
         ADD COLUMN IF NOT EXISTS width INTEGER,
         ADD COLUMN IF NOT EXISTS height INTEGER,
+        ADD COLUMN IF NOT EXISTS image_role TEXT NOT NULL DEFAULT 'drawing',
+        ADD COLUMN IF NOT EXISTS figure_label TEXT,
+        ADD COLUMN IF NOT EXISTS source_section TEXT,
         ADD COLUMN IF NOT EXISTS display_rotation INTEGER NOT NULL DEFAULT 0,
         ADD COLUMN IF NOT EXISTS match_method TEXT,
         ADD COLUMN IF NOT EXISTS match_score DOUBLE PRECISION,
@@ -1169,6 +1175,9 @@ export async function insertPatents(
           image.width || null,
           image.height || null,
           image.is_abstract,
+          image.image_role || (image.is_abstract ? 'abstract' : 'drawing'),
+          image.figure_label || null,
+          image.source_section || null,
           image.display_rotation || 0,
           image.match_method || null,
           image.match_score || null,
@@ -1246,6 +1255,9 @@ export async function insertPatents(
           width,
           height,
           isAbstract,
+          imageRole,
+          figureLabel,
+          sourceSection,
           displayRotation,
           matchMethod,
           matchScore,
@@ -1263,6 +1275,9 @@ export async function insertPatents(
                 width,
                 height,
                 isAbstract,
+                imageRole,
+                figureLabel,
+                sourceSection,
                 displayRotation,
                 matchMethod,
                 matchScore,
@@ -1286,6 +1301,9 @@ export async function insertPatents(
         'width',
         'height',
         'is_abstract',
+        'image_role',
+        'figure_label',
+        'source_section',
         'display_rotation',
         'match_method',
         'match_score',
@@ -1339,6 +1357,10 @@ function rowToPatent(row: Record<string, unknown>): Patent {
     abstract_fig_key: (row.abstract_fig_key as string) || null,
     images: ((row.images as PatentImage[]) || []).sort((a, b) => {
       if (a.is_abstract !== b.is_abstract) return a.is_abstract ? -1 : 1
+      const roleRank = (role: string | null | undefined) =>
+        role === 'drawing' ? 0 : role === 'inline' ? 1 : 2
+      const roleDiff = roleRank(a.image_role) - roleRank(b.image_role)
+      if (roleDiff !== 0) return roleDiff
       return a.file_name.localeCompare(b.file_name)
     }),
     batch_id: (row.batch_id as string) || null,
@@ -1788,7 +1810,7 @@ export async function getPatentById(id: string): Promise<Patent | null> {
         FILTER (WHERE pcl.id IS NOT NULL), '[]'
       ) AS claims_structured,
       COALESCE(
-        json_agg(DISTINCT jsonb_build_object('id', pimg.id, 'patent_id', pimg.patent_id, 'asset_id', pimg.asset_id, 'file_name', pimg.file_name, 'oss_key', COALESCE(asset.oss_key, pimg.oss_key), 'content_hash', asset.content_hash, 'perceptual_hash', asset.perceptual_hash, 'content_type', COALESCE(asset.content_type, pimg.content_type), 'size', COALESCE(asset.size, pimg.size), 'width', COALESCE(asset.width, pimg.width), 'height', COALESCE(asset.height, pimg.height), 'is_abstract', pimg.is_abstract, 'display_rotation', pimg.display_rotation, 'match_method', pimg.match_method, 'match_score', pimg.match_score, 'matched_file_name', pimg.matched_file_name, 'created_at', pimg.created_at))
+        json_agg(DISTINCT jsonb_build_object('id', pimg.id, 'patent_id', pimg.patent_id, 'asset_id', pimg.asset_id, 'file_name', pimg.file_name, 'oss_key', COALESCE(asset.oss_key, pimg.oss_key), 'content_hash', asset.content_hash, 'perceptual_hash', asset.perceptual_hash, 'content_type', COALESCE(asset.content_type, pimg.content_type), 'size', COALESCE(asset.size, pimg.size), 'width', COALESCE(asset.width, pimg.width), 'height', COALESCE(asset.height, pimg.height), 'is_abstract', pimg.is_abstract, 'image_role', COALESCE(pimg.image_role, CASE WHEN pimg.is_abstract THEN 'abstract' ELSE 'drawing' END), 'figure_label', pimg.figure_label, 'source_section', pimg.source_section, 'display_rotation', pimg.display_rotation, 'match_method', pimg.match_method, 'match_score', pimg.match_score, 'matched_file_name', pimg.matched_file_name, 'created_at', pimg.created_at))
         FILTER (WHERE pimg.id IS NOT NULL), '[]'
       ) AS images
     FROM cnipa.patent p
@@ -1824,6 +1846,9 @@ export async function getPatentImageById(
             COALESCE(asset.width, pimg.width) AS width,
             COALESCE(asset.height, pimg.height) AS height,
             pimg.is_abstract,
+            COALESCE(pimg.image_role, CASE WHEN pimg.is_abstract THEN 'abstract' ELSE 'drawing' END) AS image_role,
+            pimg.figure_label,
+            pimg.source_section,
             pimg.display_rotation,
             pimg.match_method,
             pimg.match_score,

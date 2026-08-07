@@ -7,6 +7,7 @@ import type {
   ParsedCitation,
   ParsedClaim,
   ParsedDescription,
+  ParsedPatentImageReference,
   PatentType,
 } from '@/types'
 
@@ -216,30 +217,100 @@ function uniqueTexts(values: string[]): string[] {
   return Array.from(new Set(values.map((v) => v.trim()).filter(Boolean)))
 }
 
-function extractImageFiles(root: unknown): string[] {
-  const files: string[] = []
+const IMAGE_FILE_PATTERN = /\.(jpe?g|png|gif|bmp|webp|tiff?|jp2|j2k|svg)$/i
 
-  const visit = (node: unknown, parentKey?: string) => {
+function extractImageFilesFromNode(node: unknown): string[] {
+  return ensureArray(node)
+    .map((image) => extractText(getNestedValue(image, '@_file')))
+    .filter((fileName): fileName is string =>
+      Boolean(fileName && IMAGE_FILE_PATTERN.test(fileName)),
+    )
+}
+
+function extractImageFileFromFigure(figure: unknown): string | undefined {
+  return extractImageFilesFromNode(getNestedValue(figure, 'Image'))[0]
+}
+
+function normalizeFigureLabel(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const label = value.trim()
+  return label || undefined
+}
+
+function extractDrawingImageReferences(root: unknown): ParsedPatentImageReference[] {
+  const drawings = getNestedValue(root, 'Drawings')
+  const figures = ensureArray(getNestedValue(drawings, 'Figure'))
+  const refs: ParsedPatentImageReference[] = []
+
+  for (const figure of figures) {
+    const fileName = extractImageFileFromFigure(figure)
+    if (!fileName || !IMAGE_FILE_PATTERN.test(fileName)) continue
+    refs.push({
+      file_name: fileName,
+      image_role: 'drawing',
+      figure_label: normalizeFigureLabel(
+        extractText(getNestedValue(figure, '@_figureLabels')) ||
+          extractText(getNestedValue(figure, '@_num')),
+      ),
+    })
+  }
+
+  return refs
+}
+
+function extractInlineImageReferences(root: unknown): ParsedPatentImageReference[] {
+  const desc = getNestedValue(root, 'Description')
+  if (!desc || typeof desc !== 'object') return []
+
+  const refs: ParsedPatentImageReference[] = []
+  const visit = (node: unknown, sourceSection: string) => {
     if (!node || typeof node !== 'object') return
     if (Array.isArray(node)) {
-      for (const item of node) visit(item, parentKey)
+      for (const item of node) visit(item, sourceSection)
       return
     }
 
     const obj = node as Record<string, unknown>
-    if (parentKey === 'Image') {
-      const file = extractText(obj['@_file'])
-      if (file && /\.(jpe?g|png|gif|bmp|webp|tiff?|jp2|j2k|svg)$/i.test(file))
-        files.push(file)
+    for (const fileName of extractImageFilesFromNode(obj['Image'])) {
+      refs.push({
+        file_name: fileName,
+        image_role: 'inline',
+        source_section: sourceSection,
+      })
     }
 
-    for (const [key, value] of Object.entries(obj)) {
-      visit(value, key)
+    for (const value of Object.values(obj)) {
+      visit(value, sourceSection)
     }
   }
 
-  visit(root)
-  return uniqueTexts(files)
+  for (const [sectionKey, sectionValue] of Object.entries(
+    desc as Record<string, unknown>,
+  )) {
+    if (sectionKey === 'DrawingsDescription') continue
+    visit(sectionValue, sectionKey)
+  }
+
+  return refs
+}
+
+function extractImageReferences(root: unknown): ParsedPatentImageReference[] {
+  return uniqueImageReferences([
+    ...extractDrawingImageReferences(root),
+    ...extractInlineImageReferences(root),
+  ])
+}
+
+function uniqueImageReferences(
+  refs: ParsedPatentImageReference[],
+): ParsedPatentImageReference[] {
+  const seen = new Set<string>()
+  return refs.filter((ref) => {
+    const key = `${ref.file_name}\u0000${ref.image_role}\u0000${ref.source_section || ''}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
 }
 
 function normalizeStructuredAgents(
@@ -319,6 +390,23 @@ function extractStructuredClaims(root: unknown): ParsedClaim[] {
     .filter((x): x is ParsedClaim => x !== null)
 }
 
+function buildInlineImageMarker(fileName: string): string {
+  return `[[PATENT_IMAGE:${fileName}]]`
+}
+
+function extractParagraphWithImageMarkers(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return extractText(value)
+  const obj = value as Record<string, unknown>
+  const imageFiles = extractImageFilesFromNode(obj['Image'])
+  if (imageFiles.length === 0) return extractText(value)
+
+  const text = extractText(obj['#text'])
+  const parts = [
+    text,
+    ...imageFiles.map((fileName) => buildInlineImageMarker(fileName)),
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join('\n') : undefined
+}
 // 提取说明书段落下所有 Paragraphs 文本
 function extractParagraphsUnder(section: unknown): string[] {
   const paragraphs: string[] = []
@@ -332,11 +420,11 @@ function extractParagraphsUnder(section: unknown): string[] {
       if (k === 'Paragraphs' || k === 'Paragraph') {
         if (Array.isArray(v)) {
           for (const item of v) {
-            const t = extractText(item)
+            const t = extractParagraphWithImageMarkers(item)
             if (t) paragraphs.push(t)
           }
         } else {
-          const t = extractText(v)
+          const t = extractParagraphWithImageMarkers(v)
           if (t) paragraphs.push(t)
         }
       } else if (typeof v === 'object' && v !== null) {
@@ -625,7 +713,8 @@ export function parsePatentXml(
         '@_file',
       ),
     )
-    const imageFiles = extractImageFiles(root)
+    const imageReferences = extractImageReferences(root)
+    const imageFiles = uniqueTexts(imageReferences.map((ref) => ref.file_name))
 
     // 提取权利要求（文本，兼容旧接口）
     const claimEntries = getNestedValue(root, 'Claims', 'Claim')
@@ -998,6 +1087,8 @@ export function parsePatentXml(
         independentClaimCount > 0 ? independentClaimCount : undefined,
       abstract_figure: abstractFigure,
       image_files: imageFiles.length > 0 ? imageFiles : undefined,
+      image_references:
+        imageReferences.length > 0 ? imageReferences : undefined,
     }
   } catch (error) {
     console.error('XML解析错误:', error)
