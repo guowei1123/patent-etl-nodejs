@@ -52,6 +52,18 @@ describe('verifyExtractedFilesCrc', () => {
     )
   })
 
+  it('pads computed CRC values before comparing with the CRC manifest', async () => {
+    const content = Buffer.from('22', 'hex')
+    expect(crc32(content)).toBe('762AE69')
+
+    writeFile('INNER.ZIP', content)
+    writeFile('INNER-CRC.TXT', 'INNER.ZIP,0762AE69')
+
+    const result = await verifyExtractedFilesCrc(tmpDir)
+
+    expect(result).toEqual({ passed: true, checkedFiles: 1, failures: [] })
+  })
+
   it('fails when a CRC entry points to a missing ZIP', async () => {
     writeFile('INNER-CRC.TXT', 'MISSING.ZIP,ABCDEF')
 
@@ -61,7 +73,7 @@ describe('verifyExtractedFilesCrc', () => {
     expect(result.checkedFiles).toBe(1)
     expect(result.failures).toContainEqual({
       file: 'MISSING.ZIP',
-      expected: 'ABCDEF',
+      expected: '00ABCDEF',
       reason: '文件不存在',
     })
   })

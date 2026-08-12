@@ -60,7 +60,11 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!['invention', 'utility_model'].includes(data_type)) {
+    if (
+      !['invention', 'invention_application', 'utility_model'].includes(
+        data_type,
+      )
+    ) {
       return NextResponse.json(
         { success: false, error: '无效的数据类型' },
         { status: 400 },

@@ -261,12 +261,17 @@ export class FtpClient {
   // CNIPA FTP 通常有如下结构:
   // /发明授权/2024/202401/ 或类似
   async getPatentDataFolders(
-    dataType: 'invention' | 'utility_model',
+    dataType: 'invention' | 'invention_application' | 'utility_model',
   ): Promise<FtpEntry[]> {
     await this.connect()
 
     // 根据数据类型确定基础路径
-    const basePath = dataType === 'invention' ? '/发明授权' : '/实用新型授权'
+    const basePath =
+      dataType === 'invention'
+        ? '/发明授权'
+        : dataType === 'invention_application'
+          ? '/发明申请'
+          : '/实用新型'
 
     try {
       const years = await this.listDirectory(basePath)

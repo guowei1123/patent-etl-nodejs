@@ -232,6 +232,14 @@ function formatDate(d: Date | string | null | undefined): string | undefined {
   return date.toLocaleDateString('zh-CN')
 }
 
+function getDisplayPublicationDate(
+  kind: string | null | undefined,
+  pubDate: Date | string | null | undefined,
+  grantDate: Date | string | null | undefined,
+): Date | string | null | undefined {
+  return kind === 'A' ? pubDate : grantDate
+}
+
 function joinText(
   items: Array<string | null | undefined> | null | undefined,
 ): string {
@@ -321,7 +329,15 @@ export default function PatentDetailPage({
     )
   }
 
-  const isInvention = patent.kind === 'B'
+  const isUtilityModel = patent.kind === 'U'
+  const patentTypeLabel =
+    patent.kind === 'A'
+      ? '发明申请'
+      : patent.kind === 'B'
+        ? '发明授权'
+        : patent.kind === 'U'
+          ? '实用新型'
+          : patent.kind || '-'
   const structuredClaims =
     patent.claims_structured?.filter((claim) => claim.claim_text?.trim()) ?? []
   const descriptionSections = patent.description
@@ -470,10 +486,10 @@ export default function PatentDetailPage({
                   <div
                     className={cn(
                       'flex size-14 shrink-0 items-center justify-center rounded-2xl',
-                      isInvention ? 'bg-info/15' : 'bg-warning/20',
+                      isUtilityModel ? 'bg-warning/20' : 'bg-info/15',
                     )}
                   >
-                    {isInvention ? (
+                    {!isUtilityModel ? (
                       <Lightbulb aria-hidden="true" className="text-info size-7" />
                     ) : (
                       <Wrench
@@ -487,12 +503,12 @@ export default function PatentDetailPage({
                       <Badge
                         variant="outline"
                         className={cn(
-                          isInvention
+                          !isUtilityModel
                             ? 'border-info/50 text-info'
                             : 'border-warning/50 text-warning',
                         )}
                       >
-                        {isInvention ? '发明授权' : '实用新型'}
+                        {patentTypeLabel}
                       </Badge>
                       <Badge variant="secondary" className="font-mono">
                         {patent.doc_number}
@@ -670,8 +686,14 @@ export default function PatentDetailPage({
                   />
                   <InfoItem
                     icon={Calendar}
-                    label="公开日"
-                    value={formatDate(patent.pub_date)}
+                    label="公开日期"
+                    value={formatDate(
+                      getDisplayPublicationDate(
+                        patent.kind,
+                        patent.pub_date,
+                        patent.grant_date,
+                      ),
+                    )}
                   />
                   <InfoItem
                     icon={FileText}
@@ -703,7 +725,7 @@ export default function PatentDetailPage({
                   <InfoItem
                     icon={Tag}
                     label="专利类型"
-                    value={isInvention ? '发明授权' : '实用新型'}
+                    value={patentTypeLabel}
                   />
                   <InfoItem
                     icon={Tag}

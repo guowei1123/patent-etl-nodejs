@@ -5,7 +5,11 @@ import { isOssConfigured } from '@/lib/oss-client'
 import { isRedisClassificationsConfigured } from '@/lib/redis-classifications'
 import { isEmbeddingConfigured } from '@/lib/embedding'
 
-function parseDataPaths(): { invention: string; utility_model: string } {
+function parseDataPaths(): {
+  invention: string
+  invention_application: string
+  utility_model: string
+} {
   const raw = process.env.CNIPA_FTP_DATA_PATHS || ''
   const parts = raw
     .split(',')
@@ -14,6 +18,7 @@ function parseDataPaths(): { invention: string; utility_model: string } {
   return {
     invention: parts[0] || '',
     utility_model: parts[1] || '',
+    invention_application: parts[2] || '',
   }
 }
 

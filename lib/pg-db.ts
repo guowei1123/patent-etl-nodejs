@@ -200,7 +200,7 @@ export async function initializeDatabase(): Promise<void> {
     await client.query(`
       CREATE TABLE IF NOT EXISTS sync_batches (
         batch_code      VARCHAR(100) PRIMARY KEY,
-        data_type       VARCHAR(20) NOT NULL,
+        data_type       TEXT NOT NULL,
         ftp_folder      VARCHAR(500),
         status          VARCHAR(20) DEFAULT 'pending',
         total_files     INTEGER DEFAULT 0,
@@ -212,6 +212,12 @@ export async function initializeDatabase(): Promise<void> {
         completed_at    TIMESTAMP,
         created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `)
+
+
+    await client.query(`
+      ALTER TABLE sync_batches
+        ALTER COLUMN data_type TYPE TEXT USING data_type::TEXT
     `)
 
     await client.query(`
@@ -905,7 +911,14 @@ async function upsertImageAssets(
 }
 
 function getPatentKind(p: ParsedPatent): string {
-  return p.kind || (p.patent_type === 'invention' ? 'B' : 'U')
+  return (
+    p.kind ||
+    (p.patent_type === 'invention'
+      ? 'B'
+      : p.patent_type === 'invention_application'
+        ? 'A'
+        : 'U')
+  )
 }
 
 function getErrorMessage(error: unknown): string {
@@ -1391,6 +1404,7 @@ function rowToPatentListItem(row: Record<string, unknown>): PatentListItem {
     kind: row.kind as string,
     title: row.title as string,
     pub_date: (row.pub_date as Date) || null,
+    grant_date: (row.grant_date as Date) || null,
     applicants: (row.applicants as PatentApplicantRow[]) || [],
   }
 }
@@ -1754,7 +1768,7 @@ export async function getPatentList(
 
   params.push(limit, offset)
   const result = await pool.query(
-    `SELECT p.id, p.doc_number, p.kind, p.title, p.pub_date,
+    `SELECT p.id, p.doc_number, p.kind, p.title, p.pub_date, p.grant_date,
       COALESCE(
         json_agg(DISTINCT jsonb_build_object('name', pa.name, 'address', pa.address, 'province', pa.province, 'city', pa.city, 'county', pa.county, 'postcode', pa.postcode, 'country', pa.country))
         FILTER (WHERE pa.id IS NOT NULL), '[]'
@@ -1763,7 +1777,7 @@ export async function getPatentList(
     LEFT JOIN cnipa.patent_applicant pa ON pa.patent_id = p.id
     ${whereClause}
     GROUP BY p.id
-    ORDER BY p.pub_date DESC NULLS LAST, p.created_at DESC
+    ORDER BY COALESCE(p.pub_date, p.grant_date) DESC NULLS LAST, p.created_at DESC
     LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
     params,
   )

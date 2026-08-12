@@ -31,10 +31,12 @@ const parser = new XMLParser({
         'PublicationReference',
         'ApplicationReference',
         'PriorityClaim',
+        'Priority',
         'Citation',
         'Examiner',
         'Assignee',
         'ClaimText',
+        'RelatedPublicationDoc',
       ].includes(name)
     )
       return true
@@ -43,14 +45,16 @@ const parser = new XMLParser({
       'applicant',
       'inventor',
       'agent',
-      'priority',
-      'claim',
+        'priority',
+        'priority-claim',
+        'claim',
       'claimtext',
       'classification-ipcr',
       'ipc',
       'citation',
       'examiner',
       'assignee',
+      'related-publication-doc',
     ].includes(lower)
   },
 })
@@ -81,6 +85,61 @@ function resolveFirst(obj: unknown, ...keys: string[]): unknown {
     current = (current as Record<string, unknown>)[key]
   }
   return current
+}
+
+function extractRelatedPublicationDate(root: unknown): string | undefined {
+  const relatedDocs =
+    getNestedValue(root, 'BibliographicData', 'RelatedDocuments') ||
+    getNestedValue(root, 'bibliographic-data', 'related-documents') ||
+    getNestedValue(root, 'RelatedDocuments') ||
+    getNestedValue(root, 'related-documents')
+  const relatedPublicationDocs =
+    getNestedValue(relatedDocs, 'RelatedPublicationDoc') ||
+    getNestedValue(relatedDocs, 'related-publication-doc')
+
+  for (const doc of ensureArray(relatedPublicationDocs)) {
+    const documentId =
+      resolveFirst(doc, 'DocumentID') ||
+      getNestedValue(doc, 'document-id')
+    const date =
+      formatDate(getNestedValue(documentId, 'Date')) ||
+      formatDate(getNestedValue(documentId, 'date'))
+    if (date) return date
+  }
+
+  return undefined
+}
+
+function extractPriorityInfo(root: unknown): Record<string, unknown> | undefined {
+  const priorityNodes =
+    getNestedValue(root, 'BibliographicData', 'PriorityDetails', 'Priority') ||
+    getNestedValue(
+      root,
+      'bibliographic-data',
+      'priority-details',
+      'priority',
+    )
+
+  const priorities = ensureArray(priorityNodes)
+    .map((node) => {
+      const country = extractText(getNestedValue(node, 'WIPOST3Code'))
+      const docNumber = extractText(getNestedValue(node, 'DocNumber'))
+      const date = formatDate(getNestedValue(node, 'Date'))
+      if (!country && !docNumber && !date) return null
+
+      return {
+        country,
+        doc_number: docNumber,
+        date,
+        kind: extractText(getNestedValue(node, '@_kind')),
+        data_format: extractText(getNestedValue(node, '@_dataFormat')),
+        source_db: extractText(getNestedValue(node, '@_sourceDB')),
+        sequence: extractText(getNestedValue(node, '@_sequence')),
+      }
+    })
+    .filter((item): item is Record<string, string | undefined> => item !== null)
+
+  return priorities.length > 0 ? { priorities } : undefined
 }
 
 // 提取文本内容
@@ -856,7 +915,8 @@ export function parsePatentXml(
       extractText(getNestedValue(pubRef, 'DocNumber')) ||
       extractText(getNestedValue(pubRef, 'doc-number')) ||
       extractText(getNestedValue(root, 'publication-number'))
-    const publicationDate =
+    const relatedPublicationDate = extractRelatedPublicationDate(root)
+    const publicationReferenceDate =
       formatDate(getNestedValue(pubRef, 'Date')) ||
       formatDate(getNestedValue(pubRef, 'date')) ||
       formatDate(getNestedValue(root, 'publication-date'))
@@ -876,17 +936,30 @@ export function parsePatentXml(
         'grant-reference',
         'document-id',
       )
-    const grantNumber =
+    const parsedGrantNumber =
       extractText(getNestedValue(grantRef, 'DocNumber')) ||
       extractText(getNestedValue(grantRef, 'doc-number')) ||
-      extractText(getNestedValue(root, 'grant-number')) ||
-      String(patentNumber)
-    const grantDate =
+      extractText(getNestedValue(root, 'grant-number'))
+    const parsedGrantDate =
       formatDate(getNestedValue(grantRef, 'Date')) ||
       formatDate(getNestedValue(grantRef, 'date')) ||
       formatDate(getNestedValue(root, 'grant-date')) ||
       formatDate(getNestedValue(root, '@_date-publ')) ||
       formatDate(getNestedValue(root, '@_datePublication'))
+    const isApplicationPublication =
+      kind === 'A' || patentType === 'invention_application'
+    const isUtilityModel = kind === 'U' || patentType === 'utility_model'
+    const publicationDate = isApplicationPublication
+      ? publicationReferenceDate
+      : isUtilityModel
+        ? undefined
+        : relatedPublicationDate
+    const grantNumber = isApplicationPublication
+      ? undefined
+      : parsedGrantNumber || publicationNumber || String(patentNumber)
+    const grantDate = isApplicationPublication
+      ? undefined
+      : parsedGrantDate || publicationReferenceDate
 
     // 提取 IPC 分类
     const ipcNodes =
@@ -1016,19 +1089,7 @@ export function parsePatentXml(
     )
     const assignees = extractStructuredApplicants(assigneeNodes)
 
-    // 提取优先权信息
-    const priorityData = getNestedValue(
-      root,
-      'bibliographic-data',
-      'priority-claims',
-      'priority-claim',
-    )
-    let priorityInfo: Record<string, unknown> | undefined
-    if (priorityData) {
-      priorityInfo = Array.isArray(priorityData)
-        ? { claims: priorityData }
-        : { claims: [priorityData] }
-    }
+    const priorityInfo = extractPriorityInfo(root)
 
     // 提取说明书
     const { text: descText, structured: descStructured } =
@@ -1150,6 +1211,7 @@ export function detectPatentType(xmlContent: string): PatentType | null {
     const kind = getNestedValue(root, '@_kind')
     if (kind === 'U' || kind === 'u') return 'utility_model'
     if (kind === 'B' || kind === 'b') return 'invention'
+    if (kind === 'A' || kind === 'a') return 'invention_application'
   } catch {
     // fall through to text-based detection
   }

@@ -28,7 +28,7 @@ export default function PatentsPage() {
   const [page, setPage] = useState(1)
   const [search, setSearch] = useState('')
   const [expression, setExpression] = useState('')
-  const [typeFilter, setTypeFilter] = useState<'all' | 'B' | 'U'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'A' | 'B' | 'U'>('all')
 
   const params = new URLSearchParams()
   params.set('page', String(page))
@@ -66,7 +66,7 @@ export default function PatentsPage() {
     setPage(1)
   }
 
-  const handleTypeFilter = (type: 'all' | 'B' | 'U') => {
+  const handleTypeFilter = (type: 'all' | 'A' | 'B' | 'U') => {
     setTypeFilter(type)
     setPage(1)
   }

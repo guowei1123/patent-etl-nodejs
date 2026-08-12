@@ -19,7 +19,13 @@ import type { StepResult } from './types'
 import { runningTasks } from './task-state'
 
 export function getPatentImportKey(patent: ParsedPatent): string {
-  const kind = patent.kind || (patent.patent_type === 'invention' ? 'B' : 'U')
+  const kind =
+    patent.kind ||
+    (patent.patent_type === 'invention'
+      ? 'B'
+      : patent.patent_type === 'invention_application'
+        ? 'A'
+        : 'U')
   return `${patent.patent_number}\u0000${kind}`
 }
 

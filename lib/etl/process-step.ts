@@ -93,6 +93,21 @@ type ImageUploadStats = {
   failed: number
 }
 
+type ProcessZipCheckpoint = {
+  version: 1
+  zipName: string
+  zipSize: number
+  zipMtimeMs: number
+  uploadImages: boolean
+  xmlProcessed: number
+  filteredOut: number
+  uploadedImages: number
+  skippedImages: number
+  patents: ParsedPatent[]
+}
+
+const PROCESS_CHECKPOINT_VERSION = 1
+
 function getImageUploadConcurrency(): number {
   const value = parseInt(process.env.IMAGE_UPLOAD_CONCURRENCY || '8', 10)
   return Number.isFinite(value) && value > 0 ? value : 8
@@ -127,6 +142,95 @@ function getImageContentType(fileName: string): string {
 
 function getImageContentHash(content: Buffer): string {
   return createHash('sha256').update(content).digest('hex')
+}
+
+function getProcessCheckpointDir(tempPath: string): string {
+  return path.join(tempPath, 'process-checkpoints')
+}
+
+function getProcessCheckpointPath(tempPath: string, zipName: string): string {
+  return path.join(
+    getProcessCheckpointDir(tempPath),
+    `${encodeURIComponent(zipName)}.json`,
+  )
+}
+
+function getZipFileSignature(zipFile: string): {
+  zipSize: number
+  zipMtimeMs: number
+} {
+  const stat = fs.statSync(zipFile)
+  return {
+    zipSize: stat.size,
+    zipMtimeMs: stat.mtimeMs,
+  }
+}
+
+function preparePatentsForParsedOutput(patents: ParsedPatent[]): void {
+  for (const patent of patents) {
+    if (patent.description_structured) {
+      patent.description = undefined
+    }
+  }
+}
+
+function readProcessZipCheckpoint(
+  tempPath: string,
+  zipFile: string,
+  uploadImages: boolean,
+): ProcessZipCheckpoint | null {
+  const zipName = path.basename(zipFile)
+  const checkpointPath = getProcessCheckpointPath(tempPath, zipName)
+  if (!fs.existsSync(checkpointPath)) return null
+
+  try {
+    const checkpoint = JSON.parse(
+      fs.readFileSync(checkpointPath, 'utf-8'),
+    ) as Partial<ProcessZipCheckpoint>
+    const signature = getZipFileSignature(zipFile)
+
+    if (
+      checkpoint.version !== PROCESS_CHECKPOINT_VERSION ||
+      checkpoint.zipName !== zipName ||
+      checkpoint.zipSize !== signature.zipSize ||
+      checkpoint.zipMtimeMs !== signature.zipMtimeMs ||
+      checkpoint.uploadImages !== uploadImages ||
+      !Array.isArray(checkpoint.patents)
+    ) {
+      return null
+    }
+
+    return checkpoint as ProcessZipCheckpoint
+  } catch {
+    return null
+  }
+}
+
+function writeProcessZipCheckpoint(
+  tempPath: string,
+  zipFile: string,
+  checkpoint: Omit<
+    ProcessZipCheckpoint,
+    'version' | 'zipName' | 'zipSize' | 'zipMtimeMs'
+  >,
+): void {
+  const zipName = path.basename(zipFile)
+  const signature = getZipFileSignature(zipFile)
+  const checkpointDir = getProcessCheckpointDir(tempPath)
+  fs.mkdirSync(checkpointDir, { recursive: true })
+
+  const checkpointPath = getProcessCheckpointPath(tempPath, zipName)
+  const tempCheckpointPath = `${checkpointPath}.${process.pid}.tmp`
+  fs.writeFileSync(
+    tempCheckpointPath,
+    JSON.stringify({
+      version: PROCESS_CHECKPOINT_VERSION,
+      zipName,
+      ...signature,
+      ...checkpoint,
+    } satisfies ProcessZipCheckpoint),
+  )
+  fs.renameSync(tempCheckpointPath, checkpointPath)
 }
 
 function getJpegDimensions(content: Buffer): {
@@ -569,6 +673,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       ? fs
           .readdirSync(extractDir)
           .filter((f) => f.toUpperCase().endsWith('.ZIP'))
+          .sort((a, b) => a.localeCompare(b))
       : []
 
     if (innerZips.length > 0) {
@@ -626,6 +731,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       innerZips = fs
         .readdirSync(extractDir)
         .filter((f) => f.toUpperCase().endsWith('.ZIP'))
+        .sort((a, b) => a.localeCompare(b))
     }
 
     if (cancelled) throw new Error('任务已取消')
@@ -679,6 +785,40 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
       const zipFile = path.join(extractDir, innerZips[i])
       const zipPatents: ParsedPatent[] = []
+      const checkpoint = readProcessZipCheckpoint(
+        tempPath,
+        zipFile,
+        uploadImages,
+      )
+
+      if (checkpoint) {
+        for (const patent of checkpoint.patents) {
+          patents.push(patent)
+        }
+        uploadedImageCount += checkpoint.uploadedImages
+        skippedImageCount += checkpoint.skippedImages
+        totalFilteredOut += checkpoint.filteredOut
+        updateBatchProgress(batchCode, undefined, i + 1)
+        setProcessProgress(batchCode, {
+          currentZip: innerZips[i],
+          phase: 'preparing',
+          processedZips: i + 1,
+          totalZips: innerZips.length,
+          xmlProcessed: checkpoint.xmlProcessed,
+          patentCount: patents.length,
+          imageTotal: 0,
+          imageUploaded: uploadedImageCount,
+          imageSkipped: skippedImageCount,
+          imageFailed: 0,
+        })
+        await addLog(
+          batchCode,
+          'info',
+          `${innerZips[i]}: reused process checkpoint, skipped parsing and image upload`,
+        )
+        continue
+      }
+
       setProcessProgress(batchCode, {
         currentZip: innerZips[i],
         phase: 'parsing_xml',
@@ -733,6 +873,8 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       )
 
       if (cancelled) throw new Error('任务已取消')
+      let zipUploadedImageCount = 0
+      let zipSkippedImageCount = 0
       if (uploadImages) {
         const imageResult = await uploadReferencedPatentImages(
           batchCode,
@@ -742,9 +884,10 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           referencesByName,
           () => cancelled,
         )
-        const zipUploadedCount = imageResult.stats.uploaded
-        uploadedImageCount += zipUploadedCount
-        skippedImageCount += imageResult.stats.skipped
+        zipUploadedImageCount = imageResult.stats.uploaded
+        zipSkippedImageCount = imageResult.stats.skipped
+        uploadedImageCount += zipUploadedImageCount
+        skippedImageCount += zipSkippedImageCount
 
         await addLog(
           batchCode,
@@ -758,6 +901,15 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
           `${innerZips[i]}：已解析 ${xmlResult.processed} 个 XML，筛选后专利 ${filterResult.filtered.length} 条，已跳过附图上传，累计专利 ${patents.length} 条`,
         )
       }
+      preparePatentsForParsedOutput(filterResult.filtered)
+      writeProcessZipCheckpoint(tempPath, zipFile, {
+        uploadImages,
+        xmlProcessed: xmlResult.processed,
+        filteredOut: filterResult.skipped,
+        uploadedImages: zipUploadedImageCount,
+        skippedImages: zipSkippedImageCount,
+        patents: filterResult.filtered,
+      })
       updateBatchProgress(batchCode, undefined, i + 1)
       patchProcessProgress(batchCode, {
         processedZips: i + 1,
@@ -770,11 +922,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
       throw new Error('没有符合筛选条件的专利')
     }
 
-    for (const p of patents) {
-      if (p.description_structured) {
-        p.description = undefined
-      }
-    }
+    preparePatentsForParsedOutput(patents)
     const parsedPath = path.join(tempPath, 'parsed.json')
     fs.writeFileSync(parsedPath, JSON.stringify(patents))
 

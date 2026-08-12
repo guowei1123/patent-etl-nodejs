@@ -5,7 +5,11 @@ export function generateBatchCode(
   ftpFolder: string,
 ): string {
   const prefix =
-    dataType === 'invention' ? 'CN-PA-TXTS-10-B' : 'CN-PA-TXTS-20-U'
+    dataType === 'invention'
+      ? 'CN-PA-TXTS-10-B'
+      : dataType === 'invention_application'
+        ? 'CN-PA-TXTS-10-A'
+        : 'CN-PA-TXTS-20-U'
   const folderName = ftpFolder.split('/').filter(Boolean).pop() || ''
   const match = folderName.match(/^(\d{8})(rawdata)?$/i)
   if (match) {

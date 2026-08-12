@@ -1,5 +1,5 @@
 // 涓撳埄绫诲瀷
-export type PatentType = 'invention' | 'utility_model'
+export type PatentType = 'invention' | 'invention_application' | 'utility_model'
 
 // 鎵规鐘舵€?
 export type BatchStatus =
@@ -77,6 +77,7 @@ export interface PatentListItem {
   kind: string
   title: string
   pub_date: Date | null
+  grant_date: Date | null
   applicants: PatentApplicantRow[]
 }
 

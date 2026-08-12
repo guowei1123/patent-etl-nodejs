@@ -49,7 +49,11 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
 
   const { data: configData } = useSWR<{
     ftp: {
-      data_paths: { invention: string; utility_model: string }
+      data_paths: {
+        invention: string
+        invention_application: string
+        utility_model: string
+      }
     }
   }>('/api/config', fetcher)
 
@@ -63,9 +67,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
 
   // FtpBrowser 打开时定位到数据类型对应的 data 根目录
   const browserInitialPath = dataPaths
-    ? (formData.data_type === 'invention'
-        ? dataPaths.invention
-        : dataPaths.utility_model) || '/'
+    ? dataPaths[formData.data_type as keyof typeof dataPaths] || '/'
     : '/'
 
   const handleSubmit = async () => {
@@ -75,10 +77,9 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
     }
 
     // 校验：必须选择 data 目录下的子目录，不能是 data 根目录本身
-    const dataRoot =
-      formData.data_type === 'invention'
-        ? dataPaths?.invention
-        : dataPaths?.utility_model
+    const dataRoot = dataPaths
+      ? dataPaths[formData.data_type as keyof typeof dataPaths]
+      : undefined
     if (dataRoot && formData.ftp_folder === dataRoot) {
       toast.error('请选择具体的批次子目录，不能选择数据根目录')
       return
@@ -158,7 +159,8 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                 <SelectContent>
                   <SelectGroup>
                     <SelectItem value="invention">发明授权</SelectItem>
-                    <SelectItem value="utility_model">实用新型授权</SelectItem>
+                    <SelectItem value="invention_application">发明申请</SelectItem>
+                    <SelectItem value="utility_model">实用新型</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>

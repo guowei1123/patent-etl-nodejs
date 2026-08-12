@@ -92,6 +92,7 @@ const statusConfig: Record<
 
 const dataTypeLabels: Record<string, string> = {
   invention: '发明授权',
+  invention_application: '发明申请',
   utility_model: '实用新型',
 }
 

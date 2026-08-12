@@ -903,7 +903,7 @@ export default function BatchDetailPage({
     <AppShell>
       <Header
         title={batch.batch_code}
-        description={`${batch.data_type === 'invention' ? '发明授权' : '实用新型授权'} · 创建于 ${new Date(batch.created_at).toLocaleString('zh-CN')}`}
+        description={`${batch.data_type === 'invention' ? '发明授权' : batch.data_type === 'invention_application' ? '发明申请' : '实用新型'} · 创建于 ${new Date(batch.created_at).toLocaleString('zh-CN')}`}
         onRefresh={() => mutate()}
         action={
           <div className="flex gap-2">
@@ -1031,7 +1031,7 @@ export default function BatchDetailPage({
                 <div className="flex items-center gap-2">
                   <h2 className="text-lg font-semibold">{status.label}</h2>
                   <Badge variant="outline">
-                    {batch.data_type === 'invention' ? '发明' : '实用新型'}
+                    {batch.data_type === 'invention' ? '发明授权' : batch.data_type === 'invention_application' ? '发明申请' : '实用新型'}
                   </Badge>
                 </div>
                 {batch.ftp_folder && (

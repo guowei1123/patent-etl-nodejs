@@ -241,4 +241,61 @@ describe('runProcessStep extracted file verification', () => {
       expect.stringContaining('CRC 完整性检测失败'),
     )
   })
+  it('resumes processing from completed inner ZIP checkpoints', async () => {
+    process.env.PROCESS_UPLOAD_IMAGES = '0'
+    integrityMock.verifyExtractedFilesCrc.mockResolvedValue({
+      passed: true,
+      checkedFiles: 2,
+      failures: [],
+    })
+
+    const extractDir = path.join(fileMock.tempRoot, 'batch-1', 'extracted')
+    fs.mkdirSync(extractDir, { recursive: true })
+    fs.writeFileSync(path.join(extractDir, 'A.ZIP'), 'zip-a')
+    fs.writeFileSync(path.join(extractDir, 'B.ZIP'), 'zip-b')
+
+    parserMock.parsePatentXml.mockImplementation((xml: string) => ({
+      ...parsedPatent(),
+      patent_number: xml.includes('A') ? '100001' : '100002',
+      title: xml.includes('A') ? 'Patent A' : 'Patent B',
+    }))
+
+    let failOnB = true
+    fileMock.forEachZipEntryBuffer.mockImplementation(
+      async (zipFile, handler, filter) => {
+        const zipName = path.basename(zipFile as string)
+        fileMock.calls.push(`parse:${zipName}`)
+        if (zipName === 'B.ZIP' && failOnB) {
+          throw new Error('interrupted')
+        }
+
+        const fileName = zipName === 'A.ZIP' ? 'a.xml' : 'b.xml'
+        if (!filter || filter(fileName)) {
+          await handler(fileName, Buffer.from(`<${zipName[0]} />`))
+          return { processed: 1, skipped: 0 }
+        }
+        return { processed: 0, skipped: 1 }
+      },
+    )
+
+    const { runProcessStep } = await import('../etl/process-step')
+    const first = await runProcessStep('batch-1')
+
+    expect(first.success).toBe(false)
+    expect(fileMock.calls).toEqual(['parse:A.ZIP', 'parse:B.ZIP'])
+
+    failOnB = false
+    fileMock.calls = []
+    const second = await runProcessStep('batch-1')
+
+    expect(second.success).toBe(true)
+    expect(fileMock.calls).toEqual(['parse:B.ZIP'])
+
+    const parsedPath = path.join(fileMock.tempRoot, 'batch-1', 'parsed.json')
+    const parsed = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
+    expect(parsed.map((p: ParsedPatent) => p.patent_number)).toEqual([
+      '100001',
+      '100002',
+    ])
+  })
 })

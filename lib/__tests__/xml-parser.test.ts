@@ -567,7 +567,7 @@ describe('xml-parser — 完整字段解析', () => {
       expect(parsed.ipc_codes).toEqual(['A01B 1/00', 'B02C 2/00'])
       expect(parsed.application_number).toBe('CN2023000001')
       expect(parsed.application_date).toBe('2023-12-01')
-      expect(parsed.publication_date).toBe('2024-01-02')
+      expect(parsed.publication_date).toBeUndefined()
 
       // 新字段也应可用
       expect(parsed.kind).toBe('B')
@@ -577,6 +577,139 @@ describe('xml-parser — 完整字段解析', () => {
         agency_name: 'Agency A',
       })
       expect(parsed.claims_structured).toHaveLength(2)
+    })
+
+    it('prefers RelatedDocuments date for publication date', () => {
+      const xml = `
+        <business:PatentDocumentAndRelated
+          xmlns:business="http://example.com/business"
+          xmlns:base="http://example.com/base"
+          kind="B"
+          docNumber="CN1234567B">
+          <business:BibliographicData>
+            <business:InventionTitle>Related Publication Patent</business:InventionTitle>
+            <business:PublicationReference>
+              <base:DocumentID>
+                <base:DocNumber>CN1234567B</base:DocNumber>
+                <base:Date>20231003</base:Date>
+              </base:DocumentID>
+            </business:PublicationReference>
+            <business:RelatedDocuments>
+              <business:RelatedPublicationDoc>
+                <base:DocumentID>
+                  <base:DocNumber>CN106307615A</base:DocNumber>
+                  <base:Date>20170111</base:Date>
+                </base:DocumentID>
+              </business:RelatedPublicationDoc>
+            </business:RelatedDocuments>
+          </business:BibliographicData>
+        </business:PatentDocumentAndRelated>
+      `
+
+      const parsed = parsePatentXml(xml, 'invention')!
+
+      expect(parsed.publication_date).toBe('2017-01-11')
+    })
+
+    it('keeps grant fields empty for invention application publications', () => {
+      const xml = `
+        <PatentDocumentAndRelated kind="A" docNumber="CN1234567A">
+          <BibliographicData>
+            <InventionTitle>Application Publication Patent</InventionTitle>
+            <PublicationReference>
+              <DocumentID>
+                <DocNumber>CN1234567A</DocNumber>
+                <Date>20240102</Date>
+              </DocumentID>
+            </PublicationReference>
+          </BibliographicData>
+        </PatentDocumentAndRelated>
+      `
+
+      const parsed = parsePatentXml(xml, 'invention_application')!
+
+      expect(parsed.publication_date).toBe('2024-01-02')
+      expect(parsed.grant_number).toBeUndefined()
+      expect(parsed.grant_date).toBeUndefined()
+    })
+
+    it('stores utility model publication reference as grant date only', () => {
+      const xml = `
+        <PatentDocumentAndRelated kind="U" docNumber="CN1234567U">
+          <BibliographicData>
+            <InventionTitle>Utility Model Patent</InventionTitle>
+            <PublicationReference>
+              <DocumentID>
+                <DocNumber>CN1234567U</DocNumber>
+                <Date>20240102</Date>
+              </DocumentID>
+            </PublicationReference>
+          </BibliographicData>
+        </PatentDocumentAndRelated>
+      `
+
+      const parsed = parsePatentXml(xml, 'utility_model')!
+
+      expect(parsed.publication_date).toBeUndefined()
+      expect(parsed.grant_number).toBe('CN1234567U')
+      expect(parsed.grant_date).toBe('2024-01-02')
+    })
+
+    it('extracts priority details from namespaced priority nodes', () => {
+      const xml = `
+        <business:PatentDocumentAndRelated
+          xmlns:business="http://example.com/business"
+          xmlns:base="http://example.com/base"
+          kind="A"
+          docNumber="CN1234567A">
+          <business:BibliographicData>
+            <business:InventionTitle>Priority Patent</business:InventionTitle>
+            <business:PublicationReference>
+              <base:DocumentID>
+                <base:DocNumber>CN1234567A</base:DocNumber>
+                <base:Date>20240102</base:Date>
+              </base:DocumentID>
+            </business:PublicationReference>
+            <business:PriorityDetails>
+              <business:Priority kind="international" dataFormat="original" sourceDB="national office" sequence="1">
+                <base:WIPOST3Code>KR</base:WIPOST3Code>
+                <base:DocNumber>10-2022-0100096</base:DocNumber>
+                <base:Date>20220810</base:Date>
+              </business:Priority>
+              <business:Priority kind="international" dataFormat="standard" sequence="1">
+                <base:WIPOST3Code>KR</base:WIPOST3Code>
+                <base:DocNumber>102022000100096</base:DocNumber>
+                <base:Date>20220810</base:Date>
+              </business:Priority>
+            </business:PriorityDetails>
+          </business:BibliographicData>
+        </business:PatentDocumentAndRelated>
+      `
+
+      const parsed = parsePatentXml(xml, 'invention_application')!
+
+      expect(parsed.priority_info).toEqual({
+        priorities: [
+          {
+            country: 'KR',
+            doc_number: '10-2022-0100096',
+            date: '2022-08-10',
+            kind: 'international',
+            data_format: 'original',
+            source_db: 'national office',
+            sequence: '1',
+          },
+          {
+            country: 'KR',
+            doc_number: '102022000100096',
+            date: '2022-08-10',
+            kind: 'international',
+            data_format: 'standard',
+            source_db: undefined,
+            sequence: '1',
+          },
+        ],
+      })
     })
 
     it('parses lowercase and hyphenated compatibility nodes', () => {
@@ -631,7 +764,7 @@ describe('xml-parser — 完整字段解析', () => {
       expect(parsed.agency).toBe('Compat Agency')
       expect(parsed.application_number).toBe('CN2023999999')
       expect(parsed.application_date).toBe('2023-01-15')
-      expect(parsed.publication_date).toBe('2024-02-03')
+      expect(parsed.publication_date).toBeUndefined()
       expect(parsed.ipc_codes).toEqual(['H04L 12/58'])
       expect(parsed.agents_structured).toEqual([
         {

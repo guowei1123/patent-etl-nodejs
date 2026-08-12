@@ -23,6 +23,10 @@ interface CrcEntry {
   expectedCrc: string
 }
 
+function normalizeCrc32(value: string | number): string {
+  return value.toString(16).toUpperCase().replace(/^0X/, '').padStart(8, '0')
+}
+
 // ============ CRC32 计算 ============
 
 export async function computeFileCrc32(filePath: string): Promise<string> {
@@ -35,7 +39,7 @@ export async function computeFileCrc32(filePath: string): Promise<string> {
     })
 
     stream.on('end', () => {
-      resolve(crcValue.toString(16).toUpperCase())
+      resolve(normalizeCrc32(crcValue))
     })
 
     stream.on('error', reject)
@@ -187,7 +191,7 @@ export function parseCrcFile(crcFilePath: string): CrcEntry[] {
     if (fileName && crcPart) {
       results.push({
         relativePath: fileName,
-        expectedCrc: crcPart.toUpperCase(),
+        expectedCrc: normalizeCrc32(crcPart),
       })
     }
   }

@@ -60,15 +60,17 @@ import {
 import type { PatentListItem, PaginatedResponse } from '@/types'
 import { cn } from '@/lib/utils'
 
+type PatentKindFilter = 'all' | 'A' | 'B' | 'U'
+
 interface PatentTableProps {
   data: PaginatedResponse<PatentListItem>
   onPageChange: (page: number) => void
   onSearch: (search: string) => void
   onExpressionSearch: (expression: string) => void
-  onTypeFilter: (type: 'all' | 'B' | 'U') => void
+  onTypeFilter: (type: PatentKindFilter) => void
   search: string
   expression: string
-  typeFilter: 'all' | 'B' | 'U'
+  typeFilter: PatentKindFilter
   isLoading?: boolean
   hasError?: boolean
   errorMessage?: string
@@ -89,6 +91,31 @@ function parseListInput(value: string): string[] {
 function formatApplicants(patent: PatentListItem): string {
   if (!patent.applicants?.length) return '-'
   return patent.applicants.map((a) => a.name).join('; ')
+}
+
+function getPatentKindLabel(kind: string): string {
+  if (kind === 'A') return '发明申请'
+  if (kind === 'B') return '发明授权'
+  if (kind === 'U') return '实用新型'
+  return kind || '-'
+}
+
+function getPatentKindShortLabel(kind: string): string {
+  if (kind === 'A') return '申请'
+  if (kind === 'B') return '发明'
+  if (kind === 'U') return '实用'
+  return kind || '-'
+}
+
+function getDisplayPublicationDate(patent: PatentListItem): Date | null {
+  return patent.kind === 'A' ? patent.pub_date : patent.grant_date
+}
+
+function formatDisplayDate(date: Date | string | null | undefined): string {
+  if (!date) return '-'
+  const parsed = new Date(date)
+  if (Number.isNaN(parsed.getTime())) return '-'
+  return parsed.toLocaleDateString('zh-CN')
 }
 
 export function PatentTable({
@@ -275,7 +302,7 @@ export function PatentTable({
             <Select
               value={typeFilter}
               onValueChange={(value) =>
-                onTypeFilter(value as 'all' | 'B' | 'U')
+                onTypeFilter(value as PatentKindFilter)
               }
               disabled={isLoading}
             >
@@ -285,6 +312,7 @@ export function PatentTable({
               <SelectContent>
                 <SelectGroup>
                   <SelectItem value="all">全部类型</SelectItem>
+                  <SelectItem value="A">发明申请</SelectItem>
                   <SelectItem value="B">发明授权</SelectItem>
                   <SelectItem value="U">实用新型</SelectItem>
                 </SelectGroup>
@@ -502,7 +530,7 @@ export function PatentTable({
             ) : null}
             {typeFilter !== 'all' ? (
               <Badge variant="outline" className="px-2 py-1">
-                类型: {typeFilter === 'B' ? '发明授权' : '实用新型'}
+                类型: {getPatentKindLabel(typeFilter)}
               </Badge>
             ) : null}
           </div>
@@ -600,17 +628,19 @@ export function PatentTable({
                       variant="outline"
                       className={cn(
                         'gap-1 text-xs',
-                        patent.kind === 'B'
-                          ? 'border-info/50 text-info'
-                          : 'border-warning/50 text-warning',
+                        patent.kind === 'U'
+                          ? 'border-warning/50 text-warning'
+                          : 'border-info/50 text-info',
                       )}
                     >
-                      {patent.kind === 'B' ? (
-                        <Lightbulb aria-hidden="true" />
-                      ) : (
+                      {patent.kind === 'U' ? (
                         <Wrench aria-hidden="true" />
+                      ) : patent.kind === 'A' ? (
+                        <FileSearch aria-hidden="true" />
+                      ) : (
+                        <Lightbulb aria-hidden="true" />
                       )}
-                      {patent.kind === 'B' ? '发明' : '实用'}
+                      {getPatentKindShortLabel(patent.kind)}
                     </Badge>
                   </TableCell>
                   <TableCell className="max-w-[300px]">
@@ -627,9 +657,7 @@ export function PatentTable({
                     </p>
                   </TableCell>
                   <TableCell className="text-muted-foreground text-sm">
-                    {patent.pub_date
-                      ? new Date(patent.pub_date).toLocaleDateString('zh-CN')
-                      : '-'}
+                    {formatDisplayDate(getDisplayPublicationDate(patent))}
                   </TableCell>
                   <TableCell>
                     <Link href={`/patents/${patent.id}`}>
