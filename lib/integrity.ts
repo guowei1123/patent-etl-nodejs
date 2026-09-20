@@ -23,6 +23,88 @@ interface CrcEntry {
   expectedCrc: string
 }
 
+const ZIP_EOCD_SIGNATURE = 0x06054b50
+const DOWNLOAD_MANIFEST_FILE = '.archive-download-manifest.json'
+const DOWNLOAD_MANIFEST_VERSION = 1
+
+interface DownloadManifestFile {
+  name: string
+  size: number
+}
+
+interface DownloadManifest {
+  version: number
+  files: DownloadManifestFile[]
+}
+
+export function writeDownloadManifest(
+  dirPath: string,
+  files: DownloadManifestFile[],
+): void {
+  fs.mkdirSync(dirPath, { recursive: true })
+  const manifest: DownloadManifest = {
+    version: DOWNLOAD_MANIFEST_VERSION,
+    files: files.map((file) => ({
+      name: path.basename(file.name),
+      size: file.size,
+    })),
+  }
+  fs.writeFileSync(
+    path.join(dirPath, DOWNLOAD_MANIFEST_FILE),
+    JSON.stringify(manifest),
+  )
+}
+
+function readDownloadManifest(dirPath: string): DownloadManifest | null {
+  const manifestPath = path.join(dirPath, DOWNLOAD_MANIFEST_FILE)
+  if (!fs.existsSync(manifestPath)) return null
+
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(manifestPath, 'utf-8'),
+    ) as DownloadManifest
+    if (
+      manifest.version !== DOWNLOAD_MANIFEST_VERSION ||
+      !Array.isArray(manifest.files)
+    ) {
+      return null
+    }
+
+    const files = manifest.files.filter(
+      (file) =>
+        file &&
+        typeof file.name === 'string' &&
+        path.basename(file.name) === file.name &&
+        Number.isSafeInteger(file.size) &&
+        file.size >= 0,
+    )
+    if (files.length !== manifest.files.length) return null
+
+    return { version: manifest.version, files }
+  } catch {
+    return null
+  }
+}
+
+async function hasZipEndOfCentralDirectory(filePath: string): Promise<boolean> {
+  const { size } = await fs.promises.stat(filePath)
+  if (size < 22) return false
+
+  const searchLength = Math.min(size, 65535 + 22)
+  const buffer = Buffer.alloc(searchLength)
+  const file = await fs.promises.open(filePath, 'r')
+  try {
+    await file.read(buffer, 0, searchLength, size - searchLength)
+  } finally {
+    await file.close()
+  }
+
+  for (let index = searchLength - 22; index >= 0; index--) {
+    if (buffer.readUInt32LE(index) === ZIP_EOCD_SIGNATURE) return true
+  }
+  return false
+}
+
 function normalizeCrc32(value: string | number): string {
   return value.toString(16).toUpperCase().replace(/^0X/, '').padStart(8, '0')
 }
@@ -59,6 +141,36 @@ export async function verifyDownloadedArchive(
       passed: false,
       checkedFiles: 0,
       failures: [{ file: dirPath, reason: '目录不存在' }],
+    }
+  }
+
+  const manifest = readDownloadManifest(dirPath)
+  const manifestFileNames = new Set(
+    manifest?.files.map((file) => file.name.toLowerCase()) ?? [],
+  )
+  if (manifest) {
+    for (const expectedFile of manifest.files) {
+      checkedFiles++
+      const filePath = path.join(dirPath, expectedFile.name)
+      if (!fs.existsSync(filePath)) {
+        failures.push({
+          file: expectedFile.name,
+          expected: `${expectedFile.size} bytes`,
+          actual: '0 bytes',
+          reason: '下载文件缺失',
+        })
+        continue
+      }
+
+      const actualSize = fs.statSync(filePath).size
+      if (actualSize !== expectedFile.size) {
+        failures.push({
+          file: expectedFile.name,
+          expected: `${expectedFile.size} bytes`,
+          actual: `${actualSize} bytes`,
+          reason: '文件大小与 FTP 源文件不一致，下载可能未完成',
+        })
+      }
     }
   }
 
@@ -111,10 +223,31 @@ export async function verifyDownloadedArchive(
       continue
     }
 
-    checkedFiles++
+    if (!manifestFileNames.has(`${baseName}.zip`.toLowerCase())) {
+      checkedFiles++
+    }
 
     // 检查分卷文件大小一致性
     if (splitParts.length > 0) {
+      if (!manifest && splitParts.length === 1) {
+        failures.push({
+          file: splitParts[0],
+          reason:
+            '缺少 FTP 源文件大小清单，无法确认单个分卷是否下载完整，请重新执行下载',
+        })
+      }
+
+      const mainZipPath = path.join(dirPath, `${baseName}.zip`)
+      const mainZipStat = fs.statSync(mainZipPath)
+      if (mainZipStat.size === 0) {
+        failures.push({ file: `${baseName}.zip`, reason: '主 ZIP 文件大小为 0' })
+      } else if (!(await hasZipEndOfCentralDirectory(mainZipPath))) {
+        failures.push({
+          file: `${baseName}.zip`,
+          reason: '主 ZIP 文件缺少结束目录，下载可能未完成',
+        })
+      }
+
       // 验证序号连续
       for (let i = 0; i < splitParts.length; i++) {
         const expectedNum = i + 1
@@ -149,7 +282,9 @@ export async function verifyDownloadedArchive(
         }
       }
 
-      checkedFiles += splitParts.length
+      checkedFiles += splitParts.filter(
+        (file) => !manifestFileNames.has(file.toLowerCase()),
+      ).length
     } else {
       // 单 ZIP 文件：尝试用 yauzl 打开验证结构
       const zipPath = path.join(dirPath, `${baseName}.zip`)

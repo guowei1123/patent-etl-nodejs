@@ -3,7 +3,11 @@ import * as os from 'os'
 import * as path from 'path'
 import * as zlib from 'zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { verifyExtractedFilesCrc } from '../integrity'
+import {
+  verifyDownloadedArchive,
+  verifyExtractedFilesCrc,
+  writeDownloadManifest,
+} from '../integrity'
 
 const yauzlMock = vi.hoisted(() => ({
   open: vi.fn(),
@@ -153,5 +157,83 @@ describe('verifyExtractedFilesCrc', () => {
       { lazyEntries: true },
       expect.any(Function),
     )
+  })
+})
+
+describe('verifyDownloadedArchive', () => {
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'integrity-download-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('rejects a split archive whose main ZIP was only partially downloaded', async () => {
+    writeFile('batch.z01', Buffer.alloc(1024, 1))
+    writeFile('batch.z02', Buffer.alloc(1024, 2))
+    writeFile('batch.zip', Buffer.alloc(512, 3))
+
+    const result = await verifyDownloadedArchive(tmpDir)
+
+    expect(result.passed).toBe(false)
+    expect(result.failures).toContainEqual(
+      expect.objectContaining({
+        file: 'batch.zip',
+        reason: '主 ZIP 文件缺少结束目录，下载可能未完成',
+      }),
+    )
+  })
+
+  it('rejects a truncated single split part using the persisted FTP sizes', async () => {
+    const mainZip = Buffer.alloc(22)
+    mainZip.writeUInt32LE(0x06054b50, 0)
+    writeFile('batch.z01', Buffer.alloc(900, 1))
+    writeFile('batch.zip', mainZip)
+    writeDownloadManifest(tmpDir, [
+      { name: 'batch.z01', size: 1024 },
+      { name: 'batch.zip', size: mainZip.length },
+    ])
+
+    const result = await verifyDownloadedArchive(tmpDir)
+
+    expect(result.passed).toBe(false)
+    expect(result.failures).toContainEqual({
+      file: 'batch.z01',
+      expected: '1024 bytes',
+      actual: '900 bytes',
+      reason: '文件大小与 FTP 源文件不一致，下载可能未完成',
+    })
+  })
+
+  it('accepts a complete single split part when FTP sizes match', async () => {
+    const mainZip = Buffer.alloc(22)
+    mainZip.writeUInt32LE(0x06054b50, 0)
+    writeFile('batch.z01', Buffer.alloc(1024, 1))
+    writeFile('batch.zip', mainZip)
+    writeDownloadManifest(tmpDir, [
+      { name: 'batch.z01', size: 1024 },
+      { name: 'batch.zip', size: mainZip.length },
+    ])
+
+    const result = await verifyDownloadedArchive(tmpDir)
+
+    expect(result).toEqual({ passed: true, checkedFiles: 2, failures: [] })
+  })
+
+  it('rejects a legacy single split part without a trusted size manifest', async () => {
+    const mainZip = Buffer.alloc(22)
+    mainZip.writeUInt32LE(0x06054b50, 0)
+    writeFile('batch.z01', Buffer.alloc(1024, 1))
+    writeFile('batch.zip', mainZip)
+
+    const result = await verifyDownloadedArchive(tmpDir)
+
+    expect(result.passed).toBe(false)
+    expect(result.failures).toContainEqual({
+      file: 'batch.z01',
+      reason:
+        '缺少 FTP 源文件大小清单，无法确认单个分卷是否下载完整，请重新执行下载',
+    })
   })
 })

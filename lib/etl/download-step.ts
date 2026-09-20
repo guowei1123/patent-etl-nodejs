@@ -7,7 +7,11 @@ import {
   FtpConnectionPool,
 } from '../ftp-client'
 import { getTempPath } from '../file-processor'
-import { verifyDownloadedArchive, formatIntegrityReport } from '../integrity'
+import {
+  verifyDownloadedArchive,
+  formatIntegrityReport,
+  writeDownloadManifest,
+} from '../integrity'
 import {
   updateBatchStatus,
   updateBatchProgress,
@@ -90,6 +94,13 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
 
     // 初始化文件列表状态
     const filteredEntries = fileEntries.filter(fileFilter)
+    writeDownloadManifest(
+      tempPath,
+      filteredEntries.map((entry) => ({
+        name: entry.name,
+        size: entry.size,
+      })),
+    )
     await updateBatchProgress(batchCode, filteredEntries.length)
 
     const fileList: FileDownloadItem[] = filteredEntries.map((e) => {

@@ -590,6 +590,7 @@ export default function BatchDetailPage({
     {
       refreshInterval: 1000,
       onSuccess: (latestData) => {
+        if (!latestData.success || !latestData.data) return
         const { batch: latestBatch, is_running: isTaskStillRunning } =
           latestData.data
         // 宽限期：乐观状态刚设置 5 秒内，不信任 is_running=false，避免启动竞态
@@ -616,7 +617,9 @@ export default function BatchDetailPage({
     reportedBatch &&
     optimisticStatus &&
     !isActiveStatus(reportedBatch.status) &&
-    (statusData ? statusData.data.is_running || trustOptimisticStatus : true)
+    (statusData?.success && statusData.data
+      ? statusData.data.is_running || trustOptimisticStatus
+      : true)
   const batch = shouldUseOptimisticStatus
     ? { ...reportedBatch, status: optimisticStatus }
     : reportedBatch
@@ -627,7 +630,7 @@ export default function BatchDetailPage({
   const localExtract = data?.data?.localExtract
   const isLoading = !data && !error
   const statusActive = isActiveStatus(batch?.status)
-  const actuallyRunning = statusData
+  const actuallyRunning = statusData?.success && statusData.data
     ? statusData.data.is_running || trustOptimisticStatus
     : !!statusActive
   const isRunning = !!statusActive && actuallyRunning
