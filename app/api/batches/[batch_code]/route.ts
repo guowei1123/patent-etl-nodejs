@@ -93,7 +93,7 @@ export async function DELETE(
 
     const localTempBeforeDelete = getTempDirState(batch_code)
     const deleteResult = await deleteBatch(batch_code)
-    cleanTempDir(batch_code)
+    await cleanTempDir(batch_code)
 
     return NextResponse.json({
       success: true,

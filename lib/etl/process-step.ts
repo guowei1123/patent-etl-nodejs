@@ -646,11 +646,11 @@ async function uploadReferencedPatentImages(
 export async function runProcessStep(batchCode: string): Promise<StepResult> {
   const batch = await getBatchByCode(batchCode)
   if (!batch) return { success: false, batchCode, error: '批次不存在' }
-  if (batch.status !== 'downloaded') {
+  if (!['downloaded', 'processing'].includes(batch.status)) {
     return {
       success: false,
       batchCode,
-      error: `当前状态 ${batch.status} 不可执行处理，需要 downloaded`,
+      error: `当前状态 ${batch.status} 不可执行处理，需要 downloaded 或 processing`,
     }
   }
 

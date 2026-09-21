@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { initializeDatabase, getBatchByCode, addLog } from '@/lib/db'
 import { isTaskRunning } from '@/lib/etl-pipeline'
+import { getActiveAutoTask } from '@/lib/etl/auto-queue'
 import { cleanTempDir, getTempDirState } from '@/lib/temp-dir'
 
 // POST /api/sync/cleanup - 手动清理已完成批次的本地临时文件
@@ -36,9 +37,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (isTaskRunning(batch_code)) {
+    const autoTask = await getActiveAutoTask(batch_code)
+    if (isTaskRunning(batch_code) || autoTask) {
       return NextResponse.json(
-        { success: false, error: '该批次已有任务在运行中，无法清理' },
+        { success: false, error: '该批次已有自动任务在运行或等待中，无法清理' },
         { status: 409 },
       )
     }
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    cleanTempDir(batch_code)
+    await cleanTempDir(batch_code)
     await addLog(batch_code, 'info', '[手动清理] 本地临时文件已清除')
 
     return NextResponse.json({

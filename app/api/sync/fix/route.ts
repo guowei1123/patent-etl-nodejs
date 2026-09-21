@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { syncBatchRecord } from '@/lib/etl-pipeline'
 import { initializeDatabase, getBatchByCode } from '@/lib/db'
+import { getActiveAutoTask } from '@/lib/etl/auto-queue'
 
 // POST /api/sync/fix - 同步修复批次记录状态
 export async function POST(request: NextRequest) {
@@ -22,6 +23,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { success: false, error: '批次记录不存在' },
         { status: 404 },
+      )
+    }
+
+    const activeTask = await getActiveAutoTask(batch_code)
+    if (activeTask) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `该批次的${activeTask.stage}任务仍在自动队列中，不能修复状态`,
+        },
+        { status: 409 },
       )
     }
 

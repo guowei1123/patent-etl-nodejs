@@ -62,11 +62,11 @@ function formatImportFailureMessage(
 export async function runImportStep(batchCode: string): Promise<StepResult> {
   const batch = await getBatchByCode(batchCode)
   if (!batch) return { success: false, batchCode, error: '批次不存在' }
-  if (batch.status !== 'processed') {
+  if (!['processed', 'importing'].includes(batch.status)) {
     return {
       success: false,
       batchCode,
-      error: `当前状态 ${batch.status} 不可执行导入，需要 processed`,
+      error: `当前状态 ${batch.status} 不可执行导入，需要 processed 或 importing`,
     }
   }
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { initializeDatabase, getBatchByCode, addLog } from '@/lib/db'
 import { isTaskRunning } from '@/lib/etl-pipeline'
+import { getActiveAutoTask } from '@/lib/etl/auto-queue'
 import { getTempPath } from '@/lib/temp-dir'
 import {
   verifyDownloadedArchive,
@@ -47,9 +48,10 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (isTaskRunning(batch_code)) {
+    const autoTask = await getActiveAutoTask(batch_code)
+    if (isTaskRunning(batch_code) || autoTask) {
       return NextResponse.json(
-        { success: false, error: '该批次已有任务在运行中，无法执行校验' },
+        { success: false, error: '该批次已有自动任务在运行或等待中，无法执行校验' },
         { status: 409 },
       )
     }

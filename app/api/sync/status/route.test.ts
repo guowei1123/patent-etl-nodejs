@@ -13,14 +13,21 @@ const etlMock = vi.hoisted(() => ({
   isTaskRunning: vi.fn(),
 }))
 
+const autoQueueMock = vi.hoisted(() => ({
+  getActiveAutoTask: vi.fn(),
+  requestAutoTaskCancellation: vi.fn(),
+}))
+
 vi.mock('@/lib/db', () => dbMock)
 vi.mock('@/lib/etl-pipeline', () => etlMock)
+vi.mock('@/lib/etl/auto-queue', () => autoQueueMock)
 
 describe('sync status route process progress', () => {
   beforeEach(() => {
     vi.resetModules()
     for (const mock of Object.values(dbMock)) mock.mockReset()
     for (const mock of Object.values(etlMock)) mock.mockReset()
+    for (const mock of Object.values(autoQueueMock)) mock.mockReset()
     dbMock.getBatchByCode.mockResolvedValue({
       batch_code: 'batch-1',
       status: 'processing',
@@ -46,6 +53,7 @@ describe('sync status route process progress', () => {
       imageFailed: 0,
       updatedAt: 1,
     })
+    autoQueueMock.getActiveAutoTask.mockResolvedValue(null)
   })
 
   it('returns process progress for running processing batches', async () => {

@@ -7,6 +7,8 @@ import {
   getBatchByFtpFolder,
 } from '@/lib/db'
 import { generateBatchCode } from '@/lib/batch-code'
+import { enqueueAutoTask } from '@/lib/etl/auto-queue'
+import { startInlineScheduler, wakeInlineScheduler } from '@/lib/etl/inline-scheduler'
 import type { BatchStatus, PatentType } from '@/types'
 
 // GET /api/batches - 获取批次列表
@@ -105,11 +107,15 @@ export async function POST(request: NextRequest) {
       data_type as PatentType,
       ftp_folder,
     )
+    const task = await enqueueAutoTask(batch_code, 'download')
+    startInlineScheduler()
+    wakeInlineScheduler()
 
     return NextResponse.json({
       success: true,
       data: batch,
-      message: '批次创建成功',
+      task,
+      message: '批次已创建，已加入自动下载队列',
     })
   } catch (error) {
     console.error('创建批次失败:', error)

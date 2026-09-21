@@ -427,6 +427,25 @@ describe('initializeDatabase schema compatibility', () => {
       'CREATE INDEX IF NOT EXISTS idx_cpc_classification_subclass ON cnipa.cpc_classification(subclass)',
     )
   })
+
+  it('shares one initialization for concurrent callers', async () => {
+    const client = createClient((sql) => {
+      if (sql.includes('information_schema.columns')) {
+        return {
+          rows: [{ column_name: 'kind', data_type: 'text' }],
+          rowCount: 1,
+        }
+      }
+
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+
+    const { initializeDatabase } = await import('../db')
+    await Promise.all([initializeDatabase(), initializeDatabase()])
+
+    expect(pgMock.connect).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('getClassificationList', () => {

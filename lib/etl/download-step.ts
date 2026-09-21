@@ -32,11 +32,11 @@ import {
 export async function runDownloadStep(batchCode: string): Promise<StepResult> {
   const batch = await getBatchByCode(batchCode)
   if (!batch) return { success: false, batchCode, error: '批次不存在' }
-  if (batch.status !== 'pending') {
+  if (!['pending', 'downloading'].includes(batch.status)) {
     return {
       success: false,
       batchCode,
-      error: `当前状态 ${batch.status} 不可执行下载，需要 pending`,
+      error: `当前状态 ${batch.status} 不可执行下载，需要 pending 或 downloading`,
     }
   }
 

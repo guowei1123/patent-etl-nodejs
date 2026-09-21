@@ -7,6 +7,7 @@ import yauzl from 'yauzl'
 export {
   cleanTempDir,
   ensureTempDir,
+  getTempBatchDirectories,
   getTempDirState,
   getTempPath,
   resolveTempPath,

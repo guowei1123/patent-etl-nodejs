@@ -62,6 +62,8 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 })
 
+let databaseInitialization: Promise<void> | null = null
+
 type DependentView = {
   schema_name: string
   view_name: string
@@ -193,7 +195,7 @@ async function relaxPatentKindConstraintIfNeeded(
 }
 
 // 閸掓繂顫愰崠鏍ㄦ殶閹诡喖绨辩悰顭掔礄public: sync_batches + sync_logs; cnipa: patent + 鐎涙劘銆冮敍?
-export async function initializeDatabase(): Promise<void> {
+async function runDatabaseInitialization(): Promise<void> {
   const client = await pool.connect()
   try {
     // === public schema: sync_batches ===
@@ -233,6 +235,45 @@ export async function initializeDatabase(): Promise<void> {
 
     await client.query(
       'CREATE INDEX IF NOT EXISTS idx_sync_logs_batch_code ON sync_logs(batch_code)',
+    )
+
+    // 自动同步任务与既有的手动流程隔离：仅新建批次或用户明确触发时写入。
+    // 不接管历史 sync_job_tasks，避免遗留任务在服务启动后被误执行。
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS auto_sync_tasks (
+        id                BIGSERIAL PRIMARY KEY,
+        batch_code        VARCHAR(100) NOT NULL REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
+        stage             VARCHAR(20) NOT NULL CHECK (stage IN ('download', 'process', 'import', 'cleanup')),
+        queue_version     INTEGER NOT NULL DEFAULT 1,
+        status            VARCHAR(20) NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+        priority          INTEGER NOT NULL DEFAULT 0,
+        attempt_count     INTEGER NOT NULL DEFAULT 0,
+        max_attempts      INTEGER NOT NULL DEFAULT 3,
+        next_run_at       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        worker_id         VARCHAR(120),
+        lease_expires_at  TIMESTAMP,
+        heartbeat_at      TIMESTAMP,
+        cancel_requested  BOOLEAN NOT NULL DEFAULT FALSE,
+        last_error        TEXT,
+        progress_details  JSONB,
+        created_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at        TIMESTAMP,
+        completed_at      TIMESTAMP,
+        updated_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(batch_code, stage, queue_version)
+      )
+    `)
+    await client.query(`
+      ALTER TABLE auto_sync_tasks
+        ADD COLUMN IF NOT EXISTS manual_override BOOLEAN NOT NULL DEFAULT FALSE
+    `)
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_auto_sync_tasks_claim
+         ON auto_sync_tasks (queue_version, stage, status, next_run_at, priority DESC, id)`,
+    )
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS idx_auto_sync_tasks_batch
+         ON auto_sync_tasks (batch_code, queue_version, status)`,
     )
 
     // === cnipa schema ===
@@ -596,6 +637,22 @@ export async function initializeDatabase(): Promise<void> {
   } finally {
     client.release()
   }
+}
+
+export function initializeDatabase(): Promise<void> {
+  if (databaseInitialization) return databaseInitialization
+
+  const initialization = runDatabaseInitialization()
+  databaseInitialization = initialization
+
+  void initialization.catch(() => {
+    // 初始化失败时允许后续请求在数据库恢复后重新尝试。
+    if (databaseInitialization === initialization) {
+      databaseInitialization = null
+    }
+  })
+
+  return initialization
 }
 
 // ============ Batch 閹垮秳缍旈敍鍧blic schema閿涘奔绗夐崣姗堢礆 ============

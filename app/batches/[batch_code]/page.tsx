@@ -123,6 +123,14 @@ const stepStatusMap: Record<string, BatchStatus> = {
   import: 'importing',
 }
 
+type QueueTaskSummary = {
+  stage: 'download' | 'process' | 'import' | 'cleanup'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  priority: number
+  attempt_count: number
+  max_attempts: number
+}
+
 function isActiveStatus(status?: BatchStatus | null): boolean {
   return !!status && activeStatuses.includes(status)
 }
@@ -571,7 +579,8 @@ export default function BatchDetailPage({
 
   const dbBatch = data?.data?.batch
   const dbStatusActive = isActiveStatus(dbBatch?.status)
-  const shouldPollStatus = !!dbStatusActive || optimisticActiveStep !== null
+  // 新建批次可能尚未被调度器领取，仍需轮询队列状态以显示“等待下载”。
+  const shouldPollStatus = !!dbBatch || optimisticActiveStep !== null
 
   // 活跃任务实时轮询：下载阶段带文件进度，导入阶段带已导入计数。
   const { data: statusData } = useSWR<{
@@ -580,6 +589,7 @@ export default function BatchDetailPage({
       batch: SyncBatch
       is_running: boolean
       progress: number
+      queue_task: QueueTaskSummary | null
       current_file: FileDownloadProgress | null
       file_list: FileDownloadItem[] | null
       process_progress: ProcessProgress | null
@@ -611,6 +621,13 @@ export default function BatchDetailPage({
   )
 
   const reportedBatch = statusData?.data?.batch ?? dbBatch
+  const queueTask = statusData?.data?.queue_task ?? null
+  const queueTaskActive =
+    queueTask?.status === 'queued' || queueTask?.status === 'running'
+  const queuedStatus =
+    queueTaskActive && queueTask.stage !== 'cleanup'
+      ? stepStatusMap[queueTask.stage]
+      : null
   const optimisticStatus =
     optimisticActiveStep && stepStatusMap[optimisticActiveStep]
   const shouldUseOptimisticStatus =
@@ -620,9 +637,11 @@ export default function BatchDetailPage({
     (statusData?.success && statusData.data
       ? statusData.data.is_running || trustOptimisticStatus
       : true)
-  const batch = shouldUseOptimisticStatus
-    ? { ...reportedBatch, status: optimisticStatus }
-    : reportedBatch
+  const batch = queuedStatus && reportedBatch
+    ? { ...reportedBatch, status: queuedStatus }
+    : shouldUseOptimisticStatus
+      ? { ...reportedBatch, status: optimisticStatus }
+      : reportedBatch
   const logs = data?.data?.logs || []
   const latestImportFailures =
     logs.map(getImportFailures).find((failures) => failures.length > 0) || []
@@ -633,7 +652,7 @@ export default function BatchDetailPage({
   const actuallyRunning = statusData?.success && statusData.data
     ? statusData.data.is_running || trustOptimisticStatus
     : !!statusActive
-  const isRunning = !!statusActive && actuallyRunning
+  const isRunning = queueTaskActive || (!!statusActive && actuallyRunning)
   const isOrphaned = !!statusActive && !actuallyRunning
   const isDownloading = batch?.status === 'downloading'
   const isImporting = batch?.status === 'importing'
@@ -689,14 +708,17 @@ export default function BatchDetailPage({
     }
   }
 
-  const handleRunStep = async (step: string) => {
+  const handleRunStep = async (step: string, manualDownload = false) => {
     setVerifyResult(null)
     try {
-      const response = await fetch('/api/sync/step', {
+      const response = await fetch(
+        manualDownload ? '/api/sync/manual-download' : '/api/sync/step',
+        {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ batch_code, step }),
-      })
+        },
+      )
       const result = await response.json()
 
       if (result.success) {
@@ -871,6 +893,13 @@ export default function BatchDetailPage({
     color: 'text-muted-foreground',
     bgColor: 'bg-secondary',
   }
+  const waitingStageLabel =
+    queueTask?.status === 'queued'
+      ? stepConfig.find((step) => step.key === queueTask.stage)?.label
+      : null
+  const displayStatus = waitingStageLabel
+    ? { ...status, label: `等待${waitingStageLabel}` }
+    : status
   const nextStep = getNextStep(batch.status)
   const hasLocalTempFiles = localTemp?.hasFiles ?? false
   const hasLocalExtractFiles = localExtract?.hasFiles ?? false
@@ -910,6 +939,22 @@ export default function BatchDetailPage({
         onRefresh={() => mutate()}
         action={
           <div className="flex gap-2">
+            {queueTask?.status === 'queued' &&
+              queueTask.stage !== 'cleanup' && (
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    handleRunStep(
+                      queueTask.stage,
+                      queueTask.stage === 'download',
+                    )
+                  }
+                >
+                  <Play data-icon="inline-start" />
+                  手动{waitingStageLabel || queueTask.stage}
+                  {queueTask.stage === 'download' ? '（扩容）' : '（优先）'}
+                </Button>
+              )}
             {isRunning && (
               <Button variant="outline" onClick={handleCancel}>
                 取消任务
@@ -1032,7 +1077,7 @@ export default function BatchDetailPage({
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-lg font-semibold">{status.label}</h2>
+                  <h2 className="text-lg font-semibold">{displayStatus.label}</h2>
                   <Badge variant="outline">
                     {batch.data_type === 'invention' ? '发明授权' : batch.data_type === 'invention_application' ? '发明申请' : '实用新型'}
                   </Badge>
@@ -1063,10 +1108,18 @@ export default function BatchDetailPage({
                 <div className="mb-2 flex justify-between text-sm">
                   <span className="text-muted-foreground">进度</span>
                   <span className="text-foreground">
-                    {Math.round(getProgress(batch))}%
+                    {Math.round(statusData?.data?.progress ?? getProgress(batch))}%
                   </span>
                 </div>
-                <Progress value={getProgress(batch)} className="h-2" />
+                <Progress
+                  value={statusData?.data?.progress ?? getProgress(batch)}
+                  className="h-2"
+                />
+                {queueTask?.status === 'queued' && (
+                  <p className="text-muted-foreground mt-2 text-xs" aria-live="polite">
+                    已加入自动队列，等待{stepConfig.find((step) => step.key === queueTask.stage)?.label || queueTask.stage}名额…
+                  </p>
+                )}
                 {isImporting && (
                   <p className="text-muted-foreground mt-2 text-xs">
                     已导入 {batch.imported_patents.toLocaleString()} /{' '}
@@ -1106,9 +1159,13 @@ export default function BatchDetailPage({
 
                   <div className="flex flex-wrap gap-2">
                     {nextStep && (
-                      <Button onClick={() => handleRunStep(nextStep)}>
+                      <Button
+                        onClick={() =>
+                          handleRunStep(nextStep, nextStep === 'download')
+                        }
+                      >
                         <Play data-icon="inline-start" />
-                        执行{stepConfig.find((s) => s.key === nextStep)?.label}
+                        {nextStep === 'download' ? '手动下载（扩容）' : `手动执行${stepConfig.find((s) => s.key === nextStep)?.label}`}
                       </Button>
                     )}
 

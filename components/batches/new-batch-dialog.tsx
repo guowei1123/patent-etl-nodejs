@@ -99,7 +99,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
       const result = await response.json()
 
       if (result.success) {
-        toast.success('批次创建成功')
+        toast.success(result.message || '批次已加入自动下载队列')
         setOpen(false)
         setFormData({ batch_code: '', data_type: 'invention', ftp_folder: '' })
         onSuccess?.()

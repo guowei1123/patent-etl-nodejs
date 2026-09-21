@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { isTaskRunning, stepFunctions } from '@/lib/etl-pipeline'
 import { initializeDatabase, getBatchByCode } from '@/lib/db'
+import {
+  enqueueAutoTask,
+  getActiveAutoTask,
+  parseAutoStage,
+} from '@/lib/etl/auto-queue'
+import { startInlineScheduler, wakeInlineScheduler } from '@/lib/etl/inline-scheduler'
 
 const VALID_STEPS = ['download', 'process', 'import']
 
@@ -8,6 +13,12 @@ const STEP_LABELS: Record<string, string> = {
   download: '下载',
   process: '处理',
   import: '导入',
+}
+
+const STEP_REQUIRED_STATUS: Record<string, string> = {
+  download: 'pending',
+  process: 'downloaded',
+  import: 'processed',
 }
 
 // POST /api/sync/step - 执行单个步骤
@@ -43,30 +54,43 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (isTaskRunning(batch_code)) {
+    const stage = parseAutoStage(step)
+    if (!stage || stage === 'cleanup') {
       return NextResponse.json(
-        { success: false, error: '该批次已有任务在运行中' },
+        { success: false, error: '无效的自动执行步骤' },
+        { status: 400 },
+      )
+    }
+
+    if (batch.status !== STEP_REQUIRED_STATUS[stage]) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `当前状态 ${batch.status} 不可执行${STEP_LABELS[step]}，需要 ${STEP_REQUIRED_STATUS[stage]}`,
+        },
         { status: 409 },
       )
     }
 
-    const stepFn = stepFunctions[step]
-    if (!stepFn) {
+    const activeTask = await getActiveAutoTask(batch_code)
+    if (activeTask && activeTask.stage !== stage) {
       return NextResponse.json(
-        { success: false, error: `步骤函数未找到: ${step}` },
-        { status: 500 },
+        {
+          success: false,
+          error: `该批次正在${STEP_LABELS[activeTask.stage] || activeTask.stage}队列中，不能启动${STEP_LABELS[step]}`,
+        },
+        { status: 409 },
       )
     }
 
-    // 异步执行步骤
-    stepFn(batch_code).catch((error) => {
-      console.error(`步骤 ${step} 执行失败:`, error)
-    })
+    const task = await enqueueAutoTask(batch_code, stage, { priority: 100 })
+    startInlineScheduler()
+    wakeInlineScheduler()
 
     return NextResponse.json({
       success: true,
-      message: `${STEP_LABELS[step]}步骤已启动`,
-      data: { batch_code, step },
+      message: `${STEP_LABELS[step]}已加入自动队列并提高优先级`,
+      data: { batch_code, step, task },
     })
   } catch (error) {
     console.error('执行步骤失败:', error)

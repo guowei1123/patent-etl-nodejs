@@ -142,10 +142,25 @@ describe('temp directory cleanup', () => {
     fs.writeFileSync(path.join(tempRoot, 'batch-a', 'data.zip'), 'a')
     fs.writeFileSync(path.join(tempRoot, 'batch-b', 'data.zip'), 'b')
 
-    cleanTempDir('batch-a')
+    await cleanTempDir('batch-a')
 
     expect(fs.existsSync(path.join(tempRoot, 'batch-a'))).toBe(false)
     expect(fs.existsSync(path.join(tempRoot, 'batch-b', 'data.zip'))).toBe(true)
+
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  })
+
+  it('lists only direct batch directories in the temporary root', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fp-batches-test-'))
+    vi.stubEnv('TEMP_DIR', tempRoot)
+    vi.resetModules()
+    const { getTempBatchDirectories } = await import('../file-processor')
+
+    fs.mkdirSync(path.join(tempRoot, 'batch-a'), { recursive: true })
+    fs.mkdirSync(path.join(tempRoot, 'batch-b'), { recursive: true })
+    fs.writeFileSync(path.join(tempRoot, 'notes.txt'), 'ignore')
+
+    expect(getTempBatchDirectories().sort()).toEqual(['batch-a', 'batch-b'])
 
     fs.rmSync(tempRoot, { recursive: true, force: true })
   })
@@ -156,8 +171,8 @@ describe('temp directory cleanup', () => {
     vi.resetModules()
     const { cleanTempDir } = await import('../file-processor')
 
-    expect(() => cleanTempDir('../outside')).toThrow('超出允许范围')
-    expect(() => cleanTempDir(path.join(tempRoot, 'batch-a'))).toThrow(
+    await expect(cleanTempDir('../outside')).rejects.toThrow('超出允许范围')
+    await expect(cleanTempDir(path.join(tempRoot, 'batch-a'))).rejects.toThrow(
       '不能是绝对路径',
     )
 

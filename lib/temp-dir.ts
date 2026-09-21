@@ -46,14 +46,32 @@ export function getTempPath(subdir?: string): string {
   return fullPath
 }
 
-export function cleanTempDir(subdir?: string): void {
+export function getTempBatchDirectories(): string[] {
+  const tempRoot = ensureTempDir()
+  return fs
+    .readdirSync(/* turbopackIgnore: true */ tempRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+}
+
+export async function cleanTempDir(
+  subdir?: string,
+): Promise<{ path: string; exists: false; hasFiles: false }> {
   const targetPath = resolveTempPath(subdir)
   if (fs.existsSync(/* turbopackIgnore: true */ targetPath)) {
-    fs.rmSync(/* turbopackIgnore: true */ targetPath, {
+    await fs.promises.rm(/* turbopackIgnore: true */ targetPath, {
       recursive: true,
       force: true,
+      maxRetries: 5,
+      retryDelay: 300,
     })
   }
+
+  if (fs.existsSync(/* turbopackIgnore: true */ targetPath)) {
+    throw new Error(`本地临时目录未删除：${targetPath}`)
+  }
+
+  return { path: targetPath, exists: false, hasFiles: false }
 }
 
 export function getTempDirState(subdir: string): {
