@@ -9,6 +9,7 @@ const dbMock = vi.hoisted(() => ({
   countImportedPatentsByBatch: vi.fn(),
   getBatchByCode: vi.fn(),
   getImportedPatentKeysByBatch: vi.fn(),
+  getPool: vi.fn(),
   insertPatents: vi.fn(),
   updateBatchProgress: vi.fn(),
   updateBatchStatus: vi.fn(),
@@ -20,6 +21,7 @@ const fileMock = vi.hoisted(() => ({
 
 vi.mock('../db', () => dbMock)
 vi.mock('../file-processor', () => ({
+  scanLocalArchiveFiles: vi.fn(),
   getTempPath: (subdir?: string) => {
     const target = subdir
       ? path.join(fileMock.tempRoot, subdir)
@@ -102,6 +104,103 @@ describe('runImportStep failure details', () => {
         importedPatents: 2,
         totalPatents: 3,
       },
+    )
+  })
+
+  it('streams deduplicated records, skips imported keys and flushes the final partial chunk', async () => {
+    const parsedDir = path.join(fileMock.tempRoot, 'batch-1')
+    fs.mkdirSync(parsedDir, { recursive: true })
+    const source = Array.from({ length: 305 }, (_, index) =>
+      patent(String(index)),
+    )
+    source.push({ ...patent('0'), title: 'replacement' })
+    fs.writeFileSync(
+      path.join(parsedDir, 'parsed.json'),
+      JSON.stringify(source),
+    )
+    dbMock.getBatchByCode.mockResolvedValue({
+      batch_code: 'batch-1',
+      status: 'importing',
+    })
+    dbMock.countImportedPatentsByBatch
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(305)
+    dbMock.getImportedPatentKeysByBatch.mockResolvedValue(new Set(['2\u0000B']))
+    const saved: ParsedPatent[] = []
+    dbMock.insertPatents.mockImplementation(
+      async (_code, records: ParsedPatent[]) => {
+        expect(records.length).toBeLessThanOrEqual(100)
+        saved.push(...records)
+        return { insertedCount: records.length, failures: [] }
+      },
+    )
+    const { runImportStep } = await import('../etl/import-step')
+    expect(await runImportStep('batch-1')).toMatchObject({
+      success: true,
+      details: { importedPatents: 305, totalPatents: 305 },
+    })
+    expect(saved).toHaveLength(304)
+    expect(saved.find((record) => record.patent_number === '0')?.title).toBe(
+      'replacement',
+    )
+    expect(saved.some((record) => record.patent_number === '2')).toBe(false)
+    expect(
+      dbMock.insertPatents.mock.calls.map(([, records]) => records.length),
+    ).toEqual([100, 100, 100, 4])
+  })
+
+  it('validates the entire file before starting any database import', async () => {
+    const parsedDir = path.join(fileMock.tempRoot, 'batch-1')
+    fs.mkdirSync(parsedDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(parsedDir, 'parsed.json'),
+      `[${JSON.stringify(patent('1'))},`,
+    )
+    dbMock.getBatchByCode.mockResolvedValue({
+      batch_code: 'batch-1',
+      status: 'processed',
+    })
+    const { runImportStep } = await import('../etl/import-step')
+    const result = await runImportStep('batch-1')
+    expect(result.success).toBe(false)
+    expect(result.error).toContain('parsed.json')
+    expect(dbMock.insertPatents).not.toHaveBeenCalled()
+    expect(dbMock.updateBatchStatus).toHaveBeenLastCalledWith(
+      'batch-1',
+      'failed',
+      expect.any(String),
+    )
+  })
+
+  it('synchronizes a failed batch from the streamed file without repeating processing', async () => {
+    const parsedDir = path.join(fileMock.tempRoot, 'batch-1')
+    fs.mkdirSync(parsedDir, { recursive: true })
+    fs.writeFileSync(
+      path.join(parsedDir, 'parsed.json'),
+      JSON.stringify([patent('1'), patent('1'), patent('2')]),
+    )
+    dbMock.getBatchByCode.mockResolvedValue({
+      batch_code: 'batch-1',
+      status: 'failed',
+    })
+    dbMock.countImportedPatentsByBatch.mockResolvedValue(1)
+    const query = vi.fn().mockResolvedValue({ rows: [] })
+    dbMock.getPool.mockResolvedValue({ query })
+    const { syncBatchRecord } = await import('../etl/batch-sync')
+    expect(await syncBatchRecord('batch-1')).toMatchObject({
+      success: true,
+      newStatus: 'processed',
+    })
+    expect(dbMock.updateBatchProgress).toHaveBeenCalledWith(
+      'batch-1',
+      undefined,
+      undefined,
+      2,
+      1,
+    )
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('UPDATE sync_batches'),
+      ['processed', 'batch-1'],
     )
   })
 })

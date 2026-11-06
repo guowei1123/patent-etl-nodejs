@@ -34,6 +34,7 @@ import { toast } from 'sonner'
 import { Plus, FolderOpen } from 'lucide-react'
 import { FtpBrowser } from '@/components/ftp/folder-browser'
 import { generateBatchCode } from '@/lib/batch-code'
+import { formatFtpPath } from '@/lib/ftp-path'
 
 interface NewBatchDialogProps {
   onSuccess?: () => void
@@ -187,7 +188,7 @@ export function NewBatchDialog({ onSuccess }: NewBatchDialogProps) {
                 <InputGroupInput
                   id="ftp_folder"
                   placeholder="选择 FTP 文件夹路径"
-                  value={formData.ftp_folder}
+                  value={formatFtpPath(formData.ftp_folder)}
                   onChange={(e) =>
                     setFormData((prev) => ({
                       ...prev,

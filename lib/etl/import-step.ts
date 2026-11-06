@@ -17,17 +17,12 @@ import type {
 } from '@/types'
 import type { StepResult } from './types'
 import { runningTasks } from './task-state'
-
-export function getPatentImportKey(patent: ParsedPatent): string {
-  const kind =
-    patent.kind ||
-    (patent.patent_type === 'invention'
-      ? 'B'
-      : patent.patent_type === 'invention_application'
-        ? 'A'
-        : 'U')
-  return `${patent.patent_number}\u0000${kind}`
-}
+import {
+  getPatentImportKey,
+  indexParsedPatentFile,
+  readPatentImportGroups,
+} from './parsed-patent-file'
+export { getPatentImportKey } from './parsed-patent-file'
 
 export function filterRemainingPatentsForImport(
   patents: ParsedPatent[],
@@ -84,11 +79,12 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       throw new Error('parsed.json 不存在，请先执行处理步骤')
     }
 
-    const parsedPatents = JSON.parse(
-      fs.readFileSync(parsedPath, 'utf-8'),
-    ) as ParsedPatent[]
-    const patents = dedupePatentsForImport(parsedPatents)
-    const totalPatents = patents.length
+    await addLog(batchCode, 'info', '正在逐条检查解析结果并建立导入索引…')
+    const { latestIndexes, recordCount } = await indexParsedPatentFile(
+      parsedPath,
+      () => cancelled,
+    )
+    const totalPatents = latestIndexes.size
     let importedCount = await countImportedPatentsByBatch(batchCode)
 
     await updateBatchProgress(
@@ -114,11 +110,11 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     }
 
     await updateBatchStatus(batchCode, 'importing')
-    if (parsedPatents.length !== patents.length) {
+    if (recordCount !== totalPatents) {
       await addLog(
         batchCode,
         'warn',
-        `导入前去重：parsed.json ${parsedPatents.length} 条，唯一专利 ${patents.length} 条`,
+        `导入前去重：parsed.json ${recordCount} 条，唯一专利 ${totalPatents} 条`,
       )
     }
     await addLog(
@@ -128,25 +124,20 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     )
 
     const importedKeys = await getImportedPatentKeysByBatch(batchCode)
-    const remainingPatents = filterRemainingPatentsForImport(
-      patents,
-      importedKeys,
-    )
-    const BATCH_SIZE = 100
     const CONCURRENCY = Math.max(
       1,
       parseInt(process.env.IMPORT_CONCURRENCY || '3', 10) || 3,
     )
 
-    const chunks: ParsedPatent[][] = []
-    for (let i = 0; i < remainingPatents.length; i += BATCH_SIZE) {
-      chunks.push(remainingPatents.slice(i, i + BATCH_SIZE))
-    }
-
-    for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+    for await (const activeChunks of readPatentImportGroups(
+      parsedPath,
+      latestIndexes,
+      importedKeys,
+      CONCURRENCY,
+      () => cancelled,
+    )) {
       if (cancelled) throw new Error('任务已取消')
 
-      const activeChunks = chunks.slice(i, i + CONCURRENCY)
       const results = await Promise.allSettled(
         activeChunks.map((chunk) => insertPatents(batchCode, chunk)),
       )
@@ -244,8 +235,7 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
       details: { importedPatents: importedCount, totalPatents },
     }
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : '未知错误'
+    const errorMessage = error instanceof Error ? error.message : '未知错误'
     await updateBatchStatus(batchCode, 'failed', errorMessage)
     await addLog(batchCode, 'error', `导入失败：${errorMessage}`)
     return { success: false, batchCode, error: errorMessage }

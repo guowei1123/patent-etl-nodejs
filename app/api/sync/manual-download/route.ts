@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getBatchByCode, initializeDatabase } from '@/lib/db'
-import { enqueueAutoTask, getActiveAutoTask } from '@/lib/etl/auto-queue'
+import { enqueueAutoTask, getActiveAutoTask, getAutoStageLaunchLimit } from '@/lib/etl/auto-queue'
 import {
   startInlineScheduler,
   wakeInlineScheduler,
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       data: { batch_code, task },
-      message: '已加入手动扩容下载队列，下载总并发上限为 5 个批次',
+      message: `已加入手动扩容下载队列，下载总并发上限为 ${getAutoStageLaunchLimit('download')} 个批次`,
     })
   } catch (error) {
     console.error('手动扩容下载失败:', error)

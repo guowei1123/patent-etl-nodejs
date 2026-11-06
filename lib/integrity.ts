@@ -41,6 +41,25 @@ export function writeDownloadManifest(
   dirPath: string,
   files: DownloadManifestFile[],
 ): void {
+  // 空清单或不完整的远端分卷不能覆盖上次用于续传校验的清单。
+  if (files.length === 0) {
+    throw new Error(
+      'FTP 下载清单为空，已停止下载并保留本地文件，请确认源站目录、路径及账号权限后重试',
+    )
+  }
+  const names = new Set(files.map((file) => file.name.toLowerCase()))
+  const missingMainZips = new Set<string>()
+  for (const file of files) {
+    const match = file.name.match(/^(.*)\.z\d+$/i)
+    if (match && !names.has(`${match[1]}.zip`.toLowerCase())) {
+      missingMainZips.add(`${match[1]}.zip`)
+    }
+  }
+  if (missingMainZips.size > 0) {
+    throw new Error(
+      `FTP 源文件清单缺少主 ZIP：${Array.from(missingMainZips).join('、')}。已停止下载并保留本地文件，请确认源站文件齐全后重试`,
+    )
+  }
   fs.mkdirSync(dirPath, { recursive: true })
   const manifest: DownloadManifest = {
     version: DOWNLOAD_MANIFEST_VERSION,
@@ -145,6 +164,13 @@ export async function verifyDownloadedArchive(
   }
 
   const manifest = readDownloadManifest(dirPath)
+  if (manifest && manifest.files.length === 0) {
+    failures.push({
+      file: DOWNLOAD_MANIFEST_FILE,
+      reason:
+        'FTP 下载清单为空，无法确认文件是否齐全，请核对源站目录后重新下载',
+    })
+  }
   const manifestFileNames = new Set(
     manifest?.files.map((file) => file.name.toLowerCase()) ?? [],
   )
@@ -182,6 +208,12 @@ export async function verifyDownloadedArchive(
       /^\.z\d+$/.test(lower.substring(lower.lastIndexOf('.')))
     )
   })
+  if (entries.length === 0 && !manifest) {
+    failures.push({
+      file: dirPath,
+      reason: '未发现下载的压缩文件或有效下载清单，请先执行下载',
+    })
+  }
 
   // 按基础名分组
   const groups = new Map<string, string[]>()
@@ -218,13 +250,13 @@ export async function verifyDownloadedArchive(
 
     if (!hasMainZip && splitParts.length === 0) continue
 
+    checkedFiles += files.filter(
+      (file) => !manifestFileNames.has(file.toLowerCase()),
+    ).length
+
     if (!hasMainZip) {
       failures.push({ file: `${baseName}.zip`, reason: '主 ZIP 文件不存在' })
       continue
-    }
-
-    if (!manifestFileNames.has(`${baseName}.zip`.toLowerCase())) {
-      checkedFiles++
     }
 
     // 检查分卷文件大小一致性
@@ -240,7 +272,10 @@ export async function verifyDownloadedArchive(
       const mainZipPath = path.join(dirPath, `${baseName}.zip`)
       const mainZipStat = fs.statSync(mainZipPath)
       if (mainZipStat.size === 0) {
-        failures.push({ file: `${baseName}.zip`, reason: '主 ZIP 文件大小为 0' })
+        failures.push({
+          file: `${baseName}.zip`,
+          reason: '主 ZIP 文件大小为 0',
+        })
       } else if (!(await hasZipEndOfCentralDirectory(mainZipPath))) {
         failures.push({
           file: `${baseName}.zip`,
@@ -281,10 +316,6 @@ export async function verifyDownloadedArchive(
           }
         }
       }
-
-      checkedFiles += splitParts.filter(
-        (file) => !manifestFileNames.has(file.toLowerCase()),
-      ).length
     } else {
       // 单 ZIP 文件：尝试用 yauzl 打开验证结构
       const zipPath = path.join(dirPath, `${baseName}.zip`)
@@ -410,7 +441,9 @@ export async function verifyExtractedFilesCrc(
   const allFiles = fs
     .readdirSync(extractDir)
     .filter((f) => fs.statSync(path.join(extractDir, f)).isFile())
-  const actualZipFiles = allFiles.filter((f) => f.toUpperCase().endsWith('.ZIP'))
+  const actualZipFiles = allFiles.filter((f) =>
+    f.toUpperCase().endsWith('.ZIP'),
+  )
   const actualZipByLowerName = new Map(
     actualZipFiles.map((f) => [f.toLowerCase(), f]),
   )
@@ -508,7 +541,7 @@ export function formatIntegrityReport(result: IntegrityCheckResult): string {
     return msg
   })
 
-  return `完整性检测失败 (${result.failures.length}/${result.checkedFiles}):\n${lines.join('\n')}`
+  return `完整性检测失败：发现 ${result.failures.length} 个问题，已检查 ${result.checkedFiles} 个文件\n${lines.join('\n')}`
 }
 
 // ============ 辅助函数 ============

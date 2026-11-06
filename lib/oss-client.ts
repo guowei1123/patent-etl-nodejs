@@ -31,9 +31,16 @@ function createOssClient(): OSS {
   })
 }
 
-async function createMinioClient() {
+export function minioEndpointForKey(ossKey = ''): string {
+  const historical = ossKey.startsWith('patents/history/')
+    || /^patents\/[^/]+\/\d{7,12}\/(?:摘要|说明书)-[^/]+\.png$/u.test(ossKey)
+  return (historical && process.env.MINIO_HISTORY_ENDPOINT)
+    || process.env.MINIO_ENDPOINT || 'http://localhost:9000'
+}
+
+async function createMinioClient(ossKey = '') {
   const { Client } = await import('minio')
-  const rawEndpoint = process.env.MINIO_ENDPOINT || 'http://localhost:9000'
+  const rawEndpoint = minioEndpointForKey(ossKey)
   const url = new URL(rawEndpoint.includes('://') ? rawEndpoint : `http://${rawEndpoint}`)
   return new Client({
     endPoint: url.hostname,
@@ -95,7 +102,7 @@ export async function putPatentImage(
 
   const timeoutMs = getImageUploadTimeoutMs()
   if (isMinioStorage()) {
-    const client = await createMinioClient()
+    const client = await createMinioClient(ossKey)
     await withTimeout(
       client.putObject(getBucketName(), ossKey, content, content.length, {
         'Content-Type': contentType,
@@ -127,7 +134,7 @@ export async function patentImageExists(ossKey: string): Promise<boolean> {
   }
 
   if (isMinioStorage()) {
-    const client = await createMinioClient()
+    const client = await createMinioClient(ossKey)
     try {
       await client.statObject(getBucketName(), ossKey)
       return true
@@ -173,7 +180,7 @@ export async function getPatentImage(ossKey: string): Promise<{
   }
 
   if (isMinioStorage()) {
-    const client = await createMinioClient()
+    const client = await createMinioClient(ossKey)
     const [stat, stream] = await Promise.all([
       client.statObject(getBucketName(), ossKey),
       client.getObject(getBucketName(), ossKey),

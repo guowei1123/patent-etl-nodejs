@@ -2,6 +2,10 @@ import * as ftp from 'basic-ftp'
 import * as fs from 'fs'
 import * as path from 'path'
 import type { FtpConfig, FtpEntry } from '@/types'
+import { normalizeFtpDirectoryName } from './ftp-path'
+import { closeFtpSession, connectFtpSession, getFtpConnectionLimit } from './ftp-session'
+
+export { normalizeFtpDirectoryName } from './ftp-path'
 
 export interface DownloadFileResult {
   skipped: boolean
@@ -46,10 +50,10 @@ export class FtpClient {
   }
 
   async connect(): Promise<void> {
-    if (this.connected) return
+    if (this.connected && !this.client.closed) return
 
     try {
-      await this.client.access({
+      await connectFtpSession(this.client, {
         host: this.config.host,
         port: this.config.port,
         user: this.config.user,
@@ -66,10 +70,8 @@ export class FtpClient {
   }
 
   async disconnect(): Promise<void> {
-    if (this.connected) {
-      this.client.close()
-      this.connected = false
-    }
+    closeFtpSession(this.client)
+    this.connected = false
   }
 
   async testConnection(): Promise<{ success: boolean; error?: string }> {
@@ -90,19 +92,87 @@ export class FtpClient {
   async listDirectory(remotePath: string = '/'): Promise<FtpEntry[]> {
     await this.connect()
 
+    let originalDirectory: string | undefined
+    let failed = false
     try {
-      const list = await this.client.list(remotePath)
+      originalDirectory = await this.client.pwd()
+      await this.enterDirectory(remotePath, originalDirectory)
+      const actualDirectory = await this.client.pwd()
+      // 先 CWD 验证目录存在，避免服务端对无效 MLSD 路径静默返回空列表。
+      const list = await this.client.list()
       return list.map((item) => ({
         name: item.name,
         type: item.isDirectory ? 'directory' : 'file',
         size: item.size,
         modifiedAt: item.modifiedAt || null,
-        path: path.posix.join(remotePath, item.name),
+        // 下载和续传必须使用服务器真实目录名，不能再拼回配置中的中文别名。
+        path: path.posix.join(actualDirectory, item.name),
       }))
     } catch (error) {
+      failed = true
       throw new Error(
         `列出目录失败 ${remotePath}: ${error instanceof Error ? error.message : 'Unknown error'}`,
       )
+    } finally {
+      if (originalDirectory && !this.client.closed) {
+        try {
+          await this.client.cd(originalDirectory)
+        } catch {
+          await this.disconnect()
+          if (!failed) throw new Error('FTP 工作目录恢复失败，请重新连接后重试')
+        }
+      } else if (this.client.closed) {
+        closeFtpSession(this.client)
+        this.connected = false
+      }
+    }
+  }
+
+  private async enterDirectory(
+    remotePath: string,
+    originalDirectory: string,
+  ): Promise<void> {
+    const hasNonAscii = (value: string) =>
+      Array.from(value).some((character) => character.charCodeAt(0) > 0x7f)
+    if (!hasNonAscii(remotePath)) {
+      try {
+        await this.client.cd(remotePath)
+        return
+      } catch (error) {
+        if (!(error instanceof ftp.FTPError) || error.code !== 550) throw error
+      }
+    }
+
+    const absolutePath = path.posix.resolve(originalDirectory, remotePath)
+    await this.client.cd('/')
+    for (const segment of absolutePath.split('/').filter(Boolean)) {
+      if (!hasNonAscii(segment)) {
+        try {
+          await this.client.cd(segment)
+          continue
+        } catch (error) {
+          if (!(error instanceof ftp.FTPError) || error.code !== 550)
+            throw error
+        }
+      }
+      // 中文 CWD 可能被服务端替换为问号并进入另一个空目录，必须先匹配真实名称。
+      const directories = (await this.client.list()).filter(
+        (item) => item.isDirectory,
+      )
+      const exact = directories.filter((item) => item.name === segment)
+      const matches = exact.length
+        ? exact
+        : directories.filter(
+            (item) =>
+              normalizeFtpDirectoryName(item.name) ===
+              normalizeFtpDirectoryName(segment),
+          )
+      if (matches.length !== 1) {
+        throw new Error(
+          `FTP 子目录“${segment}”不存在、无权访问或名称匹配不唯一，请核对 FTP 路径和账号权限`,
+        )
+      }
+      await this.client.cd(matches[0].name)
     }
   }
 
@@ -290,7 +360,7 @@ export class FtpClient {
   }
 
   isConnected(): boolean {
-    return this.connected
+    return this.connected && !this.client.closed
   }
 }
 
@@ -357,8 +427,11 @@ export class FtpConnectionPool {
   private clients: ftp.Client[] = []
 
   constructor(config?: Partial<FtpConfig>, concurrency?: number) {
-    this.concurrency =
-      concurrency || parseInt(process.env.FTP_CONCURRENCY || '3')
+    const requested = concurrency ?? Number(process.env.FTP_CONCURRENCY || '3')
+    this.concurrency = Math.min(
+      Number.isSafeInteger(requested) && requested > 0 ? requested : 3,
+      getFtpConnectionLimit(),
+    )
 
     const timeout =
       config?.timeout || parseInt(process.env.FTP_TIMEOUT || '120000')
@@ -405,7 +478,7 @@ export class FtpConnectionPool {
   }
 
   private async accessClient(client: ftp.Client): Promise<void> {
-    await client.access({
+    await connectFtpSession(client, {
       host: this.config.host,
       port: this.config.port,
       user: this.config.user,
@@ -416,13 +489,19 @@ export class FtpConnectionPool {
   }
 
   async connect(): Promise<void> {
-    await Promise.all(this.clients.map((client) => this.accessClient(client)))
+    // 只预连接一个；其余工作连接按需申请，避免多个池互相占住部分额度后等待。
+    try {
+      await this.accessClient(this.clients[0])
+    } catch (error) {
+      this.disconnect()
+      throw error
+    }
   }
 
   disconnect(): void {
     for (const client of this.clients) {
       try {
-        client.close()
+        closeFtpSession(client)
       } catch {}
     }
   }
@@ -448,6 +527,7 @@ export class FtpConnectionPool {
     }> = []
     let nextIndex = 0
     let completedCount = 0
+    let failed = false
 
     const isCancelled = options?.cancelled ?? (() => false)
     const retryAttempts = Math.max(
@@ -461,7 +541,7 @@ export class FtpConnectionPool {
 
     const worker = async (client: ftp.Client) => {
       while (true) {
-        if (isCancelled()) return
+        if (failed || isCancelled()) return
 
         const idx = nextIndex++
         if (idx >= total) return
@@ -479,11 +559,8 @@ export class FtpConnectionPool {
         const resume = options?.resume ?? false
 
         for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+          if (failed || isCancelled()) return
           try {
-            if (client.closed) {
-              await this.accessClient(client)
-            }
-
             // 断点续传：检查本地文件
             if (resume && remoteSize > 0) {
               const localSize = getLocalFileSize(localPath)
@@ -503,6 +580,8 @@ export class FtpConnectionPool {
 
               // 部分文件存在，从断点续传
               if (localSize > 0 && localSize < remoteSize) {
+                await this.accessClient(client)
+                if (failed || isCancelled()) return
                 if (options?.onFileProgress) {
                   client.trackProgress((info) => {
                     options.onFileProgress!(
@@ -532,6 +611,8 @@ export class FtpConnectionPool {
             }
 
             // 全新下载
+            await this.accessClient(client)
+            if (failed || isCancelled()) return
             if (options?.onFileProgress && remoteSize > 0) {
               client.trackProgress((info) => {
                 options.onFileProgress!(
@@ -572,9 +653,7 @@ export class FtpConnectionPool {
                 remoteSize,
               )
 
-              if (!client.closed) {
-                client.close()
-              }
+              closeFtpSession(client)
               await sleep(retryDelayMs)
               continue
             }
@@ -590,7 +669,23 @@ export class FtpConnectionPool {
       }
     }
 
-    await Promise.all(this.clients.map(worker))
+    const workers = this.clients.map(async (client) => {
+      try {
+        await worker(client)
+      } catch (error) {
+        failed = true
+        throw error
+      } finally {
+        closeFtpSession(client)
+      }
+    })
+    try {
+      await Promise.all(workers)
+    } catch (error) {
+      this.disconnect()
+      await Promise.allSettled(workers)
+      throw error
+    }
 
     return {
       downloadedPaths: results

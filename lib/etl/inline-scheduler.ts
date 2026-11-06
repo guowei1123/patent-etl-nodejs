@@ -173,25 +173,41 @@ class InlineScheduler {
       void this.kick()
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '自动任务失败'
-      if (cancelRequested || errorMessage === '任务已取消') {
-        await cancelAutoTask(task.id, this.workerId)
-        await addLog(task.batch_code, 'warn', `[自动队列] ${task.stage} 阶段已取消`)
-      } else {
-        const failure = await failAutoTask(task, this.workerId, errorMessage)
-        if (failure.retrying) {
-          await this.resetForRetry(task)
-          await addLog(
-            task.batch_code,
-            'warn',
-            `[自动队列] ${task.stage} 阶段失败，将在 30 秒后重试（${task.attempt_count}/${task.max_attempts}）：${errorMessage}`,
-          )
+      // 状态写回本身也可能失败，先保存到控制台，避免原始阶段错误被二次错误覆盖。
+      console.error('自动同步阶段失败:', {
+        batchCode: task.batch_code,
+        stage: task.stage,
+        error: errorMessage,
+      })
+      try {
+        if (cancelRequested || errorMessage === '任务已取消') {
+          await cancelAutoTask(task.id, this.workerId)
+          await addLog(task.batch_code, 'warn', `[自动队列] ${task.stage} 阶段已取消`)
         } else {
-          await addLog(
-            task.batch_code,
-            'error',
-            `[自动队列] ${task.stage} 阶段已达到最大重试次数：${errorMessage}`,
-          )
+          const failure = await failAutoTask(task, this.workerId, errorMessage)
+          if (failure.retrying) {
+            await this.resetForRetry(task)
+            await addLog(
+              task.batch_code,
+              'warn',
+              `[自动队列] ${task.stage} 阶段失败，将在 30 秒后重试（${task.attempt_count}/${task.max_attempts}）：${errorMessage}`,
+            )
+          } else {
+            await addLog(
+              task.batch_code,
+              'error',
+              `[自动队列] ${task.stage} 阶段已达到最大重试次数：${errorMessage}`,
+            )
+          }
         }
+      } catch (recoveryError) {
+        // 若写回未成功，保留租约，由后续轮询按过期租约及重试上限恢复。
+        console.error('自动同步任务失败处理未完成，将按队列状态和租约恢复:', {
+          batchCode: task.batch_code,
+          stage: task.stage,
+          originalError: errorMessage,
+          recoveryError,
+        })
       }
     } finally {
       if (heartbeat) clearInterval(heartbeat)

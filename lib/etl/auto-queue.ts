@@ -36,18 +36,23 @@ export interface AutoSyncTask {
   updated_at: Date
 }
 
-const STAGE_LIMITS: Record<AutoStage, number> = {
-  download: 3,
-  process: 1,
+const DEFAULT_STAGE_LAUNCH_LIMITS: Record<AutoStage, number> = {
+  download: 5,
+  process: 2,
   import: 1,
   cleanup: 1,
 }
 
-const STAGE_LAUNCH_LIMITS: Record<AutoStage, number> = {
-  download: 5,
-  process: 1,
-  import: 1,
-  cleanup: 1,
+const STAGE_LIMIT_ENV: Record<AutoStage, string> = {
+  download: 'DOWNLOAD_BATCH_LIMIT',
+  process: 'PROCESS_BATCH_LIMIT',
+  import: 'IMPORT_BATCH_LIMIT',
+  cleanup: 'CLEANUP_BATCH_LIMIT',
+}
+
+function positiveLimit(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback
 }
 
 const RUNNING_BATCH_STATUS: Partial<Record<AutoStage, string>> = {
@@ -61,11 +66,17 @@ function isAutoStage(value: string): value is AutoStage {
 }
 
 export function getAutoStageLimit(stage: AutoStage): number {
-  return STAGE_LIMITS[stage]
+  if (stage === 'download') {
+    return Math.min(
+      positiveLimit(process.env.AUTO_DOWNLOAD_BATCH_LIMIT, 3),
+      getAutoStageLaunchLimit('download'),
+    )
+  }
+  return getAutoStageLaunchLimit(stage)
 }
 
 export function getAutoStageLaunchLimit(stage: AutoStage): number {
-  return STAGE_LAUNCH_LIMITS[stage]
+  return positiveLimit(process.env[STAGE_LIMIT_ENV[stage]], DEFAULT_STAGE_LAUNCH_LIMITS[stage])
 }
 
 export async function enqueueAutoTask(
@@ -76,6 +87,8 @@ export async function enqueueAutoTask(
   const pool = await getPool()
   const priority = options.priority ?? 0
   const manualOverride = options.manualOverride ?? false
+  const resetCondition = `(auto_sync_tasks.status IN ('failed', 'cancelled', 'completed')
+    OR (auto_sync_tasks.status = 'queued' AND auto_sync_tasks.attempt_count >= auto_sync_tasks.max_attempts))`
   const result = await pool.query<AutoSyncTask>(
     `INSERT INTO auto_sync_tasks (
        batch_code, stage, queue_version, status, priority, manual_override, next_run_at
@@ -85,36 +98,36 @@ export async function enqueueAutoTask(
        priority = GREATEST(auto_sync_tasks.priority, EXCLUDED.priority),
        manual_override = auto_sync_tasks.manual_override OR EXCLUDED.manual_override,
        status = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN 'queued'
+         WHEN ${resetCondition} THEN 'queued'
          ELSE auto_sync_tasks.status
        END,
        attempt_count = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN 0
+         WHEN ${resetCondition} THEN 0
          ELSE auto_sync_tasks.attempt_count
        END,
        next_run_at = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN CURRENT_TIMESTAMP
+         WHEN ${resetCondition} THEN CURRENT_TIMESTAMP
          ELSE auto_sync_tasks.next_run_at
        END,
        worker_id = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN NULL
+         WHEN ${resetCondition} THEN NULL
          ELSE auto_sync_tasks.worker_id
        END,
        lease_expires_at = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN NULL
+         WHEN ${resetCondition} THEN NULL
          ELSE auto_sync_tasks.lease_expires_at
        END,
        cancel_requested = false,
        last_error = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN NULL
+         WHEN ${resetCondition} THEN NULL
          ELSE auto_sync_tasks.last_error
        END,
        progress_details = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN NULL
+         WHEN ${resetCondition} THEN NULL
          ELSE auto_sync_tasks.progress_details
        END,
        completed_at = CASE
-         WHEN auto_sync_tasks.status IN ('failed', 'cancelled', 'completed') THEN NULL
+         WHEN ${resetCondition} THEN NULL
          ELSE auto_sync_tasks.completed_at
        END,
        updated_at = CURRENT_TIMESTAMP
@@ -154,6 +167,7 @@ export async function getActiveAutoTask(
       WHERE batch_code = $1
         AND queue_version = $2
         AND status IN ('queued', 'running')
+        AND (status = 'running' OR attempt_count < max_attempts)
       ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, priority DESC, id ASC
       LIMIT 1`,
     [batchCode, AUTO_QUEUE_VERSION],
@@ -201,11 +215,24 @@ export async function claimNextAutoTask(
 
     await client.query(
       `UPDATE auto_sync_tasks
-          SET status = 'queued', worker_id = NULL, lease_expires_at = NULL,
+          SET status = CASE
+                WHEN cancel_requested THEN 'cancelled'
+                WHEN attempt_count >= max_attempts THEN 'failed'
+                ELSE 'queued'
+              END,
+              worker_id = NULL, lease_expires_at = NULL,
+              completed_at = CASE
+                WHEN cancel_requested OR attempt_count >= max_attempts THEN CURRENT_TIMESTAMP
+                ELSE NULL
+              END,
+              last_error = CASE
+                WHEN attempt_count >= max_attempts THEN COALESCE(last_error, '任务租约过期，已达到最大重试次数，请手动重试')
+                ELSE last_error
+              END,
               updated_at = CURRENT_TIMESTAMP
         WHERE queue_version = $1
-          AND status = 'running'
-          AND lease_expires_at < CURRENT_TIMESTAMP`,
+          AND ((status = 'running' AND lease_expires_at < CURRENT_TIMESTAMP)
+            OR (status = 'queued' AND attempt_count >= max_attempts))`,
       [AUTO_QUEUE_VERSION],
     )
 
@@ -232,6 +259,7 @@ export async function claimNextAutoTask(
           WHERE queue_version = $1
             AND stage = $2
             AND status = 'queued'
+            AND attempt_count < max_attempts
             AND cancel_requested = false
             AND next_run_at <= CURRENT_TIMESTAMP
             AND (manual_override = TRUE OR $5::boolean)
@@ -339,18 +367,19 @@ export async function failAutoTask(
 ): Promise<{ retrying: boolean }> {
   const pool = await getPool()
   const retrying = task.attempt_count < task.max_attempts
+  // status 列为 VARCHAR；同一参数还参与 CASE 比较，必须明确类型以免被推断成 TEXT。
   const result = await pool.query(
     `UPDATE auto_sync_tasks
-        SET status = $3,
+        SET status = $3::varchar,
             worker_id = NULL,
             lease_expires_at = NULL,
             next_run_at = CASE
-              WHEN $3 = 'queued' THEN CURRENT_TIMESTAMP + INTERVAL '30 seconds'
+              WHEN $3::varchar = 'queued' THEN CURRENT_TIMESTAMP + INTERVAL '30 seconds'
               ELSE next_run_at
             END,
             last_error = $4,
             updated_at = CURRENT_TIMESTAMP,
-            completed_at = CASE WHEN $3 = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END
+            completed_at = CASE WHEN $3::varchar = 'failed' THEN CURRENT_TIMESTAMP ELSE NULL END
       WHERE id = $1 AND worker_id = $2 AND status = 'running'`,
     [task.id, workerId, retrying ? 'queued' : 'failed', errorMessage],
   )

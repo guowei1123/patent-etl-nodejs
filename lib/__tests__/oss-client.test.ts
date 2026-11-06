@@ -21,6 +21,20 @@ describe('oss client patent images', () => {
     process.env.CNIPA_OSS_ACCESS_KEY_SECRET = 'secret'
     process.env.CNIPA_OSS_BUCKET_NAME = 'bucket'
     process.env.IMAGE_UPLOAD_TIMEOUT_MS = '10'
+    delete process.env.OBJECT_STORAGE_TYPE
+    delete process.env.MINIO_HISTORY_ENDPOINT
+  })
+
+  it('routes only historical keys to the independent MinIO instance', async () => {
+    process.env.MINIO_ENDPOINT = 'http://localhost:9000'
+    process.env.MINIO_HISTORY_ENDPOINT = 'http://localhost:9002'
+    const { minioEndpointForKey } = await import('../oss-client')
+    expect(minioEndpointForKey('patents/history/batch/CN1/image.png')).toBe('http://localhost:9002')
+    expect(minioEndpointForKey('patents/CN-PA-TXTS-10-A-20250207/119403808/说明书-图1A.png')).toBe('http://localhost:9002')
+    expect(minioEndpointForKey('patents/CN-PA-TXTS-10-A-20250207/119403808/HDA0001.JPG')).toBe('http://localhost:9000')
+    expect(minioEndpointForKey('patents/CN-PA-TXTS/batch/image.png')).toBe('http://localhost:9000')
+    delete process.env.MINIO_HISTORY_ENDPOINT
+    expect(minioEndpointForKey('patents/history/batch/CN1/image.png')).toBe('http://localhost:9000')
   })
 
   it('checks whether a patent image exists', async () => {

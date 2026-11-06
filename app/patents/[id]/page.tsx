@@ -822,7 +822,7 @@ export default function PatentDetailPage({
                       附图
                     </CardTitle>
                     <CardDescription>
-                      说明书附图（摘要附图见摘要区域）
+                      说明书附图及正文图形、表格与公式（摘要附图见摘要区域）
                     </CardDescription>
                   </CardHeader>
                   <CardContent>

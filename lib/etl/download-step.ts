@@ -54,6 +54,8 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
   runningTasks.set(batchCode, {
     cancel: () => {
       cancelled = true
+      void ftpClient?.disconnect()
+      pool?.disconnect()
     },
     cancelling: false,
   })
@@ -94,6 +96,33 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
 
     // 初始化文件列表状态
     const filteredEntries = fileEntries.filter(fileFilter)
+    await addLog(
+      batchCode,
+      'info',
+      `FTP 目录清单：${allEntries.length} 个条目，${fileEntries.length} 个文件，${filteredEntries.length} 个符合下载格式`,
+    )
+    if (filteredEntries.length === 0) {
+      const reason =
+        allEntries.length === 0
+          ? 'FTP 目录返回空列表'
+          : fileEntries.length === 0
+            ? 'FTP 目录只返回子目录，未发现可下载文件'
+            : 'FTP 目录没有 ZIP、Z 分卷、GZ 或 XML 格式的文件'
+      throw new Error(
+        `${reason}：${ftpFolder}。未开始下载，已有本地文件和下载清单已保留。请核对源站目录、文件格式和账号权限后重试`,
+      )
+    }
+    if (
+      filteredEntries.some(
+        (entry) => entry.path !== path.posix.join(ftpFolder, entry.name),
+      )
+    ) {
+      await addLog(
+        batchCode,
+        'info',
+        'FTP 目录名称存在编码差异，已匹配服务器真实路径，下载和续传将使用该路径',
+      )
+    }
     writeDownloadManifest(
       tempPath,
       filteredEntries.map((entry) => ({
@@ -136,7 +165,7 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
     const fileListMap = new Map(fileList.map((f) => [f.fileName, f]))
 
     // 列表完毕后关闭单连接，改用连接池并行下载
-    ftpClient.disconnect()
+    await ftpClient.disconnect()
     ftpClient = null
 
     pool = createFtpPool()
@@ -300,9 +329,7 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
       downloadCheck.passed ? undefined : { failures: downloadCheck.failures },
     )
     if (!downloadCheck.passed) {
-      throw new Error(
-        `下载完整性检测失败:\n${formatIntegrityReport(downloadCheck)}`,
-      )
+      throw new Error(formatIntegrityReport(downloadCheck))
     }
 
     await updateBatchStatus(batchCode, 'downloaded')

@@ -11,6 +11,60 @@ type MockClient = {
   release: ReturnType<typeof vi.fn>
 }
 
+describe('getDashboardStats query lifecycle', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    pgMock.connect.mockReset()
+    pgMock.query.mockReset()
+  })
+
+  it('never overlaps queries on one client and preserves the statistics', async () => {
+    let active = false
+    const results = [
+      { count: '3' },
+      { total: '10', invention: '6', utility_model: '4' },
+      { count: '2' },
+      { completed_at: '2026-10-10T00:00:00Z' },
+      { count: '1' }, { count: '0' },
+      { count: '8' }, { count: '9' }, { count: '7' },
+    ]
+    const client = createClient(async () => {
+      if (active) throw new Error('overlapping queries on one client')
+      active = true
+      try {
+        await Promise.resolve()
+        return { rows: [results.shift()] }
+      } finally {
+        active = false
+      }
+    })
+    client.release.mockImplementation(() => expect(active).toBe(false))
+    pgMock.connect.mockResolvedValue(client)
+    const { getDashboardStats } = await import('../pg-db')
+
+    expect(await getDashboardStats()).toEqual({
+      total_batches: 3, total_patents: 10,
+      invention_patents: 6, utility_model_patents: 4,
+      this_week_patents: 2, last_sync_at: '2026-10-10T00:00:00Z',
+      pending_batches: 1, failed_batches: 0,
+      total_applicants: 8, total_inventors: 9, total_citations: 7,
+    })
+    expect(client.query).toHaveBeenCalledTimes(9)
+    expect(client.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('stops issuing queries after a failure and releases the client', async () => {
+    const failure = new Error('statistics query failed')
+    const client = createClient(() => { throw failure })
+    pgMock.connect.mockResolvedValue(client)
+    const { getDashboardStats } = await import('../pg-db')
+
+    await expect(getDashboardStats()).rejects.toBe(failure)
+    expect(client.query).toHaveBeenCalledTimes(1)
+    expect(client.release).toHaveBeenCalledTimes(1)
+  })
+})
+
 const pgMock = vi.hoisted(() => ({
   connect: vi.fn(),
   query: vi.fn(),

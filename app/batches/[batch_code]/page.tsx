@@ -59,6 +59,7 @@ import type {
   ProcessProgress,
 } from '@/types'
 import { cn } from '@/lib/utils'
+import { formatFtpPath } from '@/lib/ftp-path'
 import {
   formatBytes,
   formatSpeed,
@@ -1075,7 +1076,7 @@ export default function BatchDetailPage({
                   />
                 )}
               </div>
-              <div className="flex-1">
+              <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <h2 className="text-lg font-semibold">{displayStatus.label}</h2>
                   <Badge variant="outline">
@@ -1083,8 +1084,8 @@ export default function BatchDetailPage({
                   </Badge>
                 </div>
                 {batch.ftp_folder && (
-                  <p className="text-muted-foreground mt-1 text-sm">
-                    FTP: {batch.ftp_folder}
+                  <p className="text-muted-foreground mt-1 break-words text-sm" translate="no">
+                    FTP: {formatFtpPath(batch.ftp_folder)}
                   </p>
                 )}
               </div>

@@ -40,8 +40,8 @@ import {
   setProcessProgress,
 } from './task-state'
 import { filterPatents } from '../filter-config'
+import { writeParsedPatentFile } from './parsed-patent-file'
 import {
-  buildImageKey,
   matchPatentAbstractToDrawing,
 } from '../patent-image-matcher'
 
@@ -94,7 +94,7 @@ type ImageUploadStats = {
 }
 
 type ProcessZipCheckpoint = {
-  version: 1
+  version: 2
   zipName: string
   zipSize: number
   zipMtimeMs: number
@@ -106,7 +106,7 @@ type ProcessZipCheckpoint = {
   patents: ParsedPatent[]
 }
 
-const PROCESS_CHECKPOINT_VERSION = 1
+const PROCESS_CHECKPOINT_VERSION = 2
 
 function getImageUploadConcurrency(): number {
   const value = parseInt(process.env.IMAGE_UPLOAD_CONCURRENCY || '8', 10)
@@ -123,7 +123,16 @@ function shouldUploadImagesDuringProcess(): boolean {
 }
 
 function getImageMapKey(fileName: string): string {
-  return buildImageKey(fileName)
+  return path.posix.normalize(fileName.replace(/\\/g, '/')).replace(/^\.\//, '').toLowerCase()
+}
+
+function getPatentImageKey(patent: ParsedPatent, fileName: string): string {
+  const source = (patent.source_file || '').replace(/\\/g, '/')
+  return getImageMapKey(path.posix.join(path.posix.dirname(source || '.'), fileName.replace(/\\/g, '/')))
+}
+
+function getContentAddressedFileName(image: ZipImageEntry): string {
+  return `${image.contentHash}-${path.posix.basename(image.fileName.replace(/\\/g, '/'))}`
 }
 
 function getImageContentType(fileName: string): string {
@@ -282,8 +291,8 @@ function addReference(
   referencesByName.set(imageKey, refs)
 }
 
-function getImageReferenceKey(reference: ParsedPatentImageReference): string {
-  return getImageMapKey(reference.file_name)
+function getImageReferenceKey(patent: ParsedPatent, reference: ParsedPatentImageReference): string {
+  return getPatentImageKey(patent, reference.file_name)
 }
 
 function addPatentImageReferences(
@@ -291,12 +300,12 @@ function addPatentImageReferences(
   patent: ParsedPatent,
 ): void {
   const abstractKey = patent.abstract_figure
-    ? getImageMapKey(patent.abstract_figure)
+    ? getPatentImageKey(patent, patent.abstract_figure)
     : null
   const referencedKeys = new Set<string>()
 
   for (const reference of patent.image_references || []) {
-    const imageKey = getImageReferenceKey(reference)
+    const imageKey = getImageReferenceKey(patent, reference)
     referencedKeys.add(imageKey)
     addReference(referencesByName, patent, imageKey, {
       isAbstract: false,
@@ -307,7 +316,7 @@ function addPatentImageReferences(
   }
 
   for (const fileName of patent.image_files || []) {
-    const imageKey = getImageMapKey(fileName)
+    const imageKey = getPatentImageKey(patent, fileName)
     if (referencedKeys.has(imageKey)) continue
     addReference(referencesByName, patent, imageKey, {
       isAbstract: abstractKey === imageKey,
@@ -340,7 +349,7 @@ async function attachPatentImage(
     buildPatentImageKey(
       batchCode,
       reference.patent.patent_number,
-      assetImage.fileName,
+      getContentAddressedFileName(assetImage),
     )
 
   let exists = false
@@ -379,9 +388,9 @@ async function attachPatentImage(
 function getDrawingImageKeys(patent: ParsedPatent): string[] {
   const drawingRefs = (patent.image_references || [])
     .filter((reference) => reference.image_role === 'drawing')
-    .map((reference) => getImageMapKey(reference.file_name))
+    .map((reference) => getPatentImageKey(patent, reference.file_name))
   if (drawingRefs.length > 0) return drawingRefs
-  return (patent.image_files || []).map((fileName) => getImageMapKey(fileName))
+  return (patent.image_files || []).map((fileName) => getPatentImageKey(patent, fileName))
 }
 function getPatentImageMatchKey(
   patentNumber: string,
@@ -425,7 +434,7 @@ async function buildImageAssetMatches(
       processed++
       continue
     }
-    const abstractKey = getImageMapKey(patent.abstract_figure)
+    const abstractKey = getPatentImageKey(patent, patent.abstract_figure)
     const abstractEntry = imagesByName.get(abstractKey)
     if (!abstractEntry) {
       processed++
@@ -525,7 +534,7 @@ async function uploadReferencedPatentImages(
       const ossKey = buildPatentImageKey(
         batchCode,
         reference.patent.patent_number,
-        assetEntry.image.fileName,
+        getContentAddressedFileName(assetEntry.image),
       )
       try {
         const result = await attachPatentImage(
@@ -924,7 +933,7 @@ export async function runProcessStep(batchCode: string): Promise<StepResult> {
 
     preparePatentsForParsedOutput(patents)
     const parsedPath = path.join(tempPath, 'parsed.json')
-    fs.writeFileSync(parsedPath, JSON.stringify(patents))
+    await writeParsedPatentFile(parsedPath, patents, () => cancelled)
 
     await updateBatchProgress(batchCode, undefined, undefined, patents.length)
     await updateBatchStatus(batchCode, 'processed')

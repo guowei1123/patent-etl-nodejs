@@ -7,6 +7,8 @@
         "dev": "next dev",
         "build": "next build",
         "import:classifications": "node --env-file-if-exists=.env --experimental-strip-types scripts/import-ipc-cpc-classifications.ts",
+        "pdf:extract": "node --env-file-if-exists=.env --experimental-strip-types features/historical-import/pdf/extract-patent-pdf.ts",
+        "pdf:import": "node --env-file-if-exists=.env --experimental-strip-types features/historical-import/pdf/import-patent-pdf.ts",
         "start": "next start",
         "lint": "eslint",
         "shadcn": "pnpm dlx --package shadcn@latest --package zod@3.25.76 shadcn",

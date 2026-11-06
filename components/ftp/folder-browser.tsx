@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import type { FtpEntry } from '@/types'
 import { cn } from '@/lib/utils'
+import { formatFtpPath, normalizeFtpDirectoryName } from '@/lib/ftp-path'
 
 interface FtpBrowserProps {
   onSelect: (path: string) => void
@@ -164,8 +165,8 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
         >
           <ChevronUp aria-hidden="true" />
         </Button>
-        <code className="text-muted-foreground flex-1 text-sm">
-          {currentPath}
+        <code className="text-muted-foreground min-w-0 flex-1 break-words text-sm" translate="no">
+          {formatFtpPath(currentPath)}
         </code>
         <Button
           variant="ghost"
@@ -247,7 +248,9 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
                     aria-hidden="true"
                   />
                 )}
-                <span className="flex-1 truncate text-sm">{entry.name}</span>
+                <span className="min-w-0 flex-1 truncate text-sm" title={normalizeFtpDirectoryName(entry.name)}>
+                  {normalizeFtpDirectoryName(entry.name)}
+                </span>
                 <span className="text-muted-foreground text-xs">
                   {formatSize(entry.size)}
                 </span>
@@ -268,9 +271,9 @@ export function FtpBrowser({ onSelect, initialPath = '/' }: FtpBrowserProps) {
 
       {/* Actions */}
       <div className="flex items-center justify-between">
-        <p className="text-muted-foreground text-xs">
+        <p className="text-muted-foreground min-w-0 break-words text-xs">
           {selectedPath
-            ? `已选择: ${selectedPath}`
+            ? `已选择: ${formatFtpPath(selectedPath)}`
             : '双击进入文件夹，单击选择'}
         </p>
         <Button onClick={handleSelect} disabled={!selectedPath}>

@@ -7,6 +7,7 @@ import {
   verifyDownloadedArchive,
   verifyExtractedFilesCrc,
   writeDownloadManifest,
+  formatIntegrityReport,
 } from '../integrity'
 
 const yauzlMock = vi.hoisted(() => ({
@@ -23,7 +24,10 @@ function crc32(content: string | Buffer): string {
   return zlib.crc32(Buffer.from(content)).toString(16).toUpperCase()
 }
 
-function writeFile(name: string, content: string | Buffer = 'zip-data'): string {
+function writeFile(
+  name: string,
+  content: string | Buffer = 'zip-data',
+): string {
   const filePath = path.join(tmpDir, name)
   fs.writeFileSync(filePath, content)
   return filePath
@@ -142,7 +146,9 @@ describe('verifyExtractedFilesCrc', () => {
     expect(result).toEqual({
       passed: false,
       checkedFiles: 0,
-      failures: [{ file: tmpDir, reason: '解压目录中无 ZIP 文件，解压可能不完整' }],
+      failures: [
+        { file: tmpDir, reason: '解压目录中无 ZIP 文件，解压可能不完整' },
+      ],
     })
   })
 
@@ -167,6 +173,48 @@ describe('verifyDownloadedArchive', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  it('does not accept an empty local directory as a completed download', async () => {
+    const result = await verifyDownloadedArchive(tmpDir)
+    expect(result.passed).toBe(false)
+    expect(result.failures[0].reason).toContain('请先执行下载')
+  })
+
+  it('rejects a legacy empty manifest and counts the existing orphaned volumes', async () => {
+    writeFile(
+      '.archive-download-manifest.json',
+      JSON.stringify({ version: 1, files: [] }),
+    )
+    writeFile('20240906.z01', Buffer.alloc(32))
+    writeFile('20240906.z02', Buffer.alloc(32))
+    const result = await verifyDownloadedArchive(tmpDir)
+    expect(result.passed).toBe(false)
+    expect(result.checkedFiles).toBe(2)
+    expect(result.failures).toContainEqual({
+      file: '20240906.zip',
+      reason: '主 ZIP 文件不存在',
+    })
+    expect(
+      result.failures.some((failure) => failure.reason.includes('清单为空')),
+    ).toBe(true)
+    expect(formatIntegrityReport(result)).toContain('已检查 2 个文件')
+    expect(formatIntegrityReport(result)).not.toContain('/0')
+  })
+
+  it('preserves the last trusted manifest when an empty or incomplete source list arrives', () => {
+    const files = [
+      { name: 'batch.z01', size: 1024 },
+      { name: 'batch.zip', size: 22 },
+    ]
+    writeDownloadManifest(tmpDir, files)
+    const manifestPath = path.join(tmpDir, '.archive-download-manifest.json')
+    const previous = fs.readFileSync(manifestPath, 'utf8')
+    expect(() => writeDownloadManifest(tmpDir, [])).toThrow('下载清单为空')
+    expect(() => writeDownloadManifest(tmpDir, files.slice(0, 1))).toThrow(
+      '缺少主 ZIP',
+    )
+    expect(fs.readFileSync(manifestPath, 'utf8')).toBe(previous)
   })
 
   it('rejects a split archive whose main ZIP was only partially downloaded', async () => {

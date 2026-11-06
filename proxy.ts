@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifySession, getCookieName } from '@/lib/auth'
+import { guardHistoricalBatch } from '@/features/historical-import/guards'
 
 const PUBLIC_PATHS = ['/login']
 
@@ -30,7 +31,7 @@ export async function proxy(request: NextRequest) {
   // 检查 session cookie
   const token = request.cookies.get(getCookieName())?.value
   if (token && (await verifySession(token))) {
-    return NextResponse.next()
+    return (await guardHistoricalBatch(request)) || NextResponse.next()
   }
 
   // 未登录，重定向到登录页（API 返回 401）

@@ -9,8 +9,7 @@ import {
   getPool,
   updateBatchProgress,
 } from '../db'
-import type { ParsedPatent } from '@/types'
-import { dedupePatentsForImport } from './import-step'
+import { indexParsedPatentFile } from './parsed-patent-file'
 
 // 同步批次记录：根据本地文件系统状态修正数据库记录
 export async function syncBatchRecord(batchCode: string): Promise<{
@@ -60,11 +59,8 @@ export async function syncBatchRecord(batchCode: string): Promise<{
     newStatus = 'pending'
     details = '本地数据目录不存在，重置为待处理'
   } else if (fs.existsSync(parsedPath)) {
-    const parsedPatents = JSON.parse(
-      fs.readFileSync(parsedPath, 'utf-8'),
-    ) as ParsedPatent[]
-    const patents = dedupePatentsForImport(parsedPatents)
-    const totalPatents = patents.length
+    const { latestIndexes } = await indexParsedPatentFile(parsedPath)
+    const totalPatents = latestIndexes.size
     const importedPatents = await countImportedPatentsByBatch(batchCode)
     const remainingPatents = Math.max(totalPatents - importedPatents, 0)
 

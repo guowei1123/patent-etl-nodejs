@@ -2014,42 +2014,33 @@ export async function getLogsByBatch(
 export async function getDashboardStats(): Promise<DashboardStats> {
   const client = await pool.connect()
   try {
-    const [
-      batchCount,
-      patentCounts,
-      weekPatents,
-      lastSync,
-      pendingCount,
-      failedCount,
-      applicantCount,
-      inventorCount,
-      citationCount,
-    ] = await Promise.all([
-      client.query('SELECT COUNT(*) FROM sync_batches'),
-      client.query(`
+    // 同一连接逐条执行，避免向 pg 的客户端查询队列并发提交。
+    const batchCount = await client.query('SELECT COUNT(*) FROM sync_batches')
+    const patentCounts = await client.query(`
         SELECT
           COUNT(*) as total,
           COUNT(*) FILTER (WHERE kind = 'B') as invention,
           COUNT(*) FILTER (WHERE kind = 'U') as utility_model
         FROM cnipa.patent
-      `),
-      client.query(`
+      `)
+    const weekPatents = await client.query(`
         SELECT COUNT(*) FROM cnipa.patent
         WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
-      `),
-      client.query(`
+      `)
+    const lastSync = await client.query(`
         SELECT completed_at FROM sync_batches
         WHERE status = 'completed'
         ORDER BY completed_at DESC LIMIT 1
-      `),
-      client.query(
+      `)
+    const pendingCount = await client.query(
         "SELECT COUNT(*) FROM sync_batches WHERE status = 'pending'",
-      ),
-      client.query("SELECT COUNT(*) FROM sync_batches WHERE status = 'failed'"),
-      client.query('SELECT COUNT(*) FROM cnipa.patent_applicant'),
-      client.query('SELECT COUNT(*) FROM cnipa.patent_inventor'),
-      client.query('SELECT COUNT(*) FROM cnipa.patent_citation'),
-    ])
+      )
+    const failedCount = await client.query(
+      "SELECT COUNT(*) FROM sync_batches WHERE status = 'failed'",
+    )
+    const applicantCount = await client.query('SELECT COUNT(*) FROM cnipa.patent_applicant')
+    const inventorCount = await client.query('SELECT COUNT(*) FROM cnipa.patent_inventor')
+    const citationCount = await client.query('SELECT COUNT(*) FROM cnipa.patent_citation')
 
     return {
       total_batches: parseInt(batchCount.rows[0].count),

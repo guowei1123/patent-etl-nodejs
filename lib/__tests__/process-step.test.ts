@@ -160,14 +160,14 @@ describe('runProcessStep extracted file verification', () => {
       'processed',
     )
     expect(ossMock.putPatentImage).toHaveBeenCalledWith(
-      'patents/batch-1/100001/100001.jpg',
+      expect.stringMatching(/^patents\/batch-1\/100001\/[a-f0-9]{64}-100001\.jpg$/),
       Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
       'image/jpeg',
     )
     const parsedPath = path.join(fileMock.tempRoot, 'batch-1', 'parsed.json')
     const parsed = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
-    expect(parsed[0].images[0].oss_key).toBe(
-      'patents/batch-1/100001/100001.jpg',
+    expect(parsed[0].images[0].oss_key).toEqual(
+      expect.stringMatching(/^patents\/batch-1\/100001\/[a-f0-9]{64}-100001\.jpg$/),
     )
   })
 
@@ -186,8 +186,8 @@ describe('runProcessStep extracted file verification', () => {
     expect(ossMock.putPatentImage).not.toHaveBeenCalled()
     const parsedPath = path.join(fileMock.tempRoot, 'batch-1', 'parsed.json')
     const parsed = JSON.parse(fs.readFileSync(parsedPath, 'utf-8'))
-    expect(parsed[0].images[0].oss_key).toBe(
-      'patents/batch-1/100001/100001.jpg',
+    expect(parsed[0].images[0].oss_key).toEqual(
+      expect.stringMatching(/^patents\/batch-1\/100001\/[a-f0-9]{64}-100001\.jpg$/),
     )
   })
 
@@ -210,6 +210,28 @@ describe('runProcessStep extracted file verification', () => {
       'failed',
       expect.stringContaining('专利附图上传失败'),
     )
+  })
+
+  it('keeps same-named drawings in separate XML directories', async () => {
+    integrityMock.verifyExtractedFilesCrc.mockResolvedValue({ passed: true, checkedFiles: 1, failures: [] })
+    parserMock.parsePatentXml.mockImplementation((xml: string) => ({
+      ...parsedPatent(), patent_number: xml, image_files: ['FT_1.JPG'],
+    }))
+    fileMock.forEachZipEntryBuffer.mockImplementation(async (_zip, handler, filter) => {
+      const entries: [string, Buffer][] = [
+        ['a/a.xml', Buffer.from('100001')], ['b/b.xml', Buffer.from('100002')],
+        ['a/FT_1.JPG', Buffer.from('image A')], ['b/FT_1.JPG', Buffer.from('image B')],
+      ]
+      let processed = 0
+      for (const [name, content] of entries) {
+        if (!filter || filter(name)) { await handler(name, content); processed++ }
+      }
+      return { processed, skipped: entries.length - processed }
+    })
+    const { runProcessStep } = await import('../etl/process-step')
+    expect((await runProcessStep('batch-1')).success).toBe(true)
+    expect(ossMock.putPatentImage).toHaveBeenCalledWith(expect.stringMatching(/\/100001\//), Buffer.from('image A'), 'image/jpeg')
+    expect(ossMock.putPatentImage).toHaveBeenCalledWith(expect.stringMatching(/\/100002\//), Buffer.from('image B'), 'image/jpeg')
   })
 
   it('stops processing when automatic extracted file verification fails', async () => {
