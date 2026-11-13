@@ -1,3 +1,4 @@
 pymupdf>=1.26,<2
 rapidocr>=3,<4
 onnxruntime>=1.20,<2
+patent-downloader==0.4.3

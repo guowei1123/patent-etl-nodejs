@@ -403,6 +403,11 @@ describe('xml-parser — 完整字段解析', () => {
         '[[PATENT_IMAGE:diagram.webp]]',
       )
     })
+    it('保留正文段落中图片和文字的原始顺序', () => {
+      const xml = inventionXml.replace('<Description>', '<Description><InventionMode><Paragraphs>公式<Image file="BDA001.JPG"/>后续<Sub>2</Sub>文字<Image file="SMS_2.JPG"/>末尾</Paragraphs><Paragraphs>普通段落</Paragraphs></InventionMode>')
+      const p = parsePatentXml(xml, 'invention')!
+      expect(p.description_structured?.embodiment).toBe('公式[[PATENT_IMAGE:BDA001.JPG]]后续2文字[[PATENT_IMAGE:SMS_2.JPG]]末尾\n普通段落')
+    })
     it('提取结构化权利要求', () => {
       const p = parsePatentXml(inventionXml, 'invention')!
       expect(p.claims_structured).toHaveLength(2)

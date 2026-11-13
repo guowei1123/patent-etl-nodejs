@@ -8,6 +8,7 @@ import {
   Layers,
   FileText,
   Archive,
+  Images,
   Settings,
   LogOut,
 } from 'lucide-react'
@@ -31,6 +32,7 @@ const navigation = [
   { name: '批次管理', href: '/batches', icon: Layers },
   { name: '专利数据', href: '/patents', icon: FileText },
   { name: '历史数据导入', href: '/historical-import', icon: Archive },
+  { name: '专利附图修复', href: '/patent-image-repair', icon: Images },
   { name: '分类字典', href: '/classifications', icon: BookOpen },
   { name: '设置', href: '/settings', icon: Settings },
 ]

@@ -55,12 +55,45 @@ export function isDbConfigured(): boolean {
   )
 }
 
+export async function getSmsReviewSource(number: string) {
+  const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
+  if(!match) throw new Error('请输入完整公开号')
+  const patent=await pool.query<{id:string;batch_id:string;description:unknown}>(`SELECT id,batch_id,description FROM cnipa.patent WHERE upper(doc_number)=ANY($1::text[]) AND upper(kind)=$2`,[[match[1],`CN${match[1]}`],match[2]])
+  if(patent.rowCount!==1) throw new Error('公开号没有唯一对应的专利，请检查批次')
+  const images=await pool.query<{file_name:string}>(`SELECT DISTINCT file_name FROM cnipa.patent_image WHERE patent_id=$1 AND NOT is_abstract AND file_name ~* '^SMS_[1-9][0-9]*\\.JPG$'`,[patent.rows[0].id])
+  return {batch:patent.rows[0].batch_id,description:patent.rows[0].description,originalNames:images.rows.map(row=>row.file_name.toUpperCase())}
+}
+
+export async function getSmsOriginals(number:string) {
+  const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
+  if(!match) throw new Error('请输入完整公开号')
+  const p=await pool.query<{id:string;batch_id:string}>(`SELECT id,batch_id FROM cnipa.patent WHERE upper(doc_number)=ANY($1::text[]) AND upper(kind)=$2`,[[match[1],`CN${match[1]}`],match[2]])
+  if(p.rowCount!==1) throw new Error('公开号没有唯一对应的专利')
+  const r=await pool.query<{id:string;file_name:string;oss_key:string;asset_id:string;is_abstract:boolean;image_role:string;asset_key:string|null}>(`SELECT i.id,i.file_name,i.oss_key,i.asset_id,i.is_abstract,i.image_role,a.oss_key asset_key FROM cnipa.patent_image i LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE i.patent_id=$1 AND i.file_name ~* '^SMS_[1-9][0-9]*\\.JPG$'`,[p.rows[0].id])
+  return {patentId:p.rows[0].id,batch:p.rows[0].batch_id,images:r.rows}
+}
+
+export async function getPatentDrawingKeys(number:string,batch:string) {
+  const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
+  if(!match) throw new Error('请输入完整公开号')
+  const result=await pool.query<{oss_key:string}>(`SELECT COALESCE(a.oss_key,i.oss_key) AS oss_key FROM cnipa.patent p JOIN cnipa.patent_image i ON i.patent_id=p.id LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE p.batch_id=$1 AND upper(p.doc_number)=ANY($2::text[]) AND upper(p.kind)=$3 AND i.image_role='drawing' AND NOT i.is_abstract`,[batch,[match[1],`CN${match[1]}`],match[2]])
+  return result.rows.map(row=>row.oss_key).filter(Boolean)
+}
+
+export async function getSmsExternalReferences(patentId:string,ids:string[],assetIds:string[],keys:string[]) {
+  const refs=await pool.query<{n:number}>(`SELECT count(*)::int n FROM cnipa.patent_image WHERE (asset_id=ANY($1::uuid[]) OR lower(oss_key)=ANY($2::text[])) AND NOT (id=ANY($3::uuid[]))`,[assetIds,keys.map(key=>key.toLowerCase()),ids])
+  const abstract=await pool.query<{n:number}>(`SELECT count(*)::int n FROM cnipa.patent WHERE lower(abstract_fig_key)=ANY($1::text[]) OR (id=$2 AND lower(abstract_fig_key)=ANY($3::text[]))`,[keys.map(key=>key.toLowerCase()),patentId,keys.map(key=>key.split('/').at(-1)!.toLowerCase())])
+  return refs.rows[0].n+abstract.rows[0].n
+}
+
 const pool = new Pool({
   connectionString: getConnectionString() || undefined,
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 })
+
+export function acquireSmsUpdateClient() { return pool.connect() }
 
 let databaseInitialization: Promise<void> | null = null
 

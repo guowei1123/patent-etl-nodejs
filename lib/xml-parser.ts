@@ -59,6 +59,64 @@ const parser = new XMLParser({
   },
 })
 
+const orderedParser = new XMLParser({
+  preserveOrder: true,
+  ignoreAttributes: false,
+  removeNSPrefix: true,
+  trimValues: false,
+  parseTagValue: false,
+})
+
+type OrderedNode = Record<string, unknown>
+
+function findOrderedElement(nodes: unknown, name: string): OrderedNode | undefined {
+  if (!Array.isArray(nodes)) return undefined
+  for (const node of nodes as OrderedNode[]) {
+    if (name in node) return node
+    for (const [key, value] of Object.entries(node)) {
+      if (key === ':@') continue
+      const found = findOrderedElement(value, name)
+      if (found) return found
+    }
+  }
+}
+
+function orderedParagraphs(nodes: unknown): Array<string | undefined> {
+  const paragraphs: Array<string | undefined> = []
+  const render = (children: unknown): { text: string; hasImage: boolean } => {
+    let text = '', hasImage = false
+    if (!Array.isArray(children)) return { text, hasImage }
+    for (const node of children as OrderedNode[]) {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === '#text') text += String(value)
+        else if (key === 'Image') {
+          const file = (node[':@'] as Record<string, unknown> | undefined)?.['@_file']
+          if (typeof file === 'string' && IMAGE_FILE_PATTERN.test(file)) {
+            text += buildInlineImageMarker(file)
+            hasImage = true
+          }
+        } else if (key !== ':@') {
+          const child = render(value)
+          text += child.text
+          hasImage ||= child.hasImage
+        }
+      }
+    }
+    return { text, hasImage }
+  }
+  const visit = (children: unknown) => {
+    if (!Array.isArray(children)) return
+    for (const node of children as OrderedNode[]) for (const [key, value] of Object.entries(node)) {
+      if (key === 'Paragraphs' || key === 'Paragraph') {
+        const result = render(value)
+        paragraphs.push(result.hasImage ? result.text.trim() : undefined)
+      } else if (key !== ':@') visit(value)
+    }
+  }
+  visit(nodes)
+  return paragraphs
+}
+
 // 安全获取嵌套属性
 function getNestedValue(obj: unknown, ...keys: string[]): unknown {
   let current = obj
@@ -467,8 +525,10 @@ function extractParagraphWithImageMarkers(value: unknown): string | undefined {
   return parts.length > 0 ? parts.join('\n') : undefined
 }
 // 提取说明书段落下所有 Paragraphs 文本
-function extractParagraphsUnder(section: unknown): string[] {
+function extractParagraphsUnder(section: unknown, ordered?: unknown): string[] {
   const paragraphs: string[] = []
+  const orderedValues = orderedParagraphs(ordered)
+  let index = 0
   const collect = (obj: unknown) => {
     if (!obj || typeof obj !== 'object') return
     if (Array.isArray(obj)) {
@@ -479,11 +539,11 @@ function extractParagraphsUnder(section: unknown): string[] {
       if (k === 'Paragraphs' || k === 'Paragraph') {
         if (Array.isArray(v)) {
           for (const item of v) {
-            const t = extractParagraphWithImageMarkers(item)
+            const t = orderedValues[index++] ?? extractParagraphWithImageMarkers(item)
             if (t) paragraphs.push(t)
           }
         } else {
-          const t = extractParagraphWithImageMarkers(v)
+          const t = orderedValues[index++] ?? extractParagraphWithImageMarkers(v)
           if (t) paragraphs.push(t)
         }
       } else if (typeof v === 'object' && v !== null) {
@@ -619,7 +679,7 @@ function extractReferencedDocuments(
 }
 
 // 提取说明书
-function extractDescription(root: unknown): {
+function extractDescription(root: unknown, orderedDescription?: OrderedNode): {
   text: string
   structured: ParsedDescription
 } {
@@ -629,7 +689,8 @@ function extractDescription(root: unknown): {
   const extractSection = (...keys: string[]): string => {
     const section = getNestedValue(desc, ...keys)
     if (!section) return ''
-    return extractParagraphsUnder(section).join('\n')
+    const orderedSection = findOrderedElement(orderedDescription?.Description, keys[0])
+    return extractParagraphsUnder(section, orderedSection?.[keys[0]]).join('\n')
   }
 
   const technicalField = extractSection('TechnicalField') || undefined
@@ -643,7 +704,7 @@ function extractDescription(root: unknown): {
   // Disclosure 拆分: 先取整段作为 disclosure,再尝试拆出三段
   const disclosureSection = getNestedValue(desc, 'Disclosure')
   const disclosureParagraphs = disclosureSection
-    ? extractParagraphsUnder(disclosureSection)
+    ? extractParagraphsUnder(disclosureSection, findOrderedElement(orderedDescription?.Description, 'Disclosure')?.Disclosure)
     : []
   const disclosure = disclosureParagraphs.join('\n') || undefined
 
@@ -1093,7 +1154,7 @@ export function parsePatentXml(
 
     // 提取说明书
     const { text: descText, structured: descStructured } =
-      extractDescription(root)
+      extractDescription(root, imageReferences.some(ref => ref.image_role === 'inline') ? findOrderedElement(orderedParser.parse(xmlContent), 'Description') : undefined)
 
     // 权利要求统计:总数与独立项数
     const claimCount = claimsStructured.length

@@ -42,6 +42,23 @@ def embedded_regions(page, clip):
     return result
 
 
+def sms_embedded_regions(page, clip):
+    """Return embedded body image occurrences in PDF content-stream order.
+
+    Unlike general figure detection, small images are retained: CNIPA inline
+    formula symbols may be only a few points high. Repeated uses remain separate.
+    """
+    result = []
+    for image in page.get_image_info(xrefs=True):
+        rectangle = pymupdf.Rect(image['bbox'])
+        if rectangle.is_empty:
+            continue
+        if (rectangle.get_area() < page.rect.get_area() * .8 and
+                (rectangle & clip).get_area() >= rectangle.get_area() * .9):
+            result.append((rectangle, image.get('xref', 0)))
+    return result
+
+
 def regions(page, clip, reader):
     embedded = embedded_regions(page, clip)
     pix = page.get_pixmap(dpi=120, clip=clip, colorspace=pymupdf.csGRAY, alpha=False)
@@ -241,7 +258,39 @@ def drawing_regions(page, reader):
     return output
 
 
-def extract_figures(doc, drawing_pages, directory, number, args, reader, headers=None):
+def clean_drawing_image(page, rectangle, pix, reader):
+    """Remove recognized figure captions and trim outer whitespace, preserving diagram labels."""
+    gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width).copy()
+    sx, sy = pix.width / rectangle.width, pix.height / rectangle.height
+    pattern = re.compile(r'^(?:图|圖|Fig\.?|Figure)\s*\d+\s*(?:[（(]?[a-zA-Z][）)]?)?$', re.I)
+    boxes = []
+    for block in page.get_text('dict', clip=rectangle)['blocks']:
+        for line in block.get('lines', []):
+            text = ''.join(span['text'] for span in line['spans']).strip()
+            if pattern.fullmatch(text):
+                r = pymupdf.Rect(line['bbox'])
+                boxes.append(((r.x0-rectangle.x0)*sx, (r.y0-rectangle.y0)*sy,
+                              (r.x1-rectangle.x0)*sx, (r.y1-rectangle.y0)*sy))
+    if reader.ocr_enabled:
+        result = reader.ensure_engine()(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+        for box, text in zip(result.boxes if result.boxes is not None else [], result.txts or []):
+            if pattern.fullmatch(text.strip()):
+                x0,y0 = box.min(axis=0)
+                x1,y1 = box.max(axis=0)
+                boxes.append((x0,y0,x1,y1))
+    for x0,y0,x1,y1 in boxes:
+        pad = max(2, round(pix.xres / 150))
+        gray[max(0,int(y0)-pad):min(pix.height,int(y1)+pad+1),
+             max(0,int(x0)-pad):min(pix.width,int(x1)+pad+1)] = 255
+    ys,xs = np.where(gray < 210)
+    if not len(xs):
+        raise ValueError('删除图号后未检测到图形，请人工核对')
+    margin = max(8, round(pix.xres * .04))
+    return gray[max(0,ys.min()-margin):min(pix.height,ys.max()+margin+1),
+                max(0,xs.min()-margin):min(pix.width,xs.max()+margin+1)]
+
+
+def extract_figures(doc, drawing_pages, directory, number, args, reader, headers=None, drawing_only=False):
     images = []
     counters = dict.fromkeys(LABELS, 0)
     used_names = set()
@@ -261,8 +310,17 @@ def extract_figures(doc, drawing_pages, directory, number, args, reader, headers
         used_names.add(filename)
         pix = doc[page_index].get_pixmap(dpi=args.dpi, clip=rectangle, colorspace=pymupdf.csGRAY, alpha=False)
         target = directory / filename
-        pix.save(target)
-        images.append(dict(file_name=filename,page=page_index+1,width=pix.width,height=pix.height,
+        width, height = pix.width, pix.height
+        if role == 'drawing' and getattr(args, 'clean_drawing', False):
+            clean = clean_drawing_image(doc[page_index], rectangle, pix, reader)
+            height, width = clean.shape
+            success, encoded = cv2.imencode('.png', clean)
+            if not success:
+                raise ValueError('附图保存失败')
+            target.write_bytes(encoded.tobytes())
+        else:
+            pix.save(target)
+        images.append(dict(file_name=filename,page=page_index+1,width=width,height=height,
                            content_hash=hashlib.sha256(target.read_bytes()).hexdigest(),image_role=role,
                            figure_label=figure_name,
                            bbox=list(rectangle),extraction_method=method))
@@ -270,6 +328,8 @@ def extract_figures(doc, drawing_pages, directory, number, args, reader, headers
         page = doc[index]
         for rectangle,label,method in drawing_regions(page,reader):
             save(index,rectangle,'drawing',method,label)
+    if drawing_only:
+        return images
     # Explicit abstract-figure pages, or a cover's lower illustration area.
     for index,page in enumerate(doc):
         if index in drawing_pages:

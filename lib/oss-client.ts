@@ -128,6 +128,17 @@ export async function putPatentImage(
   )
 }
 
+export async function removePatentImage(ossKey: string): Promise<void> {
+  if (!isOssConfigured()) throw new Error('对象存储未配置')
+  if (isMinioStorage()) {
+    const client = await createMinioClient(ossKey)
+    await client.removeObject(getBucketName(), ossKey)
+  } else {
+    const client = createOssClient() as unknown as { delete(key: string): Promise<unknown> }
+    await client.delete(ossKey)
+  }
+}
+
 export async function patentImageExists(ossKey: string): Promise<boolean> {
   if (!isOssConfigured()) {
     throw new Error('OSS 配置未设置，无法检查专利附图')

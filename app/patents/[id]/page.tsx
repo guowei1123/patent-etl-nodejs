@@ -65,7 +65,7 @@ const INLINE_IMAGE_MARKER = /\[\[PATENT_IMAGE:([^\]]+)\]\]/g
 
 type DescriptionContentPart =
   | { type: 'text'; value: string; key: string }
-  | { type: 'image'; image: PatentImage; key: string }
+  | { type: 'image'; image: PatentImage; key: string; inline: boolean }
 
 function splitDescriptionContent(
   content: string,
@@ -81,27 +81,29 @@ function splitDescriptionContent(
 
   while ((match = INLINE_IMAGE_MARKER.exec(content)) !== null) {
     const text = content.slice(lastIndex, match.index)
-    if (text.trim()) {
+    if (text) {
       parts.push({ type: 'text', value: text, key: `text-${lastIndex}` })
     }
 
     const fileName = match[1]
     const image = imagesByFile.get(fileName.toLowerCase())
     if (image) {
-      parts.push({ type: 'image', image, key: `image-${image.id}` })
+      const inline = /[^\s]$/.test(content.slice(0, match.index)) && /^[^\s]/.test(content.slice(match.index + match[0].length))
+      parts.push({ type: 'image', image, key: `image-${image.id}-${match.index}`, inline })
     }
     lastIndex = match.index + match[0].length
   }
 
   const tail = content.slice(lastIndex)
-  if (tail.trim()) {
+  if (tail) {
     parts.push({ type: 'text', value: tail, key: `text-${lastIndex}` })
   }
 
   return parts
 }
 
-function InlinePatentImage({ image }: { image: PatentImage }) {
+function InlinePatentImage({ image, inline }: { image: PatentImage; inline: boolean }) {
+  if (inline) return <Image src={`/api/patent-images/${image.id}`} alt={image.file_name} width={image.width || 32} height={image.height || 24} unoptimized className="inline-block h-auto max-h-[1.6em] w-auto max-w-[6em] align-middle" style={getImageRotationStyle(image.display_rotation)} />
   return (
     <figure className="bg-secondary/30 overflow-hidden rounded-lg border">
       <div className="bg-background relative aspect-[16/9] min-h-[120px]">
@@ -143,17 +145,12 @@ function DescriptionSection({
       className="scroll-mt-28 flex flex-col gap-3 py-6 first:pt-0 last:pb-0"
     >
       <h3 className="text-foreground text-base font-medium">{title}</h3>
-      <div className="flex flex-col gap-3">
+      <div className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap">
         {parts.map((part) =>
           part.type === 'text' ? (
-            <p
-              key={part.key}
-              className="text-muted-foreground text-sm leading-7 whitespace-pre-wrap"
-            >
-              {part.value.trim()}
-            </p>
+            <span key={part.key}>{part.value}</span>
           ) : (
-            <InlinePatentImage key={part.key} image={part.image} />
+            <InlinePatentImage key={part.key} image={part.image} inline={part.inline} />
           ),
         )}
       </div>

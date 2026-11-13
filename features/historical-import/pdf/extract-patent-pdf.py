@@ -21,6 +21,26 @@ def patent_number(text):
     return "CN" + match[1] + match[2].upper() if match else None
 
 
+def publication_number_on_page(page, text):
+    """Prefer the cover's publication identifier over cited earlier documents."""
+    rect = page.rect
+    corner = pymupdf.Rect(rect.x0 + rect.width * .6, rect.y0,
+                          rect.x1, rect.y0 + rect.height * .25)
+    def matches(value):
+        return {"CN" + m[1] + m[2].upper() for m in NUMBER.finditer(value)}
+    top = matches(page.get_text(clip=corner))
+    if len(top) == 1:
+        return next(iter(top))
+    if len(top) > 1:
+        raise ValueError('PDF 首页公告号存在歧义，请人工核对')
+    all_numbers = matches(text)
+    if len(all_numbers) == 1:
+        return next(iter(all_numbers))
+    if len(all_numbers) > 1:
+        raise ValueError('PDF 首页存在多个文献号且无法定位公告号，请人工核对')
+    return None
+
+
 def drawing_header(text):
     compact = re.sub(r"\s+", "", text)
     return "说明书附图" in compact or "說明書附圖" in compact
@@ -176,7 +196,7 @@ def extract(content, name, source, args, reader):
         if doc.needs_pass or len(doc) > args.max_pages:
             raise ValueError("PDF 加密或超过页数限制")
         first = reader.read(doc[0]) if not args.pages else doc[0].get_text()
-        number = patent_number(first)
+        number = publication_number_on_page(doc[0], first)
         file_number = patent_number(Path(name).name)
         if number and file_number and number != file_number:
             raise ValueError("首页公开号与文件名不一致，请人工核对")
@@ -231,7 +251,8 @@ def extract(content, name, source, args, reader):
             figure_spec = importlib.util.spec_from_file_location('pdf_figures', Path(__file__).parent / 'figures.py')
             figures = importlib.util.module_from_spec(figure_spec)
             figure_spec.loader.exec_module(figures)
-            images = figures.extract_figures(doc, pages, directory, number, args, reader, headers)
+            images = figures.extract_figures(doc, pages, directory, number, args, reader, headers,
+                                             drawing_only=getattr(args, 'drawing_only', False))
             if not images:
                 return {"status": "needs_review", "patent_number": number, "source": source, "error": "未识别附图或正文图形，请人工核对 PDF"}
         result = {"version": 'pdf-figures-v2' if getattr(args,'figures',False) else VERSION, "dpi": args.dpi, "pages_override": args.pages, "status": "extracted", "batch": args.batch,
