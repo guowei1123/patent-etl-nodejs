@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+<title id="title">同步进度与导入验收示意图</title><desc id="desc">批次自动经过下载、处理、导入，查看已完成状态和日志，然后在专利数据页面查询。</desc>
+<rect width="1200" height="430" rx="12" fill="#f4f6f8"/><g font-family="Microsoft YaHei, sans-serif" fill="#203345">
+<text x="42" y="48" font-size="24" font-weight="700">查看进度与验收 · 操作示意</text><rect x="42" y="78" width="1116" height="305" rx="10" fill="#fff" stroke="#d5dde4"/>
+<text x="77" y="128" font-size="21" font-weight="700">批次详情</text><rect x="951" y="97" width="135" height="40" rx="6" fill="#e6f3eb"/><text x="983" y="124" font-size="19" fill="#246946">已完成</text>
+<rect x="78" y="161" width="260" height="70" rx="6" fill="#edf2f8"/><text x="110" y="202" font-size="20">① 下载原始文件</text><text x="353" y="204" font-size="28" fill="#7a90a3">→</text>
+<rect x="398" y="161" width="260" height="70" rx="6" fill="#edf2f8"/><text x="430" y="202" font-size="20">② 校验、解析与附图</text><text x="674" y="204" font-size="28" fill="#7a90a3">→</text>
+<rect x="718" y="161" width="260" height="70" rx="6" fill="#edf2f8"/><text x="750" y="202" font-size="20">③ 导入数据库</text>
+<text x="78" y="280" font-size="19">查看已导入数量和“同步日志”</text><text x="78" y="320" font-size="19">打开“专利数据”，搜索并抽查专利及附图</text>
+<text x="78" y="359" font-size="16" fill="#65798a">状态和数量以实际页面为准；各阶段自动排队，发生错误时查看同步日志。</text>
+</g></svg>

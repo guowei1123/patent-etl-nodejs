@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="640" viewBox="0 0 1200 640" role="img" aria-labelledby="title desc">
+<title id="title">新建同步批次示意图</title><desc id="desc">在批次管理页面点击新建批次，选择数据类型和 FTP 子目录，然后点击开始同步。</desc>
+<rect width="1200" height="640" rx="12" fill="#f4f6f8"/><g font-family="Microsoft YaHei, sans-serif" fill="#203345">
+<text x="42" y="48" font-size="24" font-weight="700">新建批次 · 页面示意</text>
+<rect x="42" y="77" width="1116" height="516" rx="10" fill="#fff" stroke="#d5dde4"/>
+<rect x="42" y="77" width="190" height="516" rx="10" fill="#edf1f5"/><text x="70" y="132" font-size="18">工作台</text><rect x="58" y="162" width="158" height="48" rx="6" fill="#dce8f7"/><text x="78" y="193" font-size="18" font-weight="700">批次管理</text><text x="78" y="245" font-size="18">专利数据</text>
+<text x="265" y="132" font-size="25" font-weight="700">批次管理</text><rect x="965" y="96" width="150" height="48" rx="6" fill="#315f99"/><text x="990" y="127" font-size="19" fill="#fff">＋ 新建批次</text><circle cx="951" cy="93" r="20" fill="#d35135"/><text x="944" y="100" font-size="18" font-weight="700" fill="#fff">1</text>
+<rect x="321" y="166" width="718" height="386" rx="10" fill="#fff" stroke="#91a5b7" stroke-width="2"/>
+<text x="354" y="210" font-size="23" font-weight="700">创建同步批次</text><text x="354" y="243" font-size="17" fill="#65798a">从 FTP 服务器同步专利数据到本地数据库</text>
+<text x="354" y="286" font-size="18">数据类型</text><rect x="354" y="298" width="646" height="43" rx="5" fill="#fff" stroke="#b7c5d1"/><text x="373" y="327" font-size="18">发明授权 / 发明申请 / 实用新型</text><circle cx="1022" cy="318" r="18" fill="#d35135"/><text x="1016" y="324" font-size="17" fill="#fff">2</text>
+<text x="354" y="372" font-size="18">批次编号（选择后自动生成）</text><rect x="354" y="384" width="646" height="43" rx="5" fill="#f3f5f7" stroke="#d5dde4"/>
+<text x="354" y="458" font-size="18">FTP 文件夹</text><rect x="354" y="470" width="646" height="43" rx="5" fill="#fff" stroke="#b7c5d1"/><text x="373" y="498" font-size="17" fill="#65798a">选择具体批次子目录</text><text x="947" y="499" font-size="21">▣</text><circle cx="1022" cy="489" r="18" fill="#d35135"/><text x="1016" y="495" font-size="17" fill="#fff">3</text>
+<rect x="889" y="535" width="135" height="40" rx="5" fill="#315f99"/><text x="913" y="562" font-size="18" fill="#fff">开始同步</text><circle cx="1040" cy="554" r="18" fill="#d35135"/><text x="1034" y="560" font-size="17" fill="#fff">4</text>
+</g></svg>

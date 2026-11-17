@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="310" viewBox="0 0 1200 310" role="img" aria-labelledby="title desc">
+<title id="title">一键启动项目示意图</title><desc id="desc">双击启动文件，保持启动窗口打开，等待浏览器打开登录页面。</desc>
+<rect width="1200" height="310" rx="12" fill="#f4f6f8"/><g font-family="Microsoft YaHei, sans-serif" fill="#203345">
+<text x="42" y="48" font-size="24" font-weight="700">日常启动 · 操作示意</text><rect x="42" y="78" width="1116" height="190" rx="10" fill="#fff" stroke="#d5dde4"/>
+<rect x="75" y="120" width="270" height="58" rx="6" fill="#eaf1fa" stroke="#91abd0"/><text x="94" y="156" font-size="20">一键启动项目.bat</text>
+<path d="M365 149h58" stroke="#7890a8" stroke-width="4"/><path d="M414 141l12 8-12 8" fill="none" stroke="#7890a8" stroke-width="4"/>
+<text x="450" y="146" font-size="19">等待检查并启动服务</text><text x="450" y="178" font-size="17" fill="#566c7e">保持窗口打开</text>
+<path d="M700 149h58" stroke="#7890a8" stroke-width="4"/><path d="M749 141l12 8-12 8" fill="none" stroke="#7890a8" stroke-width="4"/>
+<text x="783" y="146" font-size="19">浏览器打开登录页面</text><text x="783" y="178" font-size="17" fill="#566c7e">localhost:3000</text>
+<text x="76" y="235" font-size="17" fill="#566c7e">如浏览器未自动打开，可手动访问上面的地址；关闭窗口会停止工作台。</text>
+</g></svg>

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+<title id="title">双击安装与启动示意图</title><desc id="desc">将两个安装文件放在一起，双击批处理文件，根据提示完成数据库和 FTP 配置，然后打开本地网页。</desc>
+<rect width="1200" height="430" rx="12" fill="#f4f6f8"/><g font-family="Microsoft YaHei, sans-serif">
+<text x="42" y="48" font-size="24" font-weight="700" fill="#1b2937">安装与启动 · 操作示意</text>
+<rect x="42" y="80" width="1116" height="300" rx="10" fill="#fff" stroke="#d5dde4"/>
+<text x="76" y="125" font-size="21" font-weight="700" fill="#203345">① 两个文件放在同一文件夹</text>
+<rect x="78" y="151" width="475" height="57" rx="6" fill="#eaf1fa" stroke="#91abd0"/><text x="100" y="187" font-size="20" fill="#203345">一键安装项目.bat</text><text x="407" y="187" font-size="18" fill="#315f99">双击运行</text>
+<rect x="78" y="220" width="475" height="57" rx="6" fill="#f7f9fb" stroke="#d5dde4"/><text x="100" y="256" font-size="20" fill="#203345">setup-and-clone.ps1</text>
+<path d="M587 212h62" stroke="#7890a8" stroke-width="4"/><path d="M640 204l12 8-12 8" fill="none" stroke="#7890a8" stroke-width="4"/>
+<text x="690" y="125" font-size="21" font-weight="700" fill="#203345">② 按窗口提示完成安装</text>
+<text x="690" y="169" font-size="19" fill="#344c60">安装 PostgreSQL → 设置数据库密码</text>
+<text x="690" y="211" font-size="19" fill="#344c60">设置登录密码 → 按提示输入 FTP 账号</text>
+<text x="690" y="253" font-size="19" fill="#344c60">输入 Y 启动 → 打开 localhost:3000</text>
+<text x="78" y="330" font-size="17" fill="#566c7e">安装完成后，在登录页面输入 .env 中的 AUTH_USERNAME 和 AUTH_PASSWORD。</text>
+</g></svg>
