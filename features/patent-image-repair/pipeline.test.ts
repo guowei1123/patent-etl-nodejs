@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { runPipeline, serialQueue } from './pipeline'
+import { boundedQueue, runPipeline, serialQueue } from './pipeline'
 
 describe('逐件流水线',()=>{
+  it('并行更新限制为两项，失败后释放名额',async()=>{
+    const queue=boundedQueue(2)
+    let active=0,max=0
+    const jobs=Array.from({length:5},(_,i)=>queue(async()=>{
+      active++;max=Math.max(max,active)
+      await new Promise(resolve=>setTimeout(resolve,5))
+      active--
+      if(i===1) throw new Error('模拟失败')
+      return i
+    }))
+    const results=await Promise.allSettled(jobs)
+    expect(max).toBe(2)
+    expect(results.filter(result=>result.status==='fulfilled')).toHaveLength(4)
+  })
   it('限制并发并在较快的下载完成后立即更新',async()=>{
     const events:string[]=[]
     let releaseFirst!:()=>void

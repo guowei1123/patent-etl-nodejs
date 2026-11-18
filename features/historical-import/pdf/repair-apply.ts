@@ -6,7 +6,9 @@ import { isOssConfigured, putPatentImage, patentImageExists, getPatentImage, rem
 import { parsePublicationNumber, readVerifiedImage, validateManifest, type PdfManifest } from './historical-pdf.ts'
 import { finalizeRepairs } from './repair-finalize.ts'
 import { repairImageKey } from './repair-key.ts'
+import { validateDrawingCount } from './repair-count.ts'
 import { encodeRepairJpeg } from './repair-jpeg.ts'
+import { monitorRepairConnection, prepareDrawingJpegs } from './repair-transaction.ts'
 import { cleanupReplacedDrawings } from './repair-clean-old.ts'
 import { prepareReplacements, recoverReplacements } from './repair-replacement.ts'
 import { loadRepairAbstracts, matchRepairAbstracts, type ReusedAbstract } from './repair-dedup.ts'
@@ -55,11 +57,12 @@ async function main() {
     for (const row of existing.rows) completed.add(JSON.stringify([row.publication_number,row.batch_id]))
   }
   for (const item of records.reverse()) {
-    if (item.status !== 'ready' || item.repair_revision !== 3 || (chosen && item.publication_number !== chosen) || seen.has(item.publication_number)) continue
+    if (item.status !== 'ready' || item.repair_revision !== 4 || (chosen && item.publication_number !== chosen) || seen.has(item.publication_number)) continue
     seen.add(item.publication_number)
     if (completed.has(JSON.stringify([item.publication_number,item.batch]))) { skipped++; continue }
     if (++processed > limit) break
     const client = await pool.connect()
+    const connection=monitorRepairConnection(client)
     let replacementsPrepared = false
     let committed = false
     let commitStarted = false
@@ -72,8 +75,16 @@ async function main() {
       const pdf = await readFile(item.pdf).catch((error:NodeJS.ErrnoException) => { if(error.code==='ENOENT') return null; throw error })
       if (manifest.patent_number !== item.publication_number || manifest.pdf_hash !== item.pdf_hash || (pdf && createHash('sha256').update(pdf).digest('hex') !== item.pdf_hash)) throw new Error('PDF、公开号或哈希不一致')
       const images = await Promise.all(manifest.images.map(image => readVerifiedImage(path.dirname(item.manifest), image)))
+      // Encoding can take longer than the database's idle transaction timeout.
+      // Keep failures per image: an image matched to the abstract needs no JPEG.
+      const encoded=commit ? await prepareDrawingJpegs(images) : []
+      connection.assert()
       await client.query('BEGIN')
-      const patent = await client.query<{id: string; abstract_fig_key:string|null}>(`SELECT id,abstract_fig_key FROM cnipa.patent WHERE batch_id=$1 AND upper(doc_number)=ANY($2::text[]) AND upper(kind)=$3 FOR UPDATE`, [item.batch, [pub.number, `CN${pub.number}`], pub.kind])
+      // Object storage verification and durable backup remain inside this
+      // transaction. Allow those operations to finish without changing the
+      // database-wide setting, while still retaining a bounded idle timeout.
+      await client.query("SET LOCAL idle_in_transaction_session_timeout = '10min'")
+      const patent = await client.query<{id: string; abstract_fig_key:string|null}>(`SELECT id,abstract_fig_key FROM cnipa.patent WHERE batch_id=$1 AND doc_number=ANY($2::text[]) AND upper(kind)=$3 FOR UPDATE`, [item.batch, [pub.number, ...['CN','Cn','cN','cn'].map(prefix=>prefix+pub.number)], pub.kind])
       if (patent.rowCount !== 1) throw new Error('批次及公开号没有唯一对应专利')
       const patentId = patent.rows[0].id
       const prior = backupExists ? await client.query<{new_image_ids:string[]}>('SELECT new_image_ids FROM cnipa.pdf_image_repair_backup WHERE patent_id=$1 AND cardinality(new_image_ids)>0 ORDER BY created_at DESC LIMIT 1 FOR UPDATE', [patentId]) : { rowCount: 0, rows: [] }
@@ -83,6 +94,7 @@ async function main() {
       const old = await client.query<{id:string;asset_id:string;file_name:string;oss_key:string;content_hash:string}>("SELECT i.*,a.content_hash FROM cnipa.patent_image i LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE i.patent_id=$1 AND i.image_role='drawing' AND NOT i.is_abstract FOR UPDATE OF i", [patentId])
       const names = new Set(item.candidate_image_names.map(name => name.toLowerCase()))
       if (!old.rowCount || old.rows.some(image => !names.has(image.file_name.toLowerCase()))) throw new Error('附图不全属于重名候选，跳过以免替换正确图片')
+      validateDrawingCount(old.rows.length, images.length)
       if (!pdf) throw new Error('原 PDF 已清理，重新提取前请先重新下载')
       if (!commit) { await client.query('ROLLBACK'); console.log(JSON.stringify({number:item.publication_number,status:'ready',old:old.rowCount,pages:images.length})); continue }
       const abstracts=await loadRepairAbstracts(client,patentId,patent.rows[0].abstract_fig_key)
@@ -90,7 +102,9 @@ async function main() {
       const plans: {image:PdfManifest['images'][number];jpeg:Awaited<ReturnType<typeof encodeRepairJpeg>>|null;key:string;old:typeof old.rows[number]|null;reuse:ReusedAbstract|null}[] = []
       for (const [index,image] of manifest.images.entries()) {
         const reused=reuse.get(index) || null
-        const jpeg=reused ? null : await encodeRepairJpeg(images[index])
+        if(!reused && encoded[index]?.error) throw encoded[index].error
+        const jpeg=reused ? null : encoded[index]?.jpeg ?? null
+        if(!reused && !jpeg) throw new Error('附图压缩结果缺失，请重试')
         plans.push({image,jpeg,key:jpeg ? repairImageKey(item.batch,item.publication_number,jpeg.hash,index+1) : reused!.asset.oss_key,old:null,reuse:reused})
       }
       const replacements:typeof plans = []
@@ -110,13 +124,7 @@ async function main() {
       }
       if (replacements.length) {
         const assetIds=replacements.map(plan=>plan.old!.asset_id)
-        const keys=replacements.map(plan=>plan.old!.oss_key.toLowerCase())
         await client.query('SELECT id FROM cnipa.image_asset WHERE id=ANY($1::uuid[]) FOR UPDATE',[assetIds])
-        const refs=await client.query<{id:string}>(`SELECT id FROM cnipa.patent_image WHERE asset_id=ANY($1::uuid[]) OR lower(oss_key)=ANY($2::text[])`,[assetIds,keys])
-        const allowed=new Set(replacements.map(plan=>plan.old!.id))
-        if(refs.rows.some(row=>!allowed.has(row.id))) throw new Error('同名旧图被其他图片记录引用，已停止更新')
-        const abstracts=await client.query('SELECT 1 FROM cnipa.patent WHERE lower(abstract_fig_key)=ANY($1::text[]) LIMIT 1',[keys])
-        if(abstracts.rowCount) throw new Error('同名旧图被摘要图引用，已停止更新')
         await prepareReplacements(item.publication_number,replacements.map(plan=>({oldKey:plan.old!.oss_key,newHash:plan.jpeg!.hash})))
         replacementsPrepared=true
       }
@@ -133,13 +141,16 @@ async function main() {
         const existingAsset = await client.query<{content_hash:string}>('SELECT content_hash FROM cnipa.image_asset WHERE oss_key=$1 FOR UPDATE',[key])
         if (existingAsset.rowCount && existingAsset.rows[0].content_hash!==jpeg.hash && plan.old?.oss_key!==key) throw new Error(`目标图片 ${path.posix.basename(key)} 已被其他图片使用，已停止更新`)
         if (plan.old) {
+          connection.assert()
           await removePatentImage(plan.old.oss_key)
+          connection.assert()
           await putPatentImage(key,jpeg.content,'image/jpeg')
           if(createHash('sha256').update((await getPatentImage(key)).content).digest('hex')!==jpeg.hash) throw new Error(`新附图 ${path.posix.basename(key)} 校验失败`)
         } else if (await patentImageExists(key)) {
           const existing = await getPatentImage(key)
           if (createHash('sha256').update(existing.content).digest('hex') !== jpeg.hash) throw new Error(`目标图片 ${path.posix.basename(key)} 已存在但内容不同，已停止更新`)
-        } else await putPatentImage(key, jpeg.content, 'image/jpeg')
+        } else {connection.assert();await putPatentImage(key, jpeg.content, 'image/jpeg')}
+        connection.assert()
         const asset = await client.query<{id:string}>(`INSERT INTO cnipa.image_asset(oss_key,content_hash,content_type,size,width,height) VALUES($1,$2,'image/jpeg',$3,$4,$5) ON CONFLICT(oss_key) DO UPDATE SET content_hash=EXCLUDED.content_hash,content_type=EXCLUDED.content_type,size=EXCLUDED.size,width=EXCLUDED.width,height=EXCLUDED.height WHERE cnipa.image_asset.content_hash=EXCLUDED.content_hash OR cnipa.image_asset.id=$6::uuid RETURNING id`, [key,jpeg.hash,jpeg.content.length,image.width,image.height,plan.old?.oss_key===key ? plan.old.asset_id : null])
         if (!asset.rowCount) throw new Error(`目标图片 ${path.posix.basename(key)} 的资产记录冲突，已停止更新`)
         const inserted = await client.query<{id:string}>(`INSERT INTO cnipa.patent_image(patent_id,asset_id,file_name,oss_key,content_type,size,width,height,is_abstract,image_role,figure_label,source_section,sort_order) VALUES($1,$2,$3,$4,'image/jpeg',$5,$6,$7,false,'drawing',$8,'PDF-repair',$9) RETURNING id`, [patentId,asset.rows[0].id,path.posix.basename(key),key,jpeg.content.length,image.width,image.height,image.figure_label,index])
@@ -161,7 +172,7 @@ async function main() {
       if (replacementsPrepared && !committed && commitStarted) console.error(JSON.stringify({number:item.publication_number,status:'finalize_failed',error:'数据库提交结果不确定，请重新运行以检查记录和恢复旧图'}))
       await client.query('ROLLBACK').catch(() => {})
       console.error(JSON.stringify({number:item.publication_number,status:'failed',error:error instanceof Error ? error.message : String(error)}))
-    } finally { client.release() }
+    } finally { connection.release() }
   }
   if (skipped) console.log(JSON.stringify({status:'skipped_applied',count:skipped}))
   if (!processed && !args.includes('--cleanup-only')) console.log(skipped ? '已跳过已更新专利，没有待更新记录' : '没有符合条件的已准备记录')

@@ -10,7 +10,8 @@ import {
 } from 'node:fs/promises'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import type { HistoryJob, ImportConfig } from './model.ts'
+import { setTimeout as delay } from 'node:timers/promises'
+import type { HistoryJob, ImportConfig, SavedImportConfig } from './model.ts'
 import { emptySummary } from './model.ts'
 
 export const jobRoot = path.resolve('data/historical-import')
@@ -30,7 +31,18 @@ export async function saveJob(job: HistoryJob) {
   job.updatedAt = new Date().toISOString()
   const temporary = path.join(directory, `state-${randomUUID()}.part`)
   await writeFile(temporary, JSON.stringify(job), 'utf8')
-  await rename(temporary, path.join(directory, 'state.json'))
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await rename(temporary, path.join(directory, 'state.json'))
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      // Windows readers and antivirus can briefly block replacement of state.json.
+      if (attempt >= 5 || !['EPERM', 'EACCES', 'EBUSY'].includes(code || ''))
+        throw error
+      await delay(100 * (attempt + 1))
+    }
+  }
 }
 export async function getJob(id: string): Promise<HistoryJob> {
   return JSON.parse(
@@ -120,7 +132,7 @@ export async function validateSources(config: ImportConfig) {
   }
 }
 export async function createJob(
-  config: ImportConfig,
+  config: SavedImportConfig,
   mode: HistoryJob['mode'],
 ) {
   await validateSources(config)

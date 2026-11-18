@@ -1,6 +1,8 @@
 import type { FtpEntry } from '@/types'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FtpConnectionPool } from '../ftp-client'
+import { closeFtpSession, connectFtpSession } from '../ftp-session'
+import { Client } from 'basic-ftp'
 
 const state = vi.hoisted(() => ({
   active: 0,
@@ -34,7 +36,7 @@ vi.mock('basic-ftp', async (importOriginal) => {
           raw.closed = true
           raw.ftp.socket.emit('close')
         }),
-        downloadTo: vi.fn((...args: unknown[]) => state.transfer(...args)),
+        downloadTo: vi.fn((...args: unknown[]) => state.transfer(...args, raw)),
         trackProgress: vi.fn(),
       }
       return raw
@@ -67,7 +69,7 @@ describe('FTP pools share connection capacity', () => {
     vi.unstubAllEnvs()
   })
 
-  it('finishes concurrent pools without reserving all slots or exceeding the account limit', async () => {
+  it('finishes concurrent pools without exceeding the connection limit', async () => {
     const config = { host: 'ftp.example.test', user: 'pool-user' }
     const a = new FtpConnectionPool(config, 2)
     const b = new FtpConnectionPool(config, 2)
@@ -94,6 +96,34 @@ describe('FTP pools share connection capacity', () => {
     expect(
       [...globalThis.__patentFtpSessions!.accounts.values()][0].queue,
     ).toHaveLength(0)
+  })
+
+  it('interrupts a resumable transfer for browsing and resumes without consuming retries', async () => {
+    const config = { host: 'ftp.example.test', user: 'pool-user' }
+    const pool = new FtpConnectionPool(config, 2)
+    let releaseOther!: () => void
+    const other = new Promise<void>((resolve) => { releaseOther = resolve })
+    let first = true
+    state.transfer.mockImplementation((_local, remote, _offset, raw) => {
+      if (remote === '/a.z01' && first) {
+        first = false
+        return new Promise<void>((_resolve, reject) => raw.ftp.socket.once('close', () => reject(new Error('closed'))))
+      }
+      if (remote === '/a.zip') return other
+      return Promise.resolve()
+    })
+    await pool.connect()
+    const running = pool.downloadFiles(files('a'), '/virtual-a', { resume: true })
+    await vi.waitFor(() => expect(state.transfer).toHaveBeenCalledTimes(2))
+    const browser = new Client()
+    await connectFtpSession(browser, config)
+    expect(state.active).toBe(2)
+    closeFtpSession(browser)
+    await vi.waitFor(() => expect(state.transfer).toHaveBeenCalledTimes(3))
+    expect(state.transfer.mock.calls[2][2]).toBe(1)
+    releaseOther()
+    await expect(running).resolves.toMatchObject({ totalProcessed: 2 })
+    expect(state.active).toBe(0)
   })
 
   it('cleans up a failed initial login and caps oversized per-batch concurrency', async () => {

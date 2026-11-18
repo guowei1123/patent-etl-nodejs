@@ -4,7 +4,7 @@ import { getTask, preview, smsPreview, saveSmsReview, saveSmsReviews, smsUpdateP
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-const schema = z.object({ mode:z.enum(['preview','download','apply','apply-batch','sms']), number:z.string().max(24).optional(), limit:z.number().int().min(0).max(10000), delay:z.number().min(3).max(3600), proxy:z.string().max(80), retry:z.boolean(),concurrency:z.number().int().min(1).max(4).optional() }).refine(value=>value.mode==='download'||value.limit>=1)
+const schema = z.object({ mode:z.enum(['preview','download','apply','apply-batch','sms']), number:z.string().max(24).optional(), limit:z.number().int().min(0).max(10000), delay:z.number().finite().min(0), proxy:z.string().max(80), retry:z.boolean(),concurrency:z.number().int().min(1).optional() }).refine(value=>value.mode==='download'||value.limit>=1)
 const reviewSchema=z.object({action:z.literal('sms_review'),number:z.string().max(24),name:z.string().max(40),candidateIndex:z.number().int().nonnegative().nullable(),manifestHash:z.string().regex(/^[a-f0-9]{64}$/),descriptionHash:z.string().regex(/^[a-f0-9]{64}$/)})
 const batchReviewSchema=z.object({action:z.literal('sms_review_batch'),number:z.string().max(24),entries:z.array(z.object({name:z.string().max(40),candidateIndex:z.number().int().nonnegative()})).min(1).max(10000),manifestHash:z.string().regex(/^[a-f0-9]{64}$/),descriptionHash:z.string().regex(/^[a-f0-9]{64}$/)})
 const smsApplySchema=z.object({action:z.literal('sms_apply'),number:z.string().max(24),fingerprint:z.string().regex(/^[a-f0-9]{64}$/)})

@@ -9,6 +9,7 @@ const dbMock = vi.hoisted(() => ({
 const queueMock = vi.hoisted(() => ({
   enqueueAutoTask: vi.fn(),
   getActiveAutoTask: vi.fn(),
+  getAutoStageLaunchLimit: vi.fn(),
 }))
 
 const schedulerMock = vi.hoisted(() => ({
@@ -35,6 +36,7 @@ describe('manual download route', () => {
       status: 'queued',
     })
     queueMock.enqueueAutoTask.mockResolvedValue({ id: 1 })
+    queueMock.getAutoStageLaunchLimit.mockReturnValue(5)
   })
 
   it('marks a queued download as a manual overflow task', async () => {

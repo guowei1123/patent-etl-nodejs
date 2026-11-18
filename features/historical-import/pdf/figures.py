@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pymupdf
 import re
+import time
 
 
 LABELS = {'drawing': '说明书附图', 'abstract': '摘要附图', 'body_figure': '正文插图',
@@ -153,6 +154,9 @@ def drawing_regions(page, reader):
     captions = []
     pattern = re.compile(r'^(?:图|圖|Fig\.?|Figure)\s*(\d+)\s*(?:[（(]?([a-zA-Z])[）)]?)?(?:\s*[:：].{0,60})?$', re.I)
     caption_boxes = {}
+    # OCR results are only reused when explicitly enabled and this page was
+    # actually scanned; never carry boxes across pages or documents.
+    reader.caption_ocr_cache = None
     def caption(rectangle, text):
         match = pattern.fullmatch(text.strip())
         if match:
@@ -170,10 +174,15 @@ def drawing_regions(page, reader):
     expected = len(embedded_regions(page,clip))
     if reader.ocr_enabled and len({item[2] for item in captions}) < max(2,expected):
         result = reader.ensure_engine()(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
+        cached_boxes = []
         for box, text in zip(result.boxes if result.boxes is not None else [], result.txts or []):
             x0,y0 = box.min(axis=0)
             x1,y1 = box.max(axis=0)
-            caption(pymupdf.Rect(x0/sx+clip.x0,y0/sy+clip.y0,x1/sx+clip.x0,y1/sy+clip.y0), text)
+            bounds = pymupdf.Rect(x0/sx+clip.x0,y0/sy+clip.y0,x1/sx+clip.x0,y1/sy+clip.y0)
+            caption(bounds, text)
+            if re.fullmatch(r'(?:图|圖|Fig\.?|Figure)\s*\d+\s*(?:[（(]?[a-zA-Z][）)]?)?', text.strip(), re.I):
+                cached_boxes.append((bounds, text))
+        reader.caption_ocr_cache = (page.number, cached_boxes)
     if len({item[2] for item in captions}) < 2:
         return [(clip, captions[0][2] if captions else None, 'drawing-page-body')]
 
@@ -258,9 +267,14 @@ def drawing_regions(page, reader):
     return output
 
 
-def clean_drawing_image(page, rectangle, pix, reader):
+def clean_drawing_image(page, rectangle, pix, reader, *, allow_reuse=True):
     """Remove recognized figure captions and trim outer whitespace, preserving diagram labels."""
-    gray = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width).copy()
+    pixels = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n).copy()
+    if pix.n == 1:
+        pixels = pixels[:, :, 0]
+        gray = pixels.copy()
+    else:
+        gray = cv2.cvtColor(pixels, cv2.COLOR_RGB2GRAY)
     sx, sy = pix.width / rectangle.width, pix.height / rectangle.height
     pattern = re.compile(r'^(?:图|圖|Fig\.?|Figure)\s*\d+\s*(?:[（(]?[a-zA-Z][）)]?)?$', re.I)
     boxes = []
@@ -271,7 +285,16 @@ def clean_drawing_image(page, rectangle, pix, reader):
                 r = pymupdf.Rect(line['bbox'])
                 boxes.append(((r.x0-rectangle.x0)*sx, (r.y0-rectangle.y0)*sy,
                               (r.x1-rectangle.x0)*sx, (r.y1-rectangle.y0)*sy))
-    if reader.ocr_enabled:
+    cache = getattr(reader, 'caption_ocr_cache', None)
+    reused = []
+    if allow_reuse and getattr(reader, 'reuse_caption_ocr', False) and cache and cache[0] == page.number:
+        for r, _ in cache[1]:
+            if r.is_valid and not r.is_empty and rectangle.contains(r):
+                reused.append(((r.x0-rectangle.x0)*sx, (r.y0-rectangle.y0)*sy,
+                               (r.x1-rectangle.x0)*sx, (r.y1-rectangle.y0)*sy))
+    if reader.ocr_enabled and reused:
+        boxes.extend(reused)
+    elif reader.ocr_enabled:
         result = reader.ensure_engine()(cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR))
         for box, text in zip(result.boxes if result.boxes is not None else [], result.txts or []):
             if pattern.fullmatch(text.strip()):
@@ -280,20 +303,29 @@ def clean_drawing_image(page, rectangle, pix, reader):
                 boxes.append((x0,y0,x1,y1))
     for x0,y0,x1,y1 in boxes:
         pad = max(2, round(pix.xres / 150))
-        gray[max(0,int(y0)-pad):min(pix.height,int(y1)+pad+1),
-             max(0,int(x0)-pad):min(pix.width,int(x1)+pad+1)] = 255
-    ys,xs = np.where(gray < 210)
+        yslice = slice(max(0,int(y0)-pad), min(pix.height,int(y1)+pad+1))
+        xslice = slice(max(0,int(x0)-pad), min(pix.width,int(x1)+pad+1))
+        gray[yslice, xslice] = 255
+        pixels[yslice, xslice] = 255
+    ink = gray < 210 if pixels.ndim == 2 else np.min(pixels, axis=2) < 210
+    ys,xs = np.where(ink)
     if not len(xs):
+        if reused:
+            return clean_drawing_image(page, rectangle, pix, reader, allow_reuse=False)
         raise ValueError('删除图号后未检测到图形，请人工核对')
     margin = max(8, round(pix.xres * .04))
-    return gray[max(0,ys.min()-margin):min(pix.height,ys.max()+margin+1),
-                max(0,xs.min()-margin):min(pix.width,xs.max()+margin+1)]
+    return pixels[max(0,ys.min()-margin):min(pix.height,ys.max()+margin+1),
+                  max(0,xs.min()-margin):min(pix.width,xs.max()+margin+1)]
 
 
 def extract_figures(doc, drawing_pages, directory, number, args, reader, headers=None, drawing_only=False):
     images = []
     counters = dict.fromkeys(LABELS, 0)
     used_names = set()
+    profile = getattr(reader, 'profile', None)
+    def measured(name, start):
+        if profile is not None:
+            profile[name] = profile.get(name, 0) + round((time.perf_counter() - start) * 1000)
     def save(page_index, rectangle, role, method, label=None):
         import hashlib
         counters[role] += 1
@@ -308,25 +340,37 @@ def extract_figures(doc, drawing_pages, directory, number, args, reader, headers
             suffix += 1
             filename = f'{stem}-第{page_index+1}页-{suffix}.png'
         used_names.add(filename)
-        pix = doc[page_index].get_pixmap(dpi=args.dpi, clip=rectangle, colorspace=pymupdf.csGRAY, alpha=False)
+        started = time.perf_counter()
+        pix = doc[page_index].get_pixmap(dpi=args.dpi, clip=rectangle, colorspace=pymupdf.csRGB, alpha=False)
+        measured('render_ms', started)
         target = directory / filename
         width, height = pix.width, pix.height
         if role == 'drawing' and getattr(args, 'clean_drawing', False):
+            started = time.perf_counter()
             clean = clean_drawing_image(doc[page_index], rectangle, pix, reader)
-            height, width = clean.shape
-            success, encoded = cv2.imencode('.png', clean)
+            measured('clean_ms', started)
+            height, width = clean.shape[:2]
+            started = time.perf_counter()
+            success, encoded = cv2.imencode('.png', cv2.cvtColor(clean, cv2.COLOR_RGB2BGR) if clean.ndim == 3 else clean)
             if not success:
                 raise ValueError('附图保存失败')
-            target.write_bytes(encoded.tobytes())
+            content = encoded.tobytes()
+            target.write_bytes(content)
         else:
+            started = time.perf_counter()
             pix.save(target)
+            content = target.read_bytes()
+        measured('save_ms', started)
         images.append(dict(file_name=filename,page=page_index+1,width=width,height=height,
-                           content_hash=hashlib.sha256(target.read_bytes()).hexdigest(),image_role=role,
+                           content_hash=hashlib.sha256(content).hexdigest(),image_role=role,
                            figure_label=figure_name,
                            bbox=list(rectangle),extraction_method=method))
     for index in drawing_pages:
         page = doc[index]
-        for rectangle,label,method in drawing_regions(page,reader):
+        started = time.perf_counter()
+        regions_for_page = drawing_regions(page,reader)
+        measured('regions_ms', started)
+        for rectangle,label,method in regions_for_page:
             save(index,rectangle,'drawing',method,label)
     if drawing_only:
         return images
@@ -341,7 +385,7 @@ def extract_figures(doc, drawing_pages, directory, number, args, reader, headers
         compact = ''.join(header.split())
         body_header = ('说明书' in compact or '說明書' in compact) and '附图' not in compact
         if not labelled and (index != 0 or body_header):
-            if body_header:
+            if body_header and getattr(args, "include_body_figures", True):
                 for box, role in body_regions(page, body_clip(page), reader):
                     save(index,box,role,'body-region')
             continue

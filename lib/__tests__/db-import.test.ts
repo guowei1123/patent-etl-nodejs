@@ -112,6 +112,91 @@ describe('insertPatents import result', () => {
     pgMock.query.mockReset()
   })
 
+  it('已有完整 B 版时跳过同申请 A 版并记录批次进度', async () => {
+    const client=createClient(sql=>{
+      if(sql.includes('SELECT DISTINCT') && sql.includes('AS application')) return {rows:[{application:'202310962596'}],rowCount:1}
+      return {rows:[],rowCount:0}
+    })
+    pgMock.connect.mockResolvedValue(client)
+    const {insertPatents}=await import('../pg-db')
+    const result=await insertPatents('batch-a',[{...patent('116661005'),kind:'A',application_number:'CN202310962596.2'}])
+    expect(result).toEqual({insertedCount:1,skippedCount:1,failures:[]})
+    expect(client.query).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO cnipa.ftp_import_skipped'),expect.any(Array))
+    expect(client.query.mock.calls.some(([sql])=>sql.includes('INSERT INTO cnipa.patent ('))).toBe(false)
+    expect(client.query).toHaveBeenCalledWith('COMMIT')
+  })
+
+  it('B 版及关联写入成功后才在同一事务清理 A 版', async () => {
+    const client=createClient(sql=>{
+      if(sql.includes('INSERT INTO cnipa.patent (')) return {rows:[{id:'id-b',doc_number:'116661005',kind:'B',is_new:true}],rowCount:1}
+      return {rows:[],rowCount:0}
+    })
+    pgMock.connect.mockResolvedValue(client)
+    const {insertPatents}=await import('../pg-db')
+    const result=await insertPatents('batch-b',[{...patent('116661005'),kind:'B',application_number:'202310962596'}])
+    expect(result.failures).toEqual([])
+    const calls=client.query.mock.calls.map(([sql])=>sql as string)
+    expect(calls.findIndex(sql=>sql.includes('INSERT INTO cnipa.patent ('))).toBeLessThan(calls.findIndex(sql=>sql.includes('removed AS (DELETE FROM cnipa.patent')))
+    expect(calls.findIndex(sql=>sql.includes('removed AS (DELETE FROM cnipa.patent'))).toBeLessThan(calls.indexOf('COMMIT'))
+    expect(calls.some(sql => sql.startsWith('SELECT DISTINCT') && sql.includes('AS application'))).toBe(false)
+  })
+
+  it('数据库查询被取消时回滚并停止，不拆分批次重新执行', async () => {
+    const cancellation = Object.assign(new Error('query cancelled'), { code: '57014' })
+    const client = createClient((sql) => {
+      if (sql.includes('INSERT INTO cnipa.patent (')) throw cancellation
+      return { rows: [], rowCount: 0 }
+    })
+    pgMock.connect.mockResolvedValue(client)
+    const { insertPatents } = await import('../pg-db')
+    await expect(insertPatents('batch-cancel', [patent('1'), patent('2')])).rejects.toBe(cancellation)
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK')
+    expect(pgMock.connect).toHaveBeenCalledTimes(1)
+  })
+
+  it('混合导入时只对申请版检查是否已有完整授权版', async () => {
+    const client = createClient(() => ({ rows: [], rowCount: 0 }))
+    pgMock.connect.mockResolvedValue(client)
+    const { insertPatents } = await import('../pg-db')
+    await insertPatents('batch-mixed', [
+      { ...patent('1'), kind: 'A', application_number: '202310962596' },
+      { ...patent('2'), kind: 'B', application_number: '202310962597' },
+    ])
+    const check = client.query.mock.calls.find(([sql]) =>
+      sql.startsWith('SELECT DISTINCT') && sql.includes('AS application'),
+    )
+    expect(check?.[1]).toEqual([['202310962596']])
+  })
+
+  it('B 版写入失败时回滚且不清理 A 版',async()=>{
+    const client=createClient(sql=>{
+      if(sql.includes('INSERT INTO cnipa.patent (')) throw new Error('模拟写入失败')
+      return {rows:[],rowCount:0}
+    })
+    pgMock.connect.mockResolvedValue(client)
+    const {insertPatents}=await import('../pg-db')
+    const result=await insertPatents('batch-b',[{...patent('116661005'),kind:'B',application_number:'202310962596'}])
+    expect(result.failures).toHaveLength(1)
+    expect(client.query).toHaveBeenCalledWith('ROLLBACK')
+    expect(client.query.mock.calls.some(([sql])=>sql.includes('removed AS (DELETE FROM cnipa.patent'))).toBe(false)
+  })
+
+  it('申请号缺失时不猜测关联或删除申请版',async()=>{
+    const client=createClient(sql=>sql.includes('INSERT INTO cnipa.patent (')?{rows:[{id:'id-b',doc_number:'116661005',kind:'B',is_new:true}],rowCount:1}:{rows:[],rowCount:0})
+    pgMock.connect.mockResolvedValue(client)
+    const {insertPatents}=await import('../pg-db')
+    await insertPatents('batch-b',[patent('116661005')])
+    expect(client.query.mock.calls.some(([sql])=>sql.includes('removed AS (DELETE FROM cnipa.patent'))).toBe(false)
+  })
+
+  it('断点续传计数和已处理键包含跳过记录',async()=>{
+    pgMock.query.mockResolvedValueOnce({rows:[{count:'2'}]}).mockResolvedValueOnce({rows:[{doc_number:'116661005',kind:'A'}]})
+    const {countImportedPatentsByBatch,getImportedPatentKeysByBatch}=await import('../pg-db')
+    expect(await countImportedPatentsByBatch('batch-a')).toBe(2)
+    expect((await getImportedPatentKeysByBatch('batch-a')).has('116661005\u0000A')).toBe(true)
+    expect(pgMock.query.mock.calls.every(([sql])=>sql.includes('cnipa.ftp_import_skipped'))).toBe(true)
+  })
+
   it('returns a single-patent failure instead of silently counting zero', async () => {
     const client = createClient((sql) => {
       if (sql.includes('INSERT INTO cnipa.patent (')) {
@@ -285,6 +370,36 @@ describe('insertPatents import result', () => {
         null,
       ],
     )
+  })
+})
+
+describe('FTP 申请号索引', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    pgMock.connect.mockReset()
+  })
+
+  it('无索引时在事务外并发创建，并释放数据库连接', async () => {
+    const client = createClient(() => ({ rows: [], rowCount: 0 }))
+    pgMock.connect.mockResolvedValue(client)
+    const { ensureFtpApplicationIndex } = await import('../pg-db')
+    await ensureFtpApplicationIndex()
+    const calls = client.query.mock.calls.map(([sql]) => sql as string)
+    expect(calls.some(sql => sql.includes('CREATE INDEX CONCURRENTLY idx_ftp_application_core_all'))).toBe(true)
+    expect(calls).not.toContain('BEGIN')
+    expect(calls.some(sql => sql.includes('pg_advisory_unlock'))).toBe(true)
+    expect(client.release).toHaveBeenCalledOnce()
+  })
+
+  it('已有有效索引时不重复创建', async () => {
+    const client = createClient(sql => sql.includes('FROM pg_class x')
+      ? { rows: [{ valid: true, is_patent: true }], rowCount: 1 }
+      : { rows: [], rowCount: 0 })
+    pgMock.connect.mockResolvedValue(client)
+    const { ensureFtpApplicationIndex } = await import('../pg-db')
+    await ensureFtpApplicationIndex()
+    expect(client.query.mock.calls.some(([sql]) => sql.includes('CREATE INDEX'))).toBe(false)
+    expect(client.release).toHaveBeenCalledOnce()
   })
 })
 

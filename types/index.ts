@@ -221,6 +221,7 @@ export interface PatentImportFailure {
 export interface PatentImportResult {
   insertedCount: number
   failures: PatentImportFailure[]
+  skippedCount?: number
 }
 
 // 鍚屾鏃ュ織

@@ -1,5 +1,7 @@
 import importlib.util
 import unittest
+import io
+import json
 from unittest.mock import patch, mock_open, MagicMock
 from pathlib import Path
 
@@ -23,6 +25,29 @@ def response(html):
 
 
 class RepairDownloadTests(unittest.TestCase):
+    def test_pdf_only_does_not_extract_drawing_pages(self):
+        doc = pymupdf.open()
+        doc.new_page()
+        pdf = doc.tobytes()
+        doc.close()
+        item = {'publication_number': 'CN222254999U', 'batch': 'batch', 'image_names': ['SMS_1.JPG']}
+        stdout = io.StringIO()
+        with patch.object(repair.sys, 'argv', ['repair-download.py', '--single-stdin', '--pdf-only']), \
+             patch.object(repair.sys, 'stdin', io.StringIO(json.dumps(item))), \
+             patch.object(repair.sys, 'stdout', stdout), \
+             patch.object(Path, 'mkdir'), patch.object(Path, 'exists', return_value=True), \
+             patch.object(Path, 'is_file', return_value=True), \
+             patch.object(Path, 'stat', return_value=MagicMock(st_size=len(pdf))), \
+             patch.object(Path, 'read_bytes', return_value=pdf), \
+             patch.object(repair.RepairReader, 'read', return_value='CN222254999U'), \
+             patch.object(repair.extractor, 'publication_number_on_page', return_value='CN222254999U'), \
+             patch.object(repair.extractor, 'extract') as extract:
+            self.assertEqual(repair.main(), 0)
+        extract.assert_not_called()
+        result = json.loads(stdout.getvalue())
+        self.assertEqual(result['status'], 'pdf_ready')
+        self.assertNotIn('manifest', result)
+
     def test_batch_prioritizes_but_does_not_replace_application_versions(self):
         lines = '\n'.join(['{"publication_number":"CN116661005A"}',
                            '{"publication_number":"CN116661005B"}',

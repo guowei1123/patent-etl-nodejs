@@ -12,6 +12,26 @@ describe('附图修复接口',()=>{
     expect(r.status).toBe(403)
     expect(service.startTask).not.toHaveBeenCalled()
   })
+  it('允许附图修复并发数量超过四',async()=>{
+    service.startTask.mockReturnValue({status:'running'})
+    const body={mode:'download',limit:0,delay:3,proxy:'',retry:false,concurrency:5}
+    const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}))
+    expect(r.status).toBe(200)
+    expect(service.startTask).toHaveBeenCalledWith(body)
+  })
+  it.each([0,0.5,3601])('允许请求间隔为 %s 秒',async delay=>{
+    service.startTask.mockReturnValue({status:'running'})
+    const body={mode:'download',limit:0,delay,proxy:'',retry:false,concurrency:2}
+    const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}))
+    expect(r.status).toBe(200)
+    expect(service.startTask).toHaveBeenCalledWith(body)
+  })
+  it('拒绝负的请求间隔',async()=>{
+    const body={mode:'download',limit:0,delay:-1,proxy:'',retry:false,concurrency:2}
+    const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}))
+    expect(r.status).toBe(400)
+    expect(service.startTask).not.toHaveBeenCalled()
+  })
   it('拒绝超出范围的批次数量',async()=>{
     const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({mode:'download',limit:10001,delay:3,proxy:'',retry:false})}))
     expect(r.status).toBe(400)

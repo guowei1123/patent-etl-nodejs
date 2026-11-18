@@ -4,6 +4,7 @@ import { getTempPath } from '../file-processor'
 import {
   addLog,
   countImportedPatentsByBatch,
+  ensureFtpApplicationIndex,
   getBatchByCode,
   getImportedPatentKeysByBatch,
   insertPatents,
@@ -124,6 +125,9 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
     )
 
     const importedKeys = await getImportedPatentKeysByBatch(batchCode)
+    await addLog(batchCode, 'info', '正在检查申请号去重索引，首次创建可能需要较长时间…')
+    await ensureFtpApplicationIndex()
+    if (cancelled) throw new Error('任务已取消')
     const CONCURRENCY = Math.max(
       1,
       parseInt(process.env.IMPORT_CONCURRENCY || '3', 10) || 3,
@@ -151,11 +155,14 @@ export async function runImportStep(batchCode: string): Promise<StepResult> {
         )
       }
       const failures: PatentImportFailure[] = []
+      let skippedCount = 0
       for (const r of results) {
         const result = r as PromiseFulfilledResult<PatentImportResult>
         importedCount += result.value.insertedCount
+        skippedCount += result.value.skippedCount || 0
         failures.push(...result.value.failures)
       }
+      if(skippedCount) await addLog(batchCode,'info',`已跳过 ${skippedCount} 条已有完整授权版本的申请记录`)
 
       await updateBatchProgress(
         batchCode,

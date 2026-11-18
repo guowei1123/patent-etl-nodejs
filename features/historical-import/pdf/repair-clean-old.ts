@@ -4,16 +4,19 @@ import path from 'node:path'
 import type pg from 'pg'
 import { getPatentImage, removePatentImage } from '../../../lib/oss-client.ts'
 import { parsePublicationNumber } from './historical-pdf.ts'
+import { monitorRepairConnection } from './repair-transaction.ts'
 
 type OldImage = { asset_id:string; oss_key:string; file_name:string; image_role:string; is_abstract:boolean }
 const sha = (value:Buffer) => createHash('sha256').update(value).digest('hex')
 
-/** Remove only unreferenced original drawing objects after verifying current replacements. */
+/** Back up and remove original drawing objects after verifying current replacements. */
 export async function cleanupReplacedDrawings(pool:pg.Pool, number:string, options:{dryRun?:boolean} = {}) {
   const publication=parsePublicationNumber(number)
   const client=await pool.connect()
+  const connection=monitorRepairConnection(client)
   try {
     await client.query('BEGIN')
+    await client.query("SET LOCAL idle_in_transaction_session_timeout = '10min'")
     const result=await client.query<{patent_id:string; batch_id:string; original_images:OldImage[]; new_image_ids:string[]}>(`SELECT b.patent_id,p.batch_id,b.original_images,b.new_image_ids FROM cnipa.pdf_image_repair_backup b JOIN cnipa.patent p ON p.id=b.patent_id WHERE b.publication_number=$1 ORDER BY b.created_at DESC LIMIT 1 FOR UPDATE OF b,p`,[number])
     if(result.rowCount!==1) throw new Error('没有找到修复备份，旧图未删除')
     const record=result.rows[0]
@@ -27,19 +30,13 @@ export async function cleanupReplacedDrawings(pool:pg.Pool, number:string, optio
     const prefix=`patents/${record.batch_id}/${publication.number}/`
     const old=record.original_images.filter(i=>i.image_role==='drawing'&&!i.is_abstract)
     if(old.some(i=>!i.asset_id||!i.oss_key?.startsWith(prefix)||i.oss_key.slice(prefix.length)!==i.file_name||!/^FT_\d+\.(?:jpe?g|tif{1,2}|png)$/i.test(i.file_name))) throw new Error('旧图路径或格式不符合清理范围，旧图未删除')
-    const ids=old.map(i=>i.asset_id),keys=old.map(i=>i.oss_key)
+    const ids=old.map(i=>i.asset_id)
     await client.query('SELECT id FROM cnipa.image_asset WHERE id=ANY($1::uuid[]) FOR UPDATE',[ids])
-    const refs=await client.query<{oss_key:string}>(`SELECT DISTINCT i.oss_key FROM cnipa.patent_image i WHERE i.asset_id=ANY($1::uuid[]) OR i.oss_key=ANY($2::text[])`,[ids,keys])
-    const abstract=await client.query<{abstract_fig_key:string}>(`SELECT DISTINCT abstract_fig_key FROM cnipa.patent WHERE abstract_fig_key=ANY($1::text[])`,[keys])
-    const referenced=new Set([...refs.rows.map(r=>r.oss_key),...abstract.rows.map(r=>r.abstract_fig_key)])
-    // If a shared asset is referenced under another key, retain all old assets.
-    const assetRefs=await client.query<{asset_id:string}>('SELECT DISTINCT asset_id FROM cnipa.patent_image WHERE asset_id=ANY($1::uuid[])',[ids])
-    const shared=new Set(assetRefs.rows.map(r=>r.asset_id))
     const directory=path.resolve('data/patent-image-repair/original-object-backups',number)
     if (!options.dryRun) await mkdir(directory,{recursive:true})
-    let removed=0, retained=0
+    let removed=0
+    const retained=0
     for(const image of old) {
-      if(referenced.has(image.oss_key)||shared.has(image.asset_id)) {retained++;continue}
       let content:Buffer
       try { content=(await getPatentImage(image.oss_key)).content }
       catch(error) { if(['NoSuchKey','NotFound'].includes((error as {code?:string}).code||'')) continue; throw error }
@@ -51,6 +48,7 @@ export async function cleanupReplacedDrawings(pool:pg.Pool, number:string, optio
       const file=path.join(directory,`${sha(content)}-${image.file_name}`)
       try { await writeFile(file,content,{flag:'wx'}) } catch(error) { if((error as NodeJS.ErrnoException).code!=='EEXIST') throw error }
       if(sha(await readFile(file))!==sha(content)) throw new Error('旧图本地备份校验失败')
+      connection.assert()
       await removePatentImage(image.oss_key)
       removed++
     }
@@ -59,5 +57,5 @@ export async function cleanupReplacedDrawings(pool:pg.Pool, number:string, optio
   } catch(error) {
     await client.query('ROLLBACK').catch(()=>{})
     throw error
-  } finally { client.release() }
+  } finally { connection.release() }
 }

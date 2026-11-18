@@ -342,7 +342,7 @@ export default function HistoricalImportPage() {
             <FieldLegend>数据来源</FieldLegend>
             <FieldDescription>
               {config.stage === 'images'
-                ? '目标 PDF 先解压，再提取附图页主体、正文插图、表格与公式。压缩包检查最多展示 10 项样例。'
+                ? '目标 PDF 先解压，再提取摘要附图和说明书附图。压缩包检查最多展示 10 项样例。'
                 : config.stage === 'text'
                   ? '至少填写一种 Parquet 来源。按完整公开号建立或更新记录，无需先提供 Excel。'
                   : '路径指运行本工作台的服务器本机路径。目录中的文件会递归读取，Excel 默认使用第一个工作表。'}
@@ -426,21 +426,6 @@ export default function HistoricalImportPage() {
                     </Field>
                   ))}
                 <Field>
-                  <FieldLabel htmlFor="beforeDate">公告日期早于</FieldLabel>
-                  <Input
-                    id="beforeDate"
-                    type="date"
-                    required
-                    value={config.beforeDate}
-                    onChange={(event) =>
-                      setConfig({ ...config, beforeDate: event.target.value })
-                    }
-                  />
-                  <FieldDescription>
-                    已知日期按范围筛选；日期缺失时先保存待补齐记录，补入日期后再归入公告批次。
-                  </FieldDescription>
-                </Field>
-                <Field>
                   <FieldLabel htmlFor="limit">候选处理数量</FieldLabel>
                   <Input
                     id="limit"
@@ -457,8 +442,7 @@ export default function HistoricalImportPage() {
                     }
                   />
                   <FieldDescription>
-                    按公开号关联并选择候选后限制数量。0 表示全部，建议先试跑 100
-                    件。
+                    默认处理全部符合筛选条件的候选文献（0）。可填写正整数限制本次处理数量。
                   </FieldDescription>
                 </Field>
                 {['images', 'all'].includes(config.stage) && (

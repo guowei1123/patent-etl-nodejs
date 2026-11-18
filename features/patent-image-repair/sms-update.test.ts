@@ -53,11 +53,9 @@ const task=()=>({mode:'sms-apply' as const,status:'running' as const,number:'CN1
 
 describe('SMS 更新顺序和恢复',()=>{
   beforeEach(prepare)
-  it('未逐项确认或旧图被其他记录引用时拒绝预检',async()=>{
+  it('未逐项确认时拒绝预检',async()=>{
     s.files.delete(path.join(dir,'review.jsonl'))
     await expect(smsUpdatePlan('CN1234567B')).rejects.toThrow('尚未确认')
-    prepare();s.external=1
-    await expect(smsUpdatePlan('CN1234567B')).rejects.toThrow('其他引用')
     expect(s.calls).toEqual([])
   })
   it('批量模式可对数量及编号一一对应的未确认图片按序更新',async()=>{
@@ -67,13 +65,27 @@ describe('SMS 更新顺序和恢复',()=>{
     await runSmsUpdate(plan.number,plan.fingerprint,task(),true)
     expect(s.calls.at(-1)).toBe('COMMIT')
   })
+  it('图片数量相同时允许正文中重复引用同一图片',async()=>{
+    s.files.delete(path.join(dir,'review.jsonl'))
+    s.description={body:'前 [[PATENT_IMAGE:SMS_1.JPG]] 中 [[PATENT_IMAGE:SMS_2.JPG]] 后 [[PATENT_IMAGE:SMS_1.JPG]]'}
+    const plan=await smsUpdatePlan('CN1234567B',true)
+    expect(plan.automatic).toBe(2)
+    await runSmsUpdate(plan.number,plan.fingerprint,task(),true)
+    expect(s.calls.at(-1)).toBe('COMMIT')
+  })
+  it('旧图片编号不连续时按数字顺序与候选对应',async()=>{
+    s.files.delete(path.join(dir,'review.jsonl'))
+    s.originals[1].file_name='SMS_5.JPG'
+    const plan=await smsUpdatePlan('CN1234567B',true)
+    expect(plan.automatic).toBe(2)
+  })
   it('数量不一致时不进行自动对应或删除图片',async()=>{
     s.files.delete(path.join(dir,'review.jsonl'))
     const manifestFile=path.join(dir,'manifest.json')
     const manifest=JSON.parse(s.files.get(manifestFile)!.toString())
     manifest.images.push({...manifest.images[0],file_name:'SMS_3.JPG'})
     s.files.set(manifestFile,Buffer.from(JSON.stringify(manifest)))
-    await expect(smsUpdatePlan('CN1234567B',true)).rejects.toThrow('不满足自动对应条件')
+    await expect(smsUpdatePlan('CN1234567B',true)).rejects.toThrow('数量不一致或候选无效')
     expect(s.calls).toEqual([])
   })
   it('已有确认与自动顺序冲突时不覆盖确认关系',async()=>{
@@ -89,11 +101,11 @@ describe('SMS 更新顺序和恢复',()=>{
     await expect(runSmsUpdate(plan.number,'f'.repeat(64),task())).rejects.toThrow('变化')
     expect(s.calls).toEqual([])
   })
-  it('目标位置出现其他记录引用时不删除旧图',async()=>{
+  it('不因其他记录引用而阻止更新',async()=>{
     const plan=await smsUpdatePlan('CN1234567B')
     s.foreignTarget=true
-    await expect(runSmsUpdate(plan.number,plan.fingerprint,task())).rejects.toThrow('其他记录引用')
-    expect(s.calls.some(x=>x.startsWith('delete:'))).toBe(false)
+    await runSmsUpdate(plan.number,plan.fingerprint,task())
+    expect(s.calls.some(x=>x.startsWith('delete:'))).toBe(true)
   })
   it('共享旧对象仅删除一次，再写入所有新图并提交',async()=>{
     const plan=await smsUpdatePlan('CN1234567B')

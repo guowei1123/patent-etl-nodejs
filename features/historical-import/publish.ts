@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   announcementBatch,
-  type ImportConfig,
+  type SavedImportConfig,
   type ImportRecord,
 } from './model.ts'
 import {
@@ -63,17 +63,20 @@ export async function setupHistorySchema(pool: pg.Pool) {
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(patent_id,part))`)
     await client.query('COMMIT')
     // Existing FTP tables can contain millions of rows; build without blocking their writes.
-    const index = await client.query<{
-      indisvalid: boolean
-    }>(`SELECT i.indisvalid FROM pg_index i
-      JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace
-      WHERE n.nspname='cnipa' AND c.relname='idx_history_application_core'`)
-    if (index.rows[0] && !index.rows[0].indisvalid)
-      await client.query(
-        'DROP INDEX CONCURRENTLY IF EXISTS cnipa.idx_history_application_core',
-      )
-    await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_history_application_core
-      ON cnipa.patent ((${applicationSql})) WHERE kind ~ '^[ABC]'`)
+    for (const [name, definition] of [
+      ['idx_history_application_core', `((${applicationSql})) WHERE kind ~ '^[ABC]'`],
+      ['idx_patent_batch_id', '(batch_id)'],
+    ]) {
+      const index = await client.query<{
+        indisvalid: boolean
+      }>(`SELECT i.indisvalid FROM pg_index i
+        JOIN pg_class c ON c.oid=i.indexrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname='cnipa' AND c.relname=$1`, [name])
+      if (index.rows[0] && !index.rows[0].indisvalid)
+        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS cnipa.${name}`)
+      await client.query(`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${name}
+        ON cnipa.patent ${definition}`)
+    }
   } catch (error) {
     await client.query('ROLLBACK')
     throw error
@@ -91,7 +94,7 @@ export async function setupHistorySchema(pool: pg.Pool) {
 export async function publishRecord(
   pool: pg.Pool,
   record: ImportRecord,
-  config: ImportConfig,
+  config: SavedImportConfig,
   jobId: string,
   upload: typeof putPatentImage,
   identityRetry = 0,
@@ -236,8 +239,8 @@ export async function publishRecord(
     const effectiveDate = metadata
       ? record.date || storedDate
       : storedDate || record.date
-    if (effectiveDate && effectiveDate >= config.beforeDate)
-      throw new Error('公告日期超出处理范围，请调整日期后重试')
+    if (config.beforeDate && effectiveDate && effectiveDate >= config.beforeDate)
+      throw new Error('公告日期超出原预览范围，请重新生成预览')
     batch = effectiveDate ? announcementBatch(effectiveDate, record.kind) : null
     record.metadataPending =
       !application || !effectiveDate || !(record.title || existing?.title)

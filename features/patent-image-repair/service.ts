@@ -7,10 +7,11 @@ import { createInterface } from 'node:readline'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { pipeline as streamPipeline } from 'node:stream/promises'
 import { readVerifiedImage, validateManifest, type PdfManifest } from '@/features/historical-import/pdf/historical-pdf'
-import { getSmsReviewSource, getSmsOriginals, getSmsExternalReferences, acquireSmsUpdateClient, getPatentDrawingKeys } from '@/lib/pg-db'
+import { getSmsReviewSource, getSmsOriginals, acquireSmsUpdateClient, getPatentDrawingKeys } from '@/lib/pg-db'
 import { extractSmsContexts } from './sms-context'
 import { planSmsPositions } from './sms-position'
-import { runPipeline, serialQueue } from './pipeline'
+import { boundedQueue, runPipeline, serialQueue } from './pipeline'
+import { cleanupCompletedArtifacts } from './cleanup'
 import { planSmsReplacement } from '../historical-import/pdf/sms-repair-plan'
 import { getPatentImage, patentImageExists, putPatentImage, removePatentImage } from '@/lib/oss-client'
 import sharp from 'sharp'
@@ -23,7 +24,7 @@ const store = scope.__patentRepairTask ||= { task: null, child: null }
 const root = path.resolve('data/patent-image-repair')
 const reportPath = path.join(root, 'report.jsonl')
 const numberPattern = /^CN\d{7,12}[ABCUSY]\d?$/
-type Report = { status: string; repair_revision?: number; publication_number: string; manifest?: string; drawing_pages?: number; error?: string; error_code?:string }
+type Report = { status: string; repair_revision?: number; publication_number: string; manifest?: string; pdf_hash?:string; drawing_pages?: number; error?: string; error_code?:string }
 
 async function reports(): Promise<Report[]> {
   try { return (await readFile(reportPath, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as Report) }
@@ -39,7 +40,7 @@ async function insideRoot(file: string) {
 
 export async function preview(number: string, imageIndex?: number) {
   if (!numberPattern.test(number)) throw new Error('请输入完整公开号，例如 CN222254999U')
-  const record = (await reports()).reverse().find(r => r.publication_number === number && r.status === 'ready' && r.repair_revision === 3 && r.manifest)
+  const record = (await reports()).reverse().find(r => r.publication_number === number && r.status === 'ready' && r.repair_revision === 4 && r.manifest)
   if (!record?.manifest) return null
   const manifestFile = await insideRoot(record.manifest)
   const manifest = JSON.parse(await readFile(manifestFile, 'utf8')) as PdfManifest
@@ -262,16 +263,18 @@ async function smsUpdateWork(number:string,allowAutomatic=false) {
   const mapping=new Map<string,number>()
   const names=original.images.map(image=>image.file_name.toUpperCase())
   const uniqueNames=new Set(names)
-  const canAuto=allowAutomatic && names.length>0 && uniqueNames.size===names.length && loaded.manifest.images.length===names.length && references.length===names.length && references.every(ref=>uniqueNames.has(ref.name) && ref.contexts.length===1) && names.every((name,index)=>uniqueNames.has(`SMS_${index+1}.JPG`)) && loaded.manifest.images.every((item,index)=>item.file_name===`SMS_${index+1}.JPG` && item.status!=='needs_review' && /^[a-f0-9]{64}$/.test(item.sha256||''))
+  const canAuto=allowAutomatic && names.length>0 && uniqueNames.size===names.length && loaded.manifest.images.length===names.length && loaded.manifest.images.every((item,index)=>item.file_name===`SMS_${index+1}.JPG` && item.status!=='needs_review' && /^[a-f0-9]{64}$/.test(item.sha256||''))
+  const orderedNames=[...uniqueNames].sort((a,b)=>Number(a.match(/\d+/)?.[0])-Number(b.match(/\d+/)?.[0]))
+  const automaticIndex=new Map(orderedNames.map((name,index)=>[name,index]))
   let automatic=0
   for(const image of original.images) {
     const name=image.file_name.toUpperCase()
     const event=events.get(name)
     const confirmed=event && event.candidateIndex!==null && loaded.manifest.images[event.candidateIndex]?.sha256===event.candidateHash ? event.candidateIndex : null
-    if(!references.some(ref=>ref.name===name)) throw new Error(`${name} 没有正文引用，无法更新`)
-    if(confirmed===null && !canAuto) throw new Error(`${name} 尚未确认，且原图与候选数量或编号不满足自动对应条件`)
-    const index=confirmed ?? Number(name.match(/\d+/)?.[0])-1
-    if(canAuto && confirmed!==null && confirmed!==Number(name.match(/\d+/)?.[0])-1 && names.some(other=>{const e=events.get(other);return !e || e.candidateIndex===null || loaded.manifest.images[e.candidateIndex]?.sha256!==e.candidateHash})) throw new Error('已有确认关系与自动编号冲突，请核对后再更新')
+    if(!canAuto && !references.some(ref=>ref.name===name)) throw new Error(`${name} 没有正文引用，无法更新`)
+    if(confirmed===null && !canAuto) throw new Error(`${name} 尚未确认，且原图与候选数量不一致或候选无效`)
+    const index=confirmed ?? automaticIndex.get(name)!
+    if(canAuto && confirmed!==null && confirmed!==automaticIndex.get(name) && names.some(other=>{const e=events.get(other);return !e || e.candidateIndex===null || loaded.manifest.images[e.candidateIndex]?.sha256!==e.candidateHash})) throw new Error('已有确认关系与自动编号冲突，请核对后再更新')
     if(confirmed===null) automatic++
     if(image.asset_key!==image.oss_key) throw new Error(`${name} 的存储关联不一致`)
     mapping.set(name,index)
@@ -281,8 +284,6 @@ async function smsUpdateWork(number:string,allowAutomatic=false) {
   if(!/^[A-Za-z0-9_-]+$/.test(original.batch)) throw new Error('批次路径无效')
   const prefix=`patents/${original.batch}/${match[1]}/`
   if(plan.oldKeys.some(key=>!key.startsWith(prefix) || !/^SMS_[1-9]\d*\.JPG$/i.test(key.slice(prefix.length)))) throw new Error('旧图存储路径不属于当前专利')
-  const external=await getSmsExternalReferences(original.patentId,original.images.map(i=>i.id),[...new Set(original.images.map(i=>i.asset_id))],plan.oldKeys)
-  if(external) throw new Error(`有 ${external} 个其他引用共用旧图，不能直接删除`)
   const contents:Buffer[]=[]
   for(const item of plan.images) {
     const bytes=await readFile(await insideRoot(path.join(loaded.directory,item.candidate.file_name)))
@@ -344,13 +345,6 @@ export async function runSmsUpdate(number:string,approvedFingerprint:string,task
       if(old.rows.length!==snapshot.size || old.rows.some(row=>{const before=snapshot.get(row.id);return !before || row.file_name!==before.file_name || row.oss_key!==before.oss_key || row.asset_id!==before.asset_id || row.is_abstract})) throw new Error('旧图关联已变化，请重新预检')
       await client.query('SELECT id FROM cnipa.image_asset WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[[...new Set(old.rows.map(row=>row.asset_id))]])
       const targetKeys=work.plan.images.map(item=>work.prefix+item.name)
-      const allKeys=[...new Set([...work.oldKeys,...targetKeys].map(key=>key.toLowerCase()))]
-      const targetAssets=await client.query<{id:string}>('SELECT id FROM cnipa.image_asset WHERE lower(oss_key)=ANY($1::text[]) ORDER BY id FOR UPDATE',[allKeys])
-      const allAssetIds=[...new Set([...old.rows.map(row=>row.asset_id),...targetAssets.rows.map(row=>row.id)])]
-      const refs=await client.query('SELECT id FROM cnipa.patent_image WHERE (asset_id=ANY($1::uuid[]) OR lower(oss_key)=ANY($2::text[])) AND NOT (id=ANY($3::uuid[])) LIMIT 1',[allAssetIds,allKeys,old.rows.map(row=>row.id)])
-      if(refs.rowCount) throw new Error('旧图或目标位置被其他记录引用，不能删除')
-      const abstracts=await client.query('SELECT id FROM cnipa.patent WHERE lower(abstract_fig_key)=ANY($1::text[]) OR (id=$2 AND lower(abstract_fig_key)=ANY($3::text[])) LIMIT 1',[allKeys,work.patentId,targetKeys.map(key=>key.split('/').at(-1)!.toLowerCase())])
-      if(abstracts.rowCount) throw new Error('旧图或目标位置被摘要图引用，不能删除')
       const expected=new Map(work.plan.images.map((item,index)=>[targetKeys[index].toLowerCase(),item.candidate.sha256!]))
       const oldSet=new Set(work.oldKeys.map(key=>key.toLowerCase()))
       const journalDir=path.join(root,'sms-updates',number)
@@ -459,7 +453,7 @@ export function stopTask() {
   if (!store.task || store.task.status !== 'running') throw new Error('没有正在运行的任务')
   if (store.task.mode === 'apply' || store.task.mode === 'apply-batch' || store.task.mode === 'sms-apply' || store.task.mode === 'sms-apply-batch') throw new Error('图片更新及文件整理期间不能中断，请等待任务完成')
   store.task.stopping = true
-  store.task.message = store.task.mode==='download' && store.task.limit===0 ? '正在完成当前专利后停止…' : '正在停止…'
+  store.task.message = store.task.mode==='download' && store.task.limit===0 ? '正在完成处理中专利后停止…' : '正在停止…'
   store.child?.kill()
 }
 
@@ -483,7 +477,8 @@ export async function runCombinedSms(numbers:string[], hooks:{stopped:()=>boolea
 }
 
 type PipelineItem = {publication_number:string;batch:string;image_names:string[];repair_status?:string}
-type PipelineRecord = {publication_number:string;batch:string;status:string;error?:string;error_code?:string;pdf?:string;manifest?:string;repair_revision?:number}
+const isSmsOnlyCandidate=(item:PipelineItem)=>item.image_names.length>0 && item.image_names.every(name=>/^SMS_[1-9]\d*\.JPG$/i.test(name.trim()))
+type PipelineRecord = {publication_number:string;batch:string;status:string;error?:string;error_code?:string;pdf?:string;pdf_hash?:string;manifest?:string;repair_revision?:number}
 const pipelineHistory=path.join(root,'pipeline-report.jsonl')
 const excelOutbox=path.join(root,'excel-sync.jsonl')
 type ExcelAction={id:string;kind:'mark'|'pdf-note'|'storage-note';number:string;batch:string;note?:string|null}
@@ -534,13 +529,13 @@ async function* readPipelineSnapshot(file:string) {
 
 export function startContinuousPipeline(input:{delay:number;proxy:string;retry:boolean;concurrency:number}) {
   if(store.task?.status==='running') throw new Error('已有任务正在运行，请等待完成')
-  if(!Number.isInteger(input.concurrency)||input.concurrency<1||input.concurrency>4) throw new Error('并行数量需为 1 至 4')
+  if(!Number.isSafeInteger(input.concurrency)||input.concurrency<1) throw new Error('并行数量需为正整数')
   const task:Task={mode:'download',status:'running',limit:0,completed:0,failed:0,message:'正在读取候选名单…',logs:[],startedAt:new Date().toISOString(),excelPending:0,timings:{downloadMs:0,smsMs:0,drawingMs:0,excelMs:0}}
   store.task=task;store.child=null
   const log=(line:string)=>{task.logs.push(line);if(task.logs.length>100) task.logs.shift()}
-  const serial=serialQueue(),throttle=serialQueue()
+  const serial=serialQueue(),throttle=serialQueue(),updates=boundedQueue(input.concurrency)
   const python=process.env.PDF_PYTHON || path.resolve('.venv-pdf',process.platform==='win32'?'Scripts/python.exe':'bin/python')
-  let lastStart=0,rateLimited=false,serviceUnavailable=false
+  let lastStart=0,rateLimited=false,serviceUnavailable=false,storageFailures=0
   void (async()=>{
     await mkdir(root,{recursive:true})
     const pending=new Map<string,ExcelAction>()
@@ -574,8 +569,8 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
       } finally {task.timings!.excelMs+=Date.now()-started}
     }
     await flushExcel(true)
-    const past=new Map<string,string>()
-    try {for(const line of (await readFile(pipelineHistory,'utf8')).split('\n').filter(Boolean)) {const r=JSON.parse(line) as PipelineRecord;past.set(`${r.batch}\0${r.publication_number}`,r.status)}}
+    const past=new Map<string,PipelineRecord>()
+    try {for(const line of (await readFile(pipelineHistory,'utf8')).split('\n').filter(Boolean)) {const r=JSON.parse(line) as PipelineRecord;past.set(`${r.batch}\0${r.publication_number}`,r)}}
     catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
     const history=new Map<string,Report & {batch?:string;pdf?:string}>()
     for(const r of await reports()) history.set(`${(r as Report & {batch?:string}).batch}\0${r.publication_number}`,r)
@@ -596,8 +591,10 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
         for await(const item of readPipelineSnapshot(snapshot)) {
           if(task.stopping || rateLimited || serviceUnavailable) break
           if(!numberPattern.test(item.publication_number)||typeof item.batch!=='string'||!Array.isArray(item.image_names)||/B\d?$/.test(item.publication_number)!==grant || seen.has(item.publication_number)) continue
-          const status=past.get(`${item.batch}\0${item.publication_number}`)
-          if(status==='completed' || item.repair_status==='说明书附图已更新' || (status==='failed' && !input.retry) || (!status && !input.retry && history.get(`${item.batch}\0${item.publication_number}`)?.status==='failed')) {
+          const previous=past.get(`${item.batch}\0${item.publication_number}`),status=previous?.status
+          const smsOnly=isSmsOnlyCandidate(item)
+          const legacySmsFailure=smsOnly && status==='failed' && !!previous?.error?.includes('附图不全属于重名候选')
+          if(status==='completed' || (!smsOnly && item.repair_status==='说明书附图已更新') || (status==='failed' && !input.retry && !legacySmsFailure) || (!status && !input.retry && history.get(`${item.batch}\0${item.publication_number}`)?.status==='failed')) {
             if(!ambiguous.has(item.publication_number)) seen.add(item.publication_number)
             continue
           }
@@ -609,23 +606,50 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
     }
     await runPipeline(source(),input.concurrency,()=>!!task.stopping||rateLimited||serviceUnavailable,async item=>{
       const number=item.publication_number,key=`${item.batch}\0${number}`
+      const smsOnly=isSmsOnlyCandidate(item)
+      if(smsOnly) {
+        try {
+          await stat(path.join(root,'sms-updates',number,'completed'))
+          await serial(async()=>{await appendFile(pipelineHistory,JSON.stringify({...item,status:'completed'})+'\n','utf8');task.completed++;log(`${number}：正文图片已有完成记录，已跳过说明书附图`)})
+          return
+        } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
+      }
       let ready=history.get(key)
-      if(ready?.status!=='ready' || ready.repair_revision!==3) ready=undefined
+      if(!['ready',...(smsOnly?['pdf_ready']:[])].includes(ready?.status||'') || ready?.repair_revision!==4) ready=undefined
+      if(smsOnly && ready?.pdf) {try {await stat(ready.pdf)} catch {ready=undefined}}
+      if(!smsOnly) {
       if(ready?.pdf && ready.manifest) {try {await stat(ready.pdf);await stat(ready.manifest)} catch {ready=undefined}}
-      if(!ready?.pdf || !ready.manifest) {
-        await throttle(async()=>{const wait=Math.max(0,lastStart+input.delay*1000-Date.now());if(wait) await new Promise(resolve=>setTimeout(resolve,wait));lastStart=Date.now()})
+      }
+      if(!ready?.pdf || (!smsOnly && !ready.manifest)) {
+        await throttle(async()=>{
+          while(lastStart && !task.stopping && !rateLimited && !serviceUnavailable) {
+            const wait=(input.delay-(Date.now()-lastStart)/1000)*1000
+            if(wait<=0) break
+            await new Promise(resolve=>setTimeout(resolve,Math.min(wait,1000)))
+          }
+          lastStart=Date.now()
+        })
         if(task.stopping||rateLimited||serviceUnavailable) return
         task.message=`正在下载并提取 ${number}…`
         let record:PipelineRecord|undefined
         const downloadStarted=Date.now()
         try {
-          const run=await runPipelineChild(python,[path.resolve('features/historical-import/pdf/repair-download.py'),'--single-stdin','--limit','1','--delay',String(input.delay),'--ocr'],input.proxy,JSON.stringify(item))
-          record=run.records.find(r=>r.publication_number===number && (r.status==='ready'||r.status==='failed')) as PipelineRecord|undefined
+          const run=await runPipelineChild(python,[path.resolve('features/historical-import/pdf/repair-download.py'),'--single-stdin','--limit','1','--delay',String(input.delay),'--ocr',...(smsOnly?['--pdf-only']:[])],input.proxy,JSON.stringify(item))
+          record=run.records.find(r=>r.publication_number===number && (r.status==='ready'||r.status==='pdf_ready'||r.status==='failed')) as PipelineRecord|undefined
+          const measured=record as (PipelineRecord & {timings?:{page_ms?:number;probe_ms?:number;transfer_ms?:number;verify_ms?:number;extract_ms?:number;cached_pdf?:boolean;extract_detail?:{headers_ms?:number;regions_ms?:number;render_ms?:number;clean_ms?:number;save_ms?:number}}})|undefined
+          if(measured?.timings) {
+            const t=measured.timings
+            log(`${number}：下载提取耗时（秒）页面 ${((t.page_ms||0)/1000).toFixed(1)}、链接检查 ${((t.probe_ms||0)/1000).toFixed(1)}、PDF 传输 ${((t.transfer_ms||0)/1000).toFixed(1)}、校验 ${((t.verify_ms||0)/1000).toFixed(1)}、提取 ${((t.extract_ms||0)/1000).toFixed(1)}${t.cached_pdf?'（使用已有 PDF）':''}`)
+            if(t.extract_detail && Object.keys(t.extract_detail).length) {
+              const d=t.extract_detail
+              log(`${number}：附图提取明细（秒）页眉 ${((d.headers_ms||0)/1000).toFixed(1)}、区域划分 ${((d.regions_ms||0)/1000).toFixed(1)}、渲染 ${((d.render_ms||0)/1000).toFixed(1)}、图号清理 ${((d.clean_ms||0)/1000).toFixed(1)}、保存 ${((d.save_ms||0)/1000).toFixed(1)}`)
+            }
+          }
           if(!record) record={publication_number:number,batch:item.batch,status:'failed',error:String(run.records.find(r=>r.error)?.error||'下载程序未返回结果')}
         } catch(error) {record={publication_number:number,batch:item.batch,status:'failed',error:error instanceof Error?error.message:String(error)}}
         finally {task.timings!.downloadMs+=Date.now()-downloadStarted}
         await serial(async()=>{await appendFile(reportPath,JSON.stringify(record)+'\n','utf8')})
-        if(record.status!=='ready') {
+        if(record.status!==(smsOnly?'pdf_ready':'ready')) {
           if((record.error||'').includes('429') || (record.error||'').includes('过于频繁')) rateLimited=true
           await serial(async()=>{
             task.failed++;log(`${number}：下载或提取失败，${record.error||'请查看运行记录'}`)
@@ -639,12 +663,14 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
         if(old?.error_code==='no_pdf_link' || old?.error==='Google Patents 页面未提供 PDF 下载链接，无法从该来源提取附图' || old?.error===`Could not find a verified PDF download link for patent ${number}`) await serial(()=>enqueue({kind:'pdf-note',number,batch:item.batch,note:null}))
         ready=record as Report & {batch?:string;pdf?:string}
       }
-      await serial(async()=>{
+      await updates(async()=>{
         if(task.stopping||serviceUnavailable) return
         try {
           task.message=`正在处理 ${number}…`
-          log(`${number}：PDF 和说明书附图已就绪，开始处理`)
+          log(smsOnly?`${number}：PDF 已就绪，开始处理正文图片`:`${number}：PDF 和说明书附图已就绪，开始处理`)
           let partialReason=''
+          let smsDirectory:string|undefined
+          if(!smsOnly) {
           const drawingKeys=await getPatentDrawingKeys(number,item.batch)
           const missingKeys:string[]=[]
           for(let i=0;i<drawingKeys.length;i+=8) {
@@ -654,8 +680,11 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
           }
           if(drawingKeys.length && missingKeys.length) {
             log(`${number}：对象存储中 ${missingKeys.length} 张旧附图不存在，已记录`)
-            await enqueue({kind:'storage-note',number,batch:item.batch})
-            await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing',storage_note:'对象存储中附图不存在',missing_keys:missingKeys})+'\n','utf8')
+            await serial(async()=>{
+              await enqueue({kind:'storage-note',number,batch:item.batch})
+              await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing',storage_note:'对象存储中附图不存在',missing_keys:missingKeys})+'\n','utf8')
+            })
+          }
           }
           const smsStarted=Date.now()
           try {
@@ -666,6 +695,7 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
               if(sms.code!==0 || !sms.records.some(r=>r.status==='sms_ready')) throw new Error(String(sms.records.find(r=>r.error)?.error||'正文图片提取失败'))
               log(`${number}：正文图片已提取`)
             }
+            smsDirectory=(await loadSmsManifest(number))?.directory
             let plan:Awaited<ReturnType<typeof smsUpdatePlan>>|undefined
             try {plan=await smsUpdatePlan(number,true)} catch(error) {
               const reason=error instanceof Error?error.message:String(error)
@@ -674,36 +704,57 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
             }
             if(plan) {
               const single:Task={mode:'sms-apply',status:'running',number,limit:1,completed:0,failed:0,message:'',logs:[],startedAt:task.startedAt}
-              await runSmsUpdate(number,plan.fingerprint,single,true)
-              log(single.logs.join('；'))
-              if(single.logs.some(line=>line.includes('完成标记写入失败'))) throw new Error('正文更新完成标记写入失败，请核对')
+              try {
+                await runSmsUpdate(number,plan.fingerprint,single,true)
+                log(single.logs.join('；'))
+                if(single.logs.some(line=>line.includes('完成标记写入失败'))) throw new Error('正文更新完成标记写入失败，请核对')
+              } catch(error) {
+                partialReason=error instanceof Error?error.message:String(error)
+                if(/\b503\b|对象存储检查超时|提交结果不确定/.test(partialReason)) throw error
+                log(`${number}：正文图片待处理，${partialReason}；继续处理说明书附图`)
+              }
             }
-          } else log(`${number}：数据库没有 SMS 正文图片，已跳过`)
+          } else if(smsOnly) throw new Error('候选名单包含正文图片，但数据库没有 SMS 图片记录，请核对')
+          else log(`${number}：数据库没有 SMS 正文图片，已跳过`)
           } finally {task.timings!.smsMs+=Date.now()-smsStarted}
+          if(smsOnly) {
+            if(partialReason) throw new Error(`正文图片待处理：${partialReason}`)
+            await serial(async()=>{await appendFile(pipelineHistory,JSON.stringify({...item,status:'completed'})+'\n','utf8');storageFailures=0;task.completed++;log(`${number}：正文图片处理完成；未更新说明书附图`)})
+            const errors=await cleanupCompletedArtifacts(root,number,{smsDirectory,pdfHash:ready?.pdf_hash})
+            if(errors.length) log(`${number}：处理文件清理未完成：${errors.join('；')}`)
+            return
+          }
           log(`${number}：正在更新说明书附图`)
           const drawingStarted=Date.now()
           const drawing=await runPipelineChild(process.execPath,['--env-file-if-exists=.env','--experimental-strip-types',path.resolve('features/historical-import/pdf/repair-apply.ts'),'--limit','1','--apply','--defer-finalize','--publication',number],'')
           task.timings!.drawingMs+=Date.now()-drawingStarted
           if(drawing.code!==0) throw new Error(drawingFailureDetail(drawing))
           if(!drawing.records.some(r=>r.status==='applied'||r.status==='skipped_applied')) throw new Error('没有找到可更新的说明书附图记录')
-          await enqueue({kind:'mark',number,batch:item.batch})
-          await flushExcel()
           if(partialReason) throw new Error(`说明书附图已更新，正文图片待处理：${partialReason}`)
-          await appendFile(pipelineHistory,JSON.stringify({...item,status:'completed'})+'\n','utf8')
-          task.completed++;log(`${number}：处理完成`)
+          await serial(async()=>{
+            await enqueue({kind:'mark',number,batch:item.batch})
+            await flushExcel()
+            await appendFile(pipelineHistory,JSON.stringify({...item,status:'completed'})+'\n','utf8')
+            storageFailures=0;task.completed++;log(`${number}：处理完成`)
+          })
+          const errors=await cleanupCompletedArtifacts(root,number,{manifest:ready?.manifest,smsDirectory})
+          if(errors.length) log(`${number}：处理文件清理未完成：${errors.join('；')}`)
         } catch(error) {
           const message=error instanceof Error?error.message:String(error)
-          const unavailable=/\b503\b/.test(message)
-          if(unavailable) serviceUnavailable=true
-          task.failed++;log(`${number}：处理失败，${message}`)
-          await appendFile(pipelineHistory,JSON.stringify({...item,status:unavailable?'transient_failure':'failed',error:message})+'\n','utf8')
-          await flushExcel()
+          const unavailable=/\b503\b|对象存储检查超时/.test(message)
+          await serial(async()=>{
+            storageFailures=unavailable?storageFailures+1:0
+            if(storageFailures>=3) serviceUnavailable=true
+            task.failed++;log(`${number}：处理失败，${message}`)
+            await appendFile(pipelineHistory,JSON.stringify({...item,status:unavailable?'transient_failure':'failed',error:message})+'\n','utf8')
+            await flushExcel()
+          })
         }
       })
     })
     await serial(()=>flushExcel(true))
     task.status=task.stopping?'stopped':task.failed||rateLimited||serviceUnavailable||pending.size?'failed':'completed'
-    task.message=task.stopping?'已停止，正在处理的专利已结束':serviceUnavailable?'服务返回 503，任务已暂停；请检查对象存储等服务后重新启动':rateLimited?'下载请求过于频繁，任务已停止':pending.size?`图片处理结束，${pending.size} 项 Excel 状态待同步`:`任务结束：成功 ${task.completed}，失败 ${task.failed}`
+    task.message=task.stopping?'已停止，正在处理的专利已结束':serviceUnavailable?'对象存储连续异常，任务已暂停；请检查服务后重新启动':rateLimited?'下载请求过于频繁，任务已停止':pending.size?`图片处理结束，${pending.size} 项 Excel 状态待同步`:`任务结束：成功 ${task.completed}，失败 ${task.failed}`
   })().catch(error=>{task.status='failed';task.message='持续处理异常，请查看运行记录';log(error instanceof Error?error.message:String(error))})
   return task
 }
@@ -712,7 +763,7 @@ export async function startTask(input: { mode: Mode; number?: string; limit: num
   if (store.task?.status === 'running') throw new Error('已有任务正在运行，请等待完成或先停止')
   if (!['preview','download','apply','apply-batch','sms'].includes(input.mode)) throw new Error('任务类型无效')
   if ((input.mode === 'preview' || input.mode === 'apply' || input.mode === 'sms') && (!input.number || !numberPattern.test(input.number))) throw new Error('请输入完整公开号，例如 CN222254999U')
-  if (!Number.isInteger(input.limit) || (input.mode!=='download' && (input.limit < 1 || input.limit > 10000)) || (input.mode==='download' && input.limit<0) || !Number.isFinite(input.delay) || input.delay < 3 || input.delay > 3600) throw new Error('手动批量数量需为 1 至 10000，间隔需为 3 至 3600 秒')
+  if (!Number.isInteger(input.limit) || (input.mode!=='download' && (input.limit < 1 || input.limit > 10000)) || (input.mode==='download' && input.limit<0) || !Number.isFinite(input.delay) || input.delay < 0) throw new Error('手动批量数量需为 1 至 10000，间隔需为非负数')
   if (input.proxy && !/^http:\/\/(127\.0\.0\.1|localhost):\d{1,5}$/.test(input.proxy)) throw new Error('代理请输入本机 HTTP 地址，例如 http://127.0.0.1:7897')
   if(input.mode==='download') return startContinuousPipeline({delay:input.delay,proxy:input.proxy,retry:input.retry,concurrency:input.concurrency??2})
   if(input.mode==='sms') {

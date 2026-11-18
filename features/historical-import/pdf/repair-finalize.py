@@ -64,6 +64,8 @@ def ensure_supported_cell(row, column, value, index):
 
 def rewrite_sheet(source, target, expected, notes=None, storage_notes=None):
     found = set()
+    wanted = expected | (set(notes) if notes is not None else set()) | (set(storage_notes) if storage_notes is not None else set())
+    wanted_numbers = {number for number, _ in wanted}
     count = 0
     header = False
     buffer = b''
@@ -71,14 +73,16 @@ def rewrite_sheet(source, target, expected, notes=None, storage_notes=None):
     while True:
         chunk = source.read(1024 * 1024)
         buffer += chunk
+        cursor = 0
         while True:
-            start = buffer.find(b'<row ')
+            start = buffer.find(b'<row ', cursor)
             if start < 0:
                 break
             end = buffer.find(b'</row>', start)
             if end < 0:
                 break
-            prefix, row, buffer = buffer[:start], buffer[start:end + 6], buffer[end + 6:]
+            prefix, row = buffer[cursor:start], buffer[start:end + 6]
+            cursor = end + 6
             if not prefix_done:
                 if not re.search(rb'<dimension ref="A1:[DEFG]\d+"', prefix):
                     raise ValueError('工作表结构已变化，无法安全添加状态列')
@@ -125,7 +129,14 @@ def rewrite_sheet(source, target, expected, notes=None, storage_notes=None):
                         row = insert_cell(row, 'G', '<c r="G1" s="1" t="inlineStr"><is><t>附图存储备注</t></is></c>'.encode())
                 header = True
             else:
-                number, batch = cell_text(row, 'A'), cell_text(row, 'B')
+                number = cell_text(row, 'A')
+                # The workbook can contain hundreds of thousands of rows; most
+                # do not belong to this sync and need no further cell parsing.
+                if number not in wanted_numbers:
+                    count += 1
+                    target.write(row)
+                    continue
+                batch = cell_text(row, 'B')
                 existing = cell_text(row, 'E')
                 if (number, batch) in expected:
                     ensure_supported_cell(row, 'E', existing, index)
@@ -154,11 +165,11 @@ def rewrite_sheet(source, target, expected, notes=None, storage_notes=None):
                     found.add((number, batch))
                 count += 1
             target.write(row)
+        buffer = buffer[cursor:]
         if not chunk:
             break
         if len(buffer) > 10 * 1024 * 1024:
             raise ValueError('工作表包含过长的行，未修改文件')
-    wanted = expected | (set(notes) if notes is not None else set()) | (set(storage_notes) if storage_notes is not None else set())
     if not header or found != wanted:
         raise ValueError(f'工作表未找到全部记录，缺失 {len(wanted - found)} 项')
     if storage_notes is not None:

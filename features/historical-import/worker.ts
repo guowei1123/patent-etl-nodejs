@@ -28,6 +28,8 @@ const pool = new pg.Pool(
         connectionTimeoutMillis: 10000,
       },
 )
+class PreparationSourceError extends Error {}
+
 async function runPreparation(keys = false) {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(
@@ -47,6 +49,7 @@ async function runPreparation(keys = false) {
       },
     )
     let updates = Promise.resolve()
+    let sourceError = ''
     const lines = createInterface({ input: child.stdout })
     lines.on('line', (line) => {
       try {
@@ -55,6 +58,8 @@ async function runPreparation(keys = false) {
           job.message = String(item.message).slice(0, 240)
           updates = updates.then(() => saveJob(job))
         }
+        if (typeof item.sourceError === 'string')
+          sourceError = item.sourceError.slice(0, 240)
         if (item.error) job.message = String(item.error).slice(0, 240)
       } catch {
         /* OCR library diagnostics are not job messages. */
@@ -63,11 +68,11 @@ async function runPreparation(keys = false) {
     child.stderr.resume()
     child.on('error', () => reject(new Error('无法启动 Python 环境')))
     child.on('close', (code) => {
-      updates.then(() =>
-        code === 0
-          ? resolve()
-          : reject(new Error('来源关联失败，请检查路径、列映射和 Python 依赖')),
-      )
+      updates.then(() => {
+        if (code === 0) resolve()
+        else if (sourceError) reject(new PreparationSourceError(sourceError))
+        else reject(new Error('来源关联失败，请检查路径、列映射和 Python 依赖'))
+      })
     })
   })
 }
@@ -123,7 +128,7 @@ try {
           '同一公开号的申请号冲突，请核对基础信息',
           '数据库存在冲突的文献记录',
           '基础信息正在更新，请重新预览后重试',
-          '公告日期超出处理范围，请调整日期后重试',
+          '公告日期超出原预览范围，请重新生成预览',
           '公开号与种类码不一致',
         ])
         record.reasons.push(
@@ -157,7 +162,8 @@ try {
       : '导入结束，已保存本阶段数据；基础信息待补齐记录可在后续任务补入，校验异常记录未写入。'
 } catch (error) {
   job.status = 'failed'
-  if (!job.message || !job.message.includes('错误'))
+  if (error instanceof PreparationSourceError) job.message = error.message
+  else if (!job.message || !job.message.includes('错误'))
     job.message =
       error instanceof Error &&
       [

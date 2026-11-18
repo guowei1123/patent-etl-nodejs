@@ -26,6 +26,13 @@ describe('修复图片存储路径', () => {
     expect([meta.width,meta.height]).toEqual([20,10])
     expect(jpeg.hash).toBe(createHash('sha256').update(jpeg.content).digest('hex'))
   })
+  it('彩色图片转换为 JPEG 后保留颜色', async () => {
+    const png=await sharp({create:{width:24,height:24,channels:3,background:{r:220,g:20,b:30}}}).png().toBuffer()
+    const jpeg=await encodeRepairJpeg(png)
+    const pixels=await sharp(jpeg.content).removeAlpha().raw().toBuffer()
+    expect(pixels[0]).toBeGreaterThan(pixels[1]+100)
+    expect(pixels[0]).toBeGreaterThan(pixels[2]+100)
+  })
   it('保持像素尺寸并根据细节检查选择压缩质量', async () => {
     const raw=Buffer.alloc(600*600)
     let seed=123

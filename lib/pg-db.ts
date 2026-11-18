@@ -27,6 +27,7 @@ import type {
 import { searchSimilarClassifications } from './classification-vector-search'
 import { getEmbeddingDimensions } from './embedding'
 import { buildPatentSearchExpressionCondition } from './patent-search-expression'
+import { applicationKey, applicationSql } from '../features/historical-import/identity'
 import {
   getClassificationAncestorCodeNorms,
   getClassificationDepth,
@@ -55,10 +56,14 @@ export function isDbConfigured(): boolean {
   )
 }
 
+function patentNumberVariants(number:string):string[] {
+  return [number, ...['CN','Cn','cN','cn'].map(prefix=>prefix+number)]
+}
+
 export async function getSmsReviewSource(number: string) {
   const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
   if(!match) throw new Error('请输入完整公开号')
-  const patent=await pool.query<{id:string;batch_id:string;description:unknown}>(`SELECT id,batch_id,description FROM cnipa.patent WHERE upper(doc_number)=ANY($1::text[]) AND upper(kind)=$2`,[[match[1],`CN${match[1]}`],match[2]])
+  const patent=await pool.query<{id:string;batch_id:string;description:unknown}>(`SELECT id,batch_id,description FROM cnipa.patent WHERE doc_number=ANY($1::text[]) AND upper(kind)=$2`,[patentNumberVariants(match[1]),match[2]])
   if(patent.rowCount!==1) throw new Error('公开号没有唯一对应的专利，请检查批次')
   const images=await pool.query<{file_name:string}>(`SELECT DISTINCT file_name FROM cnipa.patent_image WHERE patent_id=$1 AND NOT is_abstract AND file_name ~* '^SMS_[1-9][0-9]*\\.JPG$'`,[patent.rows[0].id])
   return {batch:patent.rows[0].batch_id,description:patent.rows[0].description,originalNames:images.rows.map(row=>row.file_name.toUpperCase())}
@@ -67,7 +72,7 @@ export async function getSmsReviewSource(number: string) {
 export async function getSmsOriginals(number:string) {
   const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
   if(!match) throw new Error('请输入完整公开号')
-  const p=await pool.query<{id:string;batch_id:string}>(`SELECT id,batch_id FROM cnipa.patent WHERE upper(doc_number)=ANY($1::text[]) AND upper(kind)=$2`,[[match[1],`CN${match[1]}`],match[2]])
+  const p=await pool.query<{id:string;batch_id:string}>(`SELECT id,batch_id FROM cnipa.patent WHERE doc_number=ANY($1::text[]) AND upper(kind)=$2`,[patentNumberVariants(match[1]),match[2]])
   if(p.rowCount!==1) throw new Error('公开号没有唯一对应的专利')
   const r=await pool.query<{id:string;file_name:string;oss_key:string;asset_id:string;is_abstract:boolean;image_role:string;asset_key:string|null}>(`SELECT i.id,i.file_name,i.oss_key,i.asset_id,i.is_abstract,i.image_role,a.oss_key asset_key FROM cnipa.patent_image i LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE i.patent_id=$1 AND i.file_name ~* '^SMS_[1-9][0-9]*\\.JPG$'`,[p.rows[0].id])
   return {patentId:p.rows[0].id,batch:p.rows[0].batch_id,images:r.rows}
@@ -76,7 +81,7 @@ export async function getSmsOriginals(number:string) {
 export async function getPatentDrawingKeys(number:string,batch:string) {
   const match=/^CN(\d{7,12})([ABCUSY]\d?)$/.exec(number)
   if(!match) throw new Error('请输入完整公开号')
-  const result=await pool.query<{oss_key:string}>(`SELECT COALESCE(a.oss_key,i.oss_key) AS oss_key FROM cnipa.patent p JOIN cnipa.patent_image i ON i.patent_id=p.id LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE p.batch_id=$1 AND upper(p.doc_number)=ANY($2::text[]) AND upper(p.kind)=$3 AND i.image_role='drawing' AND NOT i.is_abstract`,[batch,[match[1],`CN${match[1]}`],match[2]])
+  const result=await pool.query<{oss_key:string}>(`SELECT COALESCE(a.oss_key,i.oss_key) AS oss_key FROM cnipa.patent p JOIN cnipa.patent_image i ON i.patent_id=p.id LEFT JOIN cnipa.image_asset a ON a.id=i.asset_id WHERE p.batch_id=$1 AND p.doc_number=ANY($2::text[]) AND upper(p.kind)=$3 AND i.image_role='drawing' AND NOT i.is_abstract`,[batch,patentNumberVariants(match[1]),match[2]])
   return result.rows.map(row=>row.oss_key).filter(Boolean)
 }
 
@@ -311,6 +316,12 @@ async function runDatabaseInitialization(): Promise<void> {
 
     // === cnipa schema ===
     await client.query('CREATE SCHEMA IF NOT EXISTS cnipa')
+    await client.query(`CREATE TABLE IF NOT EXISTS cnipa.ftp_import_skipped (
+      batch_code VARCHAR(100) NOT NULL REFERENCES sync_batches(batch_code) ON DELETE CASCADE,
+      doc_number TEXT NOT NULL, kind TEXT NOT NULL, reason TEXT NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(batch_code,doc_number,kind)
+    )`)
 
     // 娑撴槒銆冮敍姘弿閺傜増鏆熼幑顔肩氨閺冨爼娓剁憰浣稿灡瀵?
     await client.query(`
@@ -842,7 +853,7 @@ export async function countImportedPatentsByBatch(
   batchCode: string,
 ): Promise<number> {
   const result = await pool.query(
-    'SELECT COUNT(*) FROM cnipa.patent WHERE batch_id = $1',
+    `SELECT COUNT(*) FROM (SELECT doc_number,kind FROM cnipa.patent WHERE batch_id=$1 UNION SELECT doc_number,kind FROM cnipa.ftp_import_skipped WHERE batch_code=$1) processed`,
     [batchCode],
   )
   return parseInt(result.rows[0].count)
@@ -852,7 +863,7 @@ export async function getImportedPatentKeysByBatch(
   batchCode: string,
 ): Promise<Set<string>> {
   const result = await pool.query<{ doc_number: string; kind: string }>(
-    'SELECT doc_number, kind FROM cnipa.patent WHERE batch_id = $1',
+    'SELECT doc_number, kind FROM cnipa.patent WHERE batch_id = $1 UNION SELECT doc_number, kind FROM cnipa.ftp_import_skipped WHERE batch_code = $1',
     [batchCode],
   )
   return new Set(result.rows.map((row) => `${row.doc_number}\u0000${row.kind}`))
@@ -1047,6 +1058,59 @@ function getPatentDescriptionJson(p: ParsedPatent): string | null {
   return Object.keys(descJson).length > 0 ? JSON.stringify(descJson) : null
 }
 
+function ftpApplicationKey(value?:string|null):string|null {
+  if(!value) return null
+  try {return applicationKey(value)} catch {return null}
+}
+const ftpCompleteGrant = (historyImages:boolean) => `NULLIF(btrim(p.title),'') IS NOT NULL AND NULLIF(p.pub_date,'') IS NOT NULL
+  AND NULLIF(p.app_number,'') IS NOT NULL AND p.description IS NOT NULL
+  AND regexp_replace(p.description::text,'[[:space:]]','','g') NOT IN ('null','{}','""','{"embodiment":""}')
+  AND p.claims IS NOT NULL AND regexp_replace(p.claims::text,'[[:space:]]','','g') NOT IN ('null','[]','{}','""')
+  AND (EXISTS(SELECT 1 FROM cnipa.patent_image i WHERE i.patent_id=p.id AND i.image_role='drawing')${historyImages ? " OR EXISTS(SELECT 1 FROM cnipa.history_import_part h WHERE h.patent_id=p.id AND h.part='images')" : ''})`
+
+/** Build outside a transaction so existing readers and writers can continue. */
+export async function ensureFtpApplicationIndex(): Promise<void> {
+  const client = await pool.connect()
+  let locked = false
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtextextended('ftp-application-index', 0))")
+    locked = true
+    const existing = await client.query<{ valid: boolean; is_patent: boolean }>(`
+      SELECT i.indisvalid AND i.indisready AS valid,
+             i.indrelid = 'cnipa.patent'::regclass AS is_patent
+      FROM pg_class x
+      JOIN pg_namespace n ON n.oid = x.relnamespace
+      JOIN pg_index i ON i.indexrelid = x.oid
+      WHERE n.nspname = 'cnipa' AND x.relname = 'idx_ftp_application_core_all'
+    `)
+    const index = existing.rows[0]
+    if (index && !index.is_patent) {
+      throw new Error('FTP 申请号索引名称已被其他表使用，请检查数据库索引')
+    }
+    if (index?.valid) return
+    if (index) {
+      await client.query('DROP INDEX CONCURRENTLY cnipa.idx_ftp_application_core_all')
+    }
+    await client.query(`CREATE INDEX CONCURRENTLY idx_ftp_application_core_all
+      ON cnipa.patent ((${applicationSql}))`)
+  } finally {
+    try {
+      if (locked) await client.query("SELECT pg_advisory_unlock(hashtextextended('ftp-application-index', 0))")
+    } finally {
+      client.release()
+    }
+  }
+}
+
+async function removeFtpSupersededApplications(client:PoolClient,applications:string[],historyImages:boolean) {
+  if(!applications.length) return
+  await client.query(`WITH complete_grants AS (SELECT DISTINCT ${applicationSql} AS application FROM cnipa.patent p WHERE ${applicationSql}=ANY($1::text[]) AND upper(p.kind) ~ '^B' AND COALESCE(p.pub_country,'CN')='CN' AND ${ftpCompleteGrant(historyImages)}),
+    removed AS (DELETE FROM cnipa.patent p WHERE ${applicationSql} IN (SELECT application FROM complete_grants) AND upper(p.kind) ~ '^A' AND COALESCE(p.pub_country,'CN')='CN' RETURNING p.batch_id,p.doc_number,p.kind)
+    INSERT INTO cnipa.ftp_import_skipped(batch_code,doc_number,kind,reason)
+    SELECT batch_id,doc_number,kind,'同申请完整授权版本已入库' FROM removed WHERE batch_id IS NOT NULL
+    ON CONFLICT(batch_code,doc_number,kind) DO NOTHING`,[applications])
+}
+
 // 鐏?ParsedPatent 閸愭瑥鍙?cnipa.patent + 鐎涙劘銆?
 export async function insertPatents(
   batchCode: string,
@@ -1065,6 +1129,23 @@ export async function insertPatents(
 
   try {
     await client.query('BEGIN')
+    const applications=[...new Set(patents.filter(p=>/^[AB]/i.test(getPatentKind(p))).map(p=>ftpApplicationKey(p.application_number)).filter((key):key is string=>!!key))].sort()
+    for(const application of applications) await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[`CN${application}`])
+    const grants=new Set<string>()
+    let historyImages=false
+    const applicationVersions=[...new Set(patents.filter(p=>/^A/i.test(getPatentKind(p))).map(p=>ftpApplicationKey(p.application_number)).filter((key):key is string=>!!key))]
+    if(applications.length) {
+      const relation=await client.query<{name:string|null}>("SELECT to_regclass('cnipa.history_import_part')::text AS name")
+      historyImages=!!relation.rows[0]?.name
+      if(applicationVersions.length) {
+        const rows=await client.query<{application:string}>(`SELECT DISTINCT ${applicationSql} AS application FROM cnipa.patent p WHERE ${applicationSql}=ANY($1::text[]) AND upper(p.kind) ~ '^B' AND COALESCE(p.pub_country,'CN')='CN' AND ${ftpCompleteGrant(historyImages)}`,[applicationVersions])
+        for(const row of rows.rows) grants.add(row.application)
+      }
+    }
+    const skipped=patents.filter(p=>/^A/i.test(getPatentKind(p)) && grants.has(ftpApplicationKey(p.application_number)||''))
+    const activePatents=patents.filter(p=>!skipped.includes(p))
+    if(skipped.length) await client.query(`INSERT INTO cnipa.ftp_import_skipped(batch_code,doc_number,kind,reason) SELECT $1,x.doc_number,x.kind,'同申请完整授权版本已存在' FROM unnest($2::text[],$3::text[]) AS x(doc_number,kind) ON CONFLICT(batch_code,doc_number,kind) DO NOTHING`,[batchCode,skipped.map(p=>p.patent_number),skipped.map(p=>getPatentKind(p))])
+    if(skipped.length) await removeFtpSupersededApplications(client,[...grants],historyImages)
     const mainColumns = [
       'doc_number',
       'kind',
@@ -1090,7 +1171,7 @@ export async function insertPatents(
       'independent_claim_count',
       'raw_xml',
     ]
-    const mainRows = patents.map((p) => [
+    const mainRows = activePatents.map((p) => [
       p.patent_number,
       getPatentKind(p),
       p.pub_country || null,
@@ -1123,7 +1204,7 @@ export async function insertPatents(
 
     if (!mainInsert) {
       await client.query('COMMIT')
-      return { insertedCount: 0, failures: [] }
+      return { insertedCount: skipped.length, failures: [], ...(skipped.length ? {skippedCount:skipped.length} : {}) }
     }
 
     const mainResult = await client.query<{
@@ -1136,6 +1217,8 @@ export async function insertPatents(
        ON CONFLICT (doc_number, kind) DO UPDATE SET
          title = EXCLUDED.title,
          abstract = EXCLUDED.abstract,
+         app_number = COALESCE(NULLIF(EXCLUDED.app_number,''),cnipa.patent.app_number),
+         pub_date = COALESCE(NULLIF(EXCLUDED.pub_date,''),cnipa.patent.pub_date),
          description = COALESCE(EXCLUDED.description, cnipa.patent.description),
          claims = EXCLUDED.claims,
          grant_number = EXCLUDED.grant_number,
@@ -1152,7 +1235,7 @@ export async function insertPatents(
     )
 
     const patentsByKey = new Map<string, ParsedPatent>()
-    for (const p of patents) {
+    for (const p of activePatents) {
       patentsByKey.set(`${p.patent_number}\u0000${getPatentKind(p)}`, p)
     }
 
@@ -1415,10 +1498,15 @@ export async function insertPatents(
       uniqueRows(patentImageRows),
     )
 
+    const grantApplications=[...new Set(activePatents.filter(p=>/^B/i.test(getPatentKind(p))).map(p=>ftpApplicationKey(p.application_number)).filter((key):key is string=>!!key))]
+    await removeFtpSupersededApplications(client,grantApplications,historyImages)
+
     await client.query('COMMIT')
-    return { insertedCount: mainResult.rowCount || 0, failures: [] }
+    return { insertedCount: (mainResult.rowCount || 0)+skipped.length, failures: [], ...(skipped.length ? {skippedCount:skipped.length} : {}) }
   } catch (error) {
     await client.query('ROLLBACK')
+    // A user-requested query cancellation must not be retried as smaller chunks.
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '57014') throw error
     if (patents.length === 1) {
       return {
         insertedCount: 0,
@@ -1433,6 +1521,7 @@ export async function insertPatents(
     return {
       insertedCount: left.insertedCount + right.insertedCount,
       failures: [...left.failures, ...right.failures],
+      ...((left.skippedCount||0)+(right.skippedCount||0) ? {skippedCount:(left.skippedCount||0)+(right.skippedCount||0)} : {}),
     }
   } finally {
     releaseClient()

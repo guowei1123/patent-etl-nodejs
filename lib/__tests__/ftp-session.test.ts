@@ -1,7 +1,7 @@
 import { EventEmitter } from 'events'
 import type { Client } from 'basic-ftp'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { closeFtpSession, connectFtpSession } from '../ftp-session'
+import { closeFtpSession, connectFtpSession, registerFtpDownloadYield } from '../ftp-session'
 
 const options = { host: 'ftp.example.test', user: 'test-user' }
 function client() {
@@ -50,9 +50,11 @@ describe('shared FTP session limits', () => {
       connectFtpSession(a.asClient, options),
       connectFtpSession(b.asClient, options),
     ])
-    const waiting = connectFtpSession(c.asClient, options)
+    const reportWait = vi.fn()
+    const waiting = connectFtpSession(c.asClient, options, 'download', reportWait)
     await vi.advanceTimersByTimeAsync(0)
     expect(c.access).not.toHaveBeenCalled()
+    expect(reportWait).toHaveBeenCalledExactlyOnceWith('capacity')
     closeFtpSession(a.asClient)
     closeFtpSession(a.asClient)
     await waiting
@@ -72,6 +74,25 @@ describe('shared FTP session limits', () => {
     expect(b.access).toHaveBeenCalledTimes(1)
     closeFtpSession(a.asClient)
     closeFtpSession(b.asClient)
+  })
+
+  it('yields one download to browsing, then allows it to resume', async () => {
+    vi.stubEnv('FTP_MAX_CONNECTIONS', '3')
+    const [download, waitingDownload, browse] = [client(), client(), client()]
+    await connectFtpSession(download.asClient, options, 'download')
+    await connectFtpSession(waitingDownload.asClient, options, 'download')
+    const unregister = registerFtpDownloadYield(download.asClient, () => closeFtpSession(download.asClient))
+    await connectFtpSession(browse.asClient, options)
+    expect(download.closed).toBe(true)
+    expect(browse.access).toHaveBeenCalledTimes(1)
+    expect([...globalThis.__patentFtpSessions!.accounts.values()][0].active).toBe(2)
+    unregister()
+    const resumed = connectFtpSession(download.asClient, options, 'download')
+    closeFtpSession(browse.asClient)
+    await resumed
+    expect(download.access).toHaveBeenCalledTimes(2)
+    closeFtpSession(download.asClient)
+    closeFtpSession(waitingDownload.asClient)
   })
 
   it('closes failed logins and releases their slot without retrying bad credentials', async () => {
@@ -116,6 +137,21 @@ describe('shared FTP session limits', () => {
     expect(a.access).toHaveBeenCalledTimes(2)
     closeFtpSession(a.asClient)
     closeFtpSession(b.asClient)
+  })
+
+  it('asks a download to yield when the server reports a limit before the local pool is full', async () => {
+    const [download, browse] = [client(), client()]
+    await connectFtpSession(download.asClient, options, 'download')
+    const unregister = registerFtpDownloadYield(download.asClient, () => closeFtpSession(download.asClient))
+    browse.access.mockRejectedValueOnce(new Error('421 Maximum login limit has been reached.'))
+    const connecting = connectFtpSession(browse.asClient, options)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(download.closed).toBe(true)
+    await vi.advanceTimersByTimeAsync(1000)
+    await connecting
+    expect(browse.access).toHaveBeenCalledTimes(2)
+    unregister()
+    closeFtpSession(browse.asClient)
   })
 
   it('reports exhausted login retries and leaves no occupied sessions', async () => {

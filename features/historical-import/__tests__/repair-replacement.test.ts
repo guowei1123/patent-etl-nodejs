@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 
 const mocks=vi.hoisted(()=>({ files:new Map<string,Buffer>(), objects:new Map<string,Buffer>(), remove:vi.fn() }))
 vi.mock('node:fs/promises',()=>({
@@ -58,7 +59,7 @@ describe('同名附图替换保护',()=>{
       if(sql.includes('SELECT i.id,a.oss_key')) return {rows:[{id:'new',oss_key:prefix+'FT_1.jpg',content_hash:sha(replacement)}]}
       return {rows:[]}
     })
-    const client={query,release:vi.fn()}
+    const client=Object.assign(new EventEmitter(),{query,release:vi.fn()})
     const pool={connect:async()=>client}
     await expect(cleanupReplacedDrawings(pool as never,number)).resolves.toEqual({removed:0,retained:0})
     expect(mocks.remove).not.toHaveBeenCalled()

@@ -7,6 +7,7 @@ import type { ParsedPatent, PatentImportResult } from '@/types'
 const dbMock = vi.hoisted(() => ({
   addLog: vi.fn(),
   countImportedPatentsByBatch: vi.fn(),
+  ensureFtpApplicationIndex: vi.fn(),
   getBatchByCode: vi.fn(),
   getImportedPatentKeysByBatch: vi.fn(),
   getPool: vi.fn(),

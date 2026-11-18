@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import sys
+import time
 import tarfile
 import zipfile
 from pathlib import PurePosixPath
@@ -214,11 +215,26 @@ def extract(content, name, source, args, reader):
         digits = re.sub(r'[ABCUSY]\d?$', '', number.removeprefix('CN'))
         directory = Path(args.output).resolve() / (announcement or 'PENDING') / digits
         manifest = directory / "manifest.json"
+        include_body_figures = getattr(args, "include_body_figures", True)
         if manifest.exists():
             cached = json.loads(manifest.read_text(encoding="utf-8"))
             if cached.get('pdf_hash') != digest or cached.get('patent_number') != number:
                 raise ValueError('同一批次的数字公开号目录已有不同 PDF，请核对版本后清理旧提取结果')
-            if cached.get("version") == ('pdf-figures-v2' if getattr(args,'figures',False) else VERSION) and (not getattr(args,'figures',False) or cached.get('figure_revision') == 9) and cached.get("dpi") == args.dpi and cached.get("pages_override") == args.pages and all((directory / i["file_name"]).exists() for i in cached["images"]):
+            figure_mode = getattr(args, "figures", False)
+            if (
+                cached.get("version") == ("pdf-figures-v2" if figure_mode else VERSION)
+                and cached.get("color_revision") == 1
+                and (
+                    not figure_mode
+                    or (
+                        cached.get("figure_revision") == 10
+                        and cached.get("include_body_figures", True) == include_body_figures
+                    )
+                )
+                and cached.get("dpi") == args.dpi
+                and cached.get("pages_override") == args.pages
+                and all((directory / image["file_name"]).exists() for image in cached["images"])
+            ):
                 return cached
         headers = {}
         if args.pages:
@@ -227,12 +243,15 @@ def extract(content, name, source, args, reader):
                 raise ValueError("--pages 页码超出 PDF 范围（从 1 开始）")
         else:
             pages = []
+            header_started = time.perf_counter()
             for i, page in enumerate(doc):
                 headers[i] = reader.read(page, header=True)
                 if drawing_header(headers[i]):
                     pages.append(i)
                 if (i + 1) % 10 == 0:
                     print(f"{number}：已检查 {i + 1}/{len(doc)} 页", flush=True)
+            if getattr(reader, 'profile', None) is not None:
+                reader.profile['headers_ms'] = round((time.perf_counter() - header_started) * 1000)
         if not pages and not getattr(args, 'figures', False):
             return {"status": "needs_review", "patent_number": number, "source": source, "error": "未识别附图页，请核对后使用 --pages"}
         directory.mkdir(parents=True, exist_ok=True)
@@ -240,7 +259,7 @@ def extract(content, name, source, args, reader):
             (directory / f"{number}.pdf").write_bytes(content)
         images = []
         for order, page_index in enumerate([] if getattr(args,'figures',False) else pages, 1):
-            pix = doc[page_index].get_pixmap(dpi=args.dpi, colorspace=pymupdf.csGRAY, alpha=False)
+            pix = doc[page_index].get_pixmap(dpi=args.dpi, colorspace=pymupdf.csRGB, alpha=False)
             file_name = f"说明书-图{order}.png"
             target = directory / file_name
             pix.save(target)
@@ -254,13 +273,18 @@ def extract(content, name, source, args, reader):
             images = figures.extract_figures(doc, pages, directory, number, args, reader, headers,
                                              drawing_only=getattr(args, 'drawing_only', False))
             if not images:
-                return {"status": "needs_review", "patent_number": number, "source": source, "error": "未识别附图或正文图形，请人工核对 PDF"}
-        result = {"version": 'pdf-figures-v2' if getattr(args,'figures',False) else VERSION, "dpi": args.dpi, "pages_override": args.pages, "status": "extracted", "batch": args.batch,
+                error = (
+                    "未识别附图或正文图形，请人工核对 PDF" if include_body_figures
+                    else "未识别摘要附图或说明书附图，请人工核对 PDF"
+                )
+                return {"status": "needs_review", "patent_number": number, "source": source, "error": error}
+        result = {"version": 'pdf-figures-v2' if getattr(args,'figures',False) else VERSION, "color_revision": 1, "dpi": args.dpi, "pages_override": args.pages, "status": "extracted", "batch": args.batch,
                   "publication_date": date, "announcement_batch": announcement, "date_status": "extracted" if date else "needs_review", "date_source": "pdf" if detected_date else "metadata" if date else None,
                   "patent_number": number, "pdf_hash": digest, "source": source, "directory": str(directory),
                   "page_count": len(doc), "images": images}
         if getattr(args,'figures',False):
-            result['figure_revision'] = 9
+            result["figure_revision"] = 10
+            result["include_body_figures"] = include_body_figures
         temporary = manifest.with_suffix(".json.part")
         temporary.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(manifest)

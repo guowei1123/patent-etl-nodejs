@@ -3,7 +3,14 @@ import * as fs from 'fs'
 import * as path from 'path'
 import type { FtpConfig, FtpEntry } from '@/types'
 import { normalizeFtpDirectoryName } from './ftp-path'
-import { closeFtpSession, connectFtpSession, getFtpConnectionLimit } from './ftp-session'
+import {
+  closeFtpSession,
+  connectFtpSession,
+  getFtpDownloadConnectionLimit,
+  registerFtpDownloadYield,
+  type FtpSessionPurpose,
+  type FtpWaitReason,
+} from './ftp-session'
 
 export { normalizeFtpDirectoryName } from './ftp-path'
 
@@ -17,7 +24,10 @@ export class FtpClient {
   private config: FtpConfig
   private connected: boolean = false
 
-  constructor(config?: Partial<FtpConfig>) {
+  constructor(
+    config?: Partial<FtpConfig>,
+    private purpose: FtpSessionPurpose = 'interactive',
+  ) {
     const timeout =
       config?.timeout || parseInt(process.env.FTP_TIMEOUT || '120000')
     this.client = new ftp.Client(timeout)
@@ -49,18 +59,23 @@ export class FtpClient {
     }
   }
 
-  async connect(): Promise<void> {
+  async connect(onWait?: (reason: FtpWaitReason) => void): Promise<void> {
     if (this.connected && !this.client.closed) return
 
     try {
-      await connectFtpSession(this.client, {
-        host: this.config.host,
-        port: this.config.port,
-        user: this.config.user,
-        password: this.config.password,
-        secure: this.config.secure,
-        secureOptions: { rejectUnauthorized: false },
-      })
+      await connectFtpSession(
+        this.client,
+        {
+          host: this.config.host,
+          port: this.config.port,
+          user: this.config.user,
+          password: this.config.password,
+          secure: this.config.secure,
+          secureOptions: { rejectUnauthorized: false },
+        },
+        this.purpose,
+        onWait,
+      )
       this.connected = true
     } catch (error) {
       throw new Error(
@@ -381,8 +396,11 @@ export function isFtpConfigured(): boolean {
   )
 }
 
-export function createFtpClient(config?: Partial<FtpConfig>): FtpClient {
-  return new FtpClient(config)
+export function createFtpClient(
+  config?: Partial<FtpConfig>,
+  purpose: FtpSessionPurpose = 'interactive',
+): FtpClient {
+  return new FtpClient(config, purpose)
 }
 
 // ============ 并行下载连接池 ============
@@ -430,7 +448,7 @@ export class FtpConnectionPool {
     const requested = concurrency ?? Number(process.env.FTP_CONCURRENCY || '3')
     this.concurrency = Math.min(
       Number.isSafeInteger(requested) && requested > 0 ? requested : 3,
-      getFtpConnectionLimit(),
+      getFtpDownloadConnectionLimit(),
     )
 
     const timeout =
@@ -477,21 +495,29 @@ export class FtpConnectionPool {
     return this.timeout
   }
 
-  private async accessClient(client: ftp.Client): Promise<void> {
-    await connectFtpSession(client, {
-      host: this.config.host,
-      port: this.config.port,
-      user: this.config.user,
-      password: this.config.password,
-      secure: this.config.secure,
-      secureOptions: { rejectUnauthorized: false },
-    })
+  private async accessClient(
+    client: ftp.Client,
+    onWait?: (reason: FtpWaitReason) => void,
+  ): Promise<void> {
+    await connectFtpSession(
+      client,
+      {
+        host: this.config.host,
+        port: this.config.port,
+        user: this.config.user,
+        password: this.config.password,
+        secure: this.config.secure,
+        secureOptions: { rejectUnauthorized: false },
+      },
+      'download',
+      onWait,
+    )
   }
 
-  async connect(): Promise<void> {
+  async connect(onWait?: (reason: FtpWaitReason) => void): Promise<void> {
     // 只预连接一个；其余工作连接按需申请，避免多个池互相占住部分额度后等待。
     try {
-      await this.accessClient(this.clients[0])
+      await this.accessClient(this.clients[0], onWait)
     } catch (error) {
       this.disconnect()
       throw error
@@ -560,6 +586,24 @@ export class FtpConnectionPool {
 
         for (let attempt = 1; attempt <= retryAttempts; attempt++) {
           if (failed || isCancelled()) return
+          let yielded = false
+          const transfer = async (offset?: number) => {
+            let unregister = () => {}
+            if (resume && remoteSize > 0) {
+              unregister = registerFtpDownloadYield(client, () => {
+                if (yielded) return
+                yielded = true
+                closeFtpSession(client)
+              })
+            }
+            try {
+              if (yielded) throw new Error('FTP 连接已让给目录浏览')
+              await client.downloadTo(localPath, entry.path, offset)
+              if (yielded) throw new Error('FTP 连接已让给目录浏览')
+            } finally {
+              unregister()
+            }
+          }
           try {
             // 断点续传：检查本地文件
             if (resume && remoteSize > 0) {
@@ -591,7 +635,7 @@ export class FtpConnectionPool {
                     )
                   })
                 }
-                await client.downloadTo(localPath, entry.path, localSize)
+                await transfer(localSize)
                 client.trackProgress()
                 results.push({ entry, localPath, skipped: false })
                 completedCount++
@@ -623,7 +667,7 @@ export class FtpConnectionPool {
               })
             }
 
-            await client.downloadTo(localPath, entry.path)
+            await transfer()
             client.trackProgress()
 
             results.push({ entry, localPath, skipped: false })
@@ -637,6 +681,11 @@ export class FtpConnectionPool {
             break
           } catch (error) {
             client.trackProgress()
+
+            if (yielded && !failed && !isCancelled()) {
+              attempt -= 1
+              continue
+            }
 
             const errorMessage =
               error instanceof Error ? error.message : 'Unknown error'

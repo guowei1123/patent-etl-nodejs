@@ -6,6 +6,8 @@ const ossMock = vi.hoisted(() => ({
   list: vi.fn(),
   put: vi.fn(),
 }))
+const minioMock = vi.hoisted(() => ({ statObject: vi.fn(), setRequestOptions: vi.fn() }))
+vi.mock('minio', () => ({ Client: vi.fn(function () { return minioMock }) }))
 
 vi.mock('ali-oss', () => ({
   default: vi.fn(function OSS() {
@@ -51,6 +53,24 @@ describe('oss client patent images', () => {
 
     const { patentImageExists } = await import('../oss-client')
     await expect(patentImageExists('key.jpg')).resolves.toBe(false)
+  })
+
+  it('bounds a stalled MinIO object check and aborts the request', async () => {
+    process.env.OBJECT_STORAGE_TYPE = 'minio'
+    process.env.MINIO_ENDPOINT = 'http://localhost:9000'
+    process.env.MINIO_ACCESS_KEY = 'test'
+    process.env.MINIO_SECRET_KEY = 'test'
+    process.env.MINIO_BUCKET_NAME = 'bucket'
+    minioMock.statObject.mockImplementation(() => new Promise(() => {}))
+    vi.useFakeTimers()
+    try {
+      const { patentImageExists } = await import('../oss-client')
+      const result = patentImageExists('key.jpg')
+      const assertion = expect(result).rejects.toThrow('对象存储检查超时')
+      await vi.advanceTimersByTimeAsync(15000)
+      await assertion
+      expect(minioMock.setRequestOptions.mock.lastCall?.[0].signal.aborted).toBe(true)
+    } finally { vi.useRealTimers() }
   })
 
   it('times out slow patent image uploads', async () => {

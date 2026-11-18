@@ -3,9 +3,11 @@
 This command never writes to the database or object storage.
 """
 import argparse
+import hashlib
 import importlib.util
 import json
 import logging
+import os
 import re
 import time
 import sys
@@ -24,7 +26,7 @@ spec = importlib.util.spec_from_file_location('pdf_extract', Path(__file__).with
 extractor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(extractor)
 NUMBER = re.compile(r'^CN\d{7,12}[ABCUSY]\d?$')
-REPAIR_REVISION = 3
+REPAIR_REVISION = 4
 NO_PDF_ERROR = 'Google Patents 页面未提供 PDF 下载链接，无法从该来源提取附图'
 
 
@@ -34,6 +36,24 @@ class PdfLinkMissing(PatentNotFoundError):
 
 class PagePdfDownloader(PatentDownloader):
     """Only probe PDF links actually published on the requested patent page."""
+
+    def __init__(self):
+        super().__init__()
+        self.timings = {'page_ms': 0, 'probe_ms': 0, 'transfer_ms': 0}
+
+    def _fetch_patent_page(self, patent_number):
+        started = time.perf_counter()
+        try:
+            return super()._fetch_patent_page(patent_number)
+        finally:
+            self.timings['page_ms'] += round((time.perf_counter() - started) * 1000)
+
+    def _download_pdf_data(self, pdf_link, patent_number, referer):
+        started = time.perf_counter()
+        try:
+            return super()._download_pdf_data(pdf_link, patent_number, referer)
+        finally:
+            self.timings['transfer_ms'] += round((time.perf_counter() - started) * 1000)
 
     def _build_pdf_candidate_urls(self, patent_page, patent_number):
         soup = BeautifulSoup(patent_page.content, 'html.parser')
@@ -54,6 +74,13 @@ class PagePdfDownloader(PatentDownloader):
         return urls
 
     def _retrieve_pdf_link(self, patent_number, patent_page):
+        started = time.perf_counter()
+        try:
+            return self._probe_pdf_link(patent_number, patent_page)
+        finally:
+            self.timings['probe_ms'] += round((time.perf_counter() - started) * 1000)
+
+    def _probe_pdf_link(self, patent_number, patent_page):
         urls = self._build_pdf_candidate_urls(patent_page, patent_number)
         if not urls:
             raise PdfLinkMissing(NO_PDF_ERROR)
@@ -146,6 +173,7 @@ def main():
     parser.add_argument('--ocr', action='store_true')
     parser.add_argument('--retry-failed', action='store_true', help='重试报告中已失败的记录')
     parser.add_argument('--single-stdin', action='store_true', help='从标准输入读取单件候选；报告与表格由调用方维护')
+    parser.add_argument('--pdf-only', action='store_true', help='只下载并校验 PDF，不提取说明书附图')
     args = parser.parse_args()
     if args.limit < 1 or args.delay < 0 or any(not NUMBER.fullmatch(n) for n in args.publication):
         parser.error('limit 必须大于 0，delay 不得为负，公开号需为完整 CN 公开号')
@@ -167,6 +195,8 @@ def main():
     rate_limit = RateLimitHandler()
     logging.getLogger('patent_downloader').addHandler(rate_limit)
     reader = RepairReader(args.ocr)
+    # Set to 0 to restore high-resolution OCR for every figure crop.
+    reader.reuse_caption_ocr = os.environ.get('PDF_REUSE_CAPTION_OCR', '1') == '1'
     count = 0
     failed = False
     single_item = json.load(sys.stdin) if args.single_stdin else None
@@ -179,13 +209,18 @@ def main():
                 continue
             count += 1
             result = {'publication_number': number, 'batch': item['batch'], 'candidate_image_names': item['image_names']}
+            downloader.timings = {'page_ms': 0, 'probe_ms': 0, 'transfer_ms': 0}
+            timings = downloader.timings
+            reader.profile = {}
             try:
                 target = downloads / (number + '.pdf')
+                timings['cached_pdf'] = target.exists()
                 if not target.exists():
                     if not downloader.download_patent(number, str(downloads)):
                         raise ValueError('已找到 PDF 链接，但下载失败，请检查代理后重试')
                 if not target.is_file() or target.stat().st_size > 100 * 1024 * 1024:
                     raise ValueError('PDF 不存在或超过 100 MB')
+                started = time.perf_counter()
                 content = target.read_bytes()
                 if not content.startswith(b'%PDF-'):
                     raise ValueError('下载内容不是 PDF')
@@ -196,10 +231,27 @@ def main():
                     actual = extractor.publication_number_on_page(doc[0], first)
                     if actual != number:
                         raise ValueError(f'PDF 首页公开号不匹配或无法识别: {actual}')
+                timings['verify_ms'] = round((time.perf_counter() - started) * 1000)
+                if args.pdf_only:
+                    result.update(status='pdf_ready', pdf=str(target), pdf_hash=hashlib.sha256(content).hexdigest(), repair_revision=REPAIR_REVISION)
+                    processed.add(number)
+                    result['timings'] = timings
+                    report.write(json.dumps(result, ensure_ascii=False) + '\n')
+                    report.flush()
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+                    if count >= args.limit:
+                        break
+                    time.sleep(args.delay)
+                    continue
                 settings = SimpleNamespace(output=str(root / 'images-v3'), batch='repair', dpi=300,
                                            pages=None, before_year=9999, max_pages=500,
                                            figures=True, drawing_only=True, clean_drawing=True, save_pdf=False)
-                manifest = extractor.extract(content, target.name, str(target), settings, reader)
+                started = time.perf_counter()
+                try:
+                    manifest = extractor.extract(content, target.name, str(target), settings, reader)
+                finally:
+                    timings['extract_ms'] = round((time.perf_counter() - started) * 1000)
+                    timings['extract_detail'] = reader.profile
                 if manifest['status'] != 'extracted' or not manifest.get('images'):
                     raise ValueError(manifest.get('error', '无法确认说明书附图页'))
                 result.update(status='ready', pdf=str(target), pdf_hash=manifest['pdf_hash'],
@@ -217,6 +269,7 @@ def main():
                     result['error_code'] = 'no_pdf_link'
                     notes[(number, item['batch'])] = 'no_pdf_link'
                 failed = True
+            result['timings'] = timings
             report.write(json.dumps(result, ensure_ascii=False) + '\n')
             report.flush()
             print(json.dumps(result, ensure_ascii=False), flush=True)

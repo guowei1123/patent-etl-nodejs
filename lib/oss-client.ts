@@ -146,15 +146,27 @@ export async function patentImageExists(ossKey: string): Promise<boolean> {
 
   if (isMinioStorage()) {
     const client = await createMinioClient(ossKey)
+    const controller = new AbortController()
+    client.setRequestOptions({ signal: controller.signal })
+    let timeout: ReturnType<typeof setTimeout> | undefined
     try {
-      await client.statObject(getBucketName(), ossKey)
+      await Promise.race([
+        client.statObject(getBucketName(), ossKey),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            controller.abort()
+            reject(new Error('对象存储检查超时，请检查存储服务'))
+          }, 15000)
+        }),
+      ])
       return true
     } catch (error) {
+      if (controller.signal.aborted) throw new Error('对象存储检查超时，请检查存储服务')
       if (error instanceof Error && 'code' in error && (error as { code?: string }).code === 'NotFound') {
         return false
       }
       throw error
-    }
+    } finally { if (timeout) clearTimeout(timeout) }
   }
 
   const client = createOssClient()

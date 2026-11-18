@@ -99,6 +99,11 @@ export async function insertPatents(batchCode: string, patents: ParsedPatent[]):
   return mod.insertPatents(batchCode, patents)
 }
 
+export async function ensureFtpApplicationIndex(): Promise<void> {
+  const mod = await getDbModule()
+  return mod.ensureFtpApplicationIndex()
+}
+
 export async function getClassificationList(
   filter: ClassificationFilter,
   page?: number,

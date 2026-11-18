@@ -6,6 +6,7 @@ import {
   createFtpPool,
   FtpConnectionPool,
 } from '../ftp-client'
+import type { FtpWaitReason } from '../ftp-session'
 import { getTempPath } from '../file-processor'
 import {
   verifyDownloadedArchive,
@@ -51,6 +52,19 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
   let cancelled = false
   let ftpClient: FtpClient | null = null
   let pool: FtpConnectionPool | null = null
+  const reportedWaits = new Set<string>()
+  const reportFtpWait = (stage: string) => (reason: FtpWaitReason) => {
+    const key = `${stage}:${reason}`
+    if (reportedWaits.has(key)) return
+    reportedWaits.add(key)
+    const message =
+      reason === 'backoff'
+        ? 'FTP 服务器返回连接数限制（421），正在等待重试'
+        : 'FTP 连接暂时用满，正在等待空闲连接'
+    void addLog(batchCode, 'info', `${stage}：${message}`).catch((error) => {
+      console.error('记录 FTP 等待状态失败:', error)
+    })
+  }
   runningTasks.set(batchCode, {
     cancel: () => {
       cancelled = true
@@ -64,8 +78,8 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
     await updateBatchStatus(batchCode, 'downloading')
     await addLog(batchCode, 'info', '开始下载步骤')
 
-    ftpClient = createFtpClient()
-    await ftpClient.connect()
+    ftpClient = createFtpClient(undefined, 'download')
+    await ftpClient.connect(reportFtpWait('读取文件清单前'))
     await addLog(batchCode, 'info', 'FTP 连接成功')
 
     if (cancelled) throw new Error('任务已取消')
@@ -169,7 +183,7 @@ export async function runDownloadStep(batchCode: string): Promise<StepResult> {
     ftpClient = null
 
     pool = createFtpPool()
-    await pool.connect()
+    await pool.connect(reportFtpWait('传输文件前'))
     const totalBytes = filteredEntries.reduce((sum, e) => sum + e.size, 0)
     const retryAttempts = Math.max(
       1,

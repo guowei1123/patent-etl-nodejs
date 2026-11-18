@@ -65,6 +65,18 @@ class FinalizeTests(unittest.TestCase):
         self.assertNotIn(b'<c r="E3"', output)
         self.assertIn(b'<autoFilter ref="A1:E3"', output)
 
+    def test_streaming_with_rows_split_across_chunks(self):
+        class SmallChunks(io.BytesIO):
+            def read(self, size=-1):
+                return super().read(min(size, 13) if size >= 0 else 13)
+
+        wanted = {('CN222254999U', 'batch-a')}
+        normal, split = io.BytesIO(), io.BytesIO()
+        expected = module.rewrite_sheet(io.BytesIO(workbook_xml()), normal, wanted)
+        actual = module.rewrite_sheet(SmallChunks(workbook_xml()), split, wanted)
+        self.assertEqual(actual, expected)
+        self.assertEqual(split.getvalue(), normal.getvalue())
+
     def test_refuses_missing_batch_match(self):
         with self.assertRaisesRegex(ValueError, '未找到'):
             module.rewrite_sheet(io.BytesIO(workbook_xml()), io.BytesIO(), {('CN222254999U', 'wrong')})

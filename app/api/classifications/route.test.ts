@@ -9,6 +9,12 @@ const dbMock = vi.hoisted(() => ({
 }))
 
 vi.mock('@/lib/db', () => dbMock)
+vi.mock('@/lib/redis-classifications', () => ({
+  isRedisClassificationsConfigured: () => false,
+}))
+vi.mock('@/lib/embedding', () => ({
+  isEmbeddingConfigured: () => true,
+}))
 
 function request(url: string): NextRequest {
   return {

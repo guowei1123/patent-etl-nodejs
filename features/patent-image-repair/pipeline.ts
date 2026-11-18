@@ -21,3 +21,19 @@ export function serialQueue() {
     return result
   }
 }
+
+/** Run at most `limit` operations at once, including when one fails. */
+export function boundedQueue(limit:number) {
+  let active=0
+  const waiting:Array<()=>void>=[]
+  return async function run<T>(work:()=>Promise<T>):Promise<T> {
+    if(active>=limit) await new Promise<void>(resolve=>waiting.push(resolve))
+    else active++
+    try {return await work()}
+    finally {
+      const next=waiting.shift()
+      if(next) next()
+      else active--
+    }
+  }
+}

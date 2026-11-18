@@ -7,6 +7,7 @@ import json
 import re
 import sqlite3
 import sys
+from itertools import zip_longest
 from pathlib import Path
 
 import duckdb
@@ -62,6 +63,50 @@ def files(source, extension):
     return result
 
 
+class ExcelSourceError(ValueError):
+    """An Excel source problem that can be shown in the import workspace."""
+
+
+def read_excel_header(book, path, sheet_name):
+    try:
+        sheet = book[sheet_name] if sheet_name else book.worksheets[0]
+    except (KeyError, IndexError):
+        raise ExcelSourceError(f'Excel 文件“{path.name}”中找不到工作表“{sheet_name or "首个工作表"}”') from None
+    # Some exporters declare A1:A1 even when the sheet contains many rows and columns.
+    sheet.reset_dimensions()
+    rows = sheet.iter_rows(values_only=True)
+    headers = [str(value or "").strip() for value in next(rows, ())]
+    return sheet, headers, rows
+
+
+def excel_column_mapping(configured, headers, source):
+    def normalize(label):
+        return re.sub(r"\s+", "", label.replace("（", "(").replace("）", ")"))
+
+    exact = set(headers)
+    if len(exact) != len(headers):
+        raise ExcelSourceError(f"{source}包含重复列名，请修正表头")
+    normalized = {}
+    for header in headers:
+        normalized.setdefault(normalize(header), []).append(header)
+
+    mapping = {}
+    for field, label in configured.items():
+        if not label:
+            continue
+        if label in exact:
+            mapping[field] = label
+            continue
+        matches = normalized.get(normalize(label), [])
+        if len(matches) > 1:
+            raise ExcelSourceError(f'{source}有多个列与“{label}”匹配，请填写准确列名')
+        if matches:
+            mapping[field] = matches[0]
+    if "publication" not in mapping:
+        raise ExcelSourceError(f'{source}缺少公开号映射列“{configured["publication"]}”，请检查表头与列名映射')
+    return mapping
+
+
 def inspect(config):
     result = {}
     if config.get('stage') == 'images':
@@ -82,8 +127,8 @@ def inspect(config):
             if key == "excelPath":
                 book = openpyxl.load_workbook(path, read_only=True, data_only=True)
                 try:
-                    sheet = book[config["sheet"]] if config.get("sheet") else book.worksheets[0]
-                    columns.append({"file": str(path), "columns": [str(c or "") for c in next(sheet.iter_rows(values_only=True))], "sheets": book.sheetnames})
+                    _, headers, _ = read_excel_header(book, path, config.get("sheet"))
+                    columns.append({"file": str(path), "columns": headers, "sheets": book.sheetnames})
                 finally:
                     book.close()
             else:
@@ -102,6 +147,7 @@ def progress(message):
 
 def prepare(config, output):
     stage = config.get('stage', 'all')
+    before_date = config.get('beforeDate')
     connection = sqlite3.connect(output / "index.sqlite")
     connection.executescript("""DROP TABLE IF EXISTS metadata; DROP TABLE IF EXISTS chosen; DROP TABLE IF EXISTS body;
       CREATE TABLE metadata(pub TEXT PRIMARY KEY, app TEXT, data TEXT, conflict INTEGER DEFAULT 0);
@@ -120,19 +166,16 @@ def prepare(config, output):
     for path in (files(config["excelPath"], ".xlsx") if stage in ('metadata', 'all') else []):
         book = openpyxl.load_workbook(path, read_only=True, data_only=True)
         try:
-            sheet = book[config["sheet"]] if config["sheet"] else book.worksheets[0]
-            rows = sheet.iter_rows(values_only=True)
-            headers = [str(x or "").strip() for x in next(rows)]
-            required = [config["columns"]["publication"]]
-            if any(x not in headers for x in required) or len(set(headers)) != len(headers):
-                raise ValueError("Excel 缺少必需映射列或含重复列名")
+            sheet, headers, rows = read_excel_header(book, path, config.get("sheet"))
+            source = f'Excel 文件“{path.name}”的工作表“{sheet.title}”'
+            columns = excel_column_mapping(config["columns"], headers, source)
             for row_number, row in enumerate(rows, 2):
                 if not any(v is not None for v in row):
                     continue
                 row_count += 1
-                raw = dict(zip(headers, row))
+                raw = dict(zip_longest(headers, row[:len(headers)]))
                 def field(key):
-                    return raw.get(config["columns"][key])
+                    return raw.get(columns.get(key))
                 try:
                     pub = publication(field("publication"))
                     app = application(field("application")) if field("application") else ''
@@ -175,7 +218,7 @@ def prepare(config, output):
                 record['date'] = date(record['date'])
             except ValueError:
                 reasons.append('已有公告日期无效，请补入正确基础信息')
-        if record["date"] and record["date"] >= config["beforeDate"]:
+        if before_date and record["date"] and record["date"] >= before_date:
             continue
         if config["limit"] and selected >= config["limit"]:
             break
@@ -219,7 +262,11 @@ def prepare(config, output):
     if stage in ('images', 'all'):
         progress("正在解压目标版本 PDF 并提取附图")
     reader = pdf.TextReader(config["ocr"])
-    pdf_args = argparse.Namespace(output=str(output / "images"), batch="HISTORY", dpi=300, pages=None, max_pages=500, before_year=9999, save_pdf=False, figures=True)
+    pdf_args = argparse.Namespace(
+        output=str(output / "images"), batch="HISTORY", dpi=300, pages=None,
+        max_pages=500, before_year=9999, save_pdf=False, figures=True,
+        include_body_figures=False,
+    )
     targets = {row[0] for row in connection.execute('SELECT pub FROM chosen')}
     # Archives are source containers; labelled PDF dates can supply announcement batches.
     entries = pdf.prepared_pdf_entries(Path(config['pdfPath']), 9999, 100 * 1024**2, output / 'unpacked', targets) if stage in ('images', 'all') else []
@@ -243,8 +290,8 @@ def prepare(config, output):
                         record['reasons'].append('PDF 公告日期与基础信息不一致，请核对')
                     elif not record.get('date'):
                         record['date'] = pdf_date
-                    if pdf_date >= config['beforeDate']:
-                        record['reasons'].append('PDF 公告日期超出处理范围，请调整日期')
+                    if before_date and pdf_date >= before_date:
+                        record['reasons'].append('PDF 公告日期超出原预览范围，请重新生成预览')
                 record['metadataPending'] = not all(record.get(key) for key in ('application','date','title'))
                 manifest = str(Path(result["directory"]) / "manifest.json")
                 if record.get("pdfManifest") and record["pdfManifest"] != manifest:
@@ -335,6 +382,9 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     try:
         main()
+    except ExcelSourceError as error:
+        print(json.dumps({"sourceError": str(error)}, ensure_ascii=False), flush=True)
+        sys.exit(1)
     except Exception as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False), flush=True)
         sys.exit(1)

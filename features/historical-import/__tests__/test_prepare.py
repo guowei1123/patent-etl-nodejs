@@ -1,6 +1,7 @@
 """Integration fixtures stay under data/historical-import/validation for review."""
 import importlib.util
 import json
+import re
 import unittest
 import zipfile
 import tarfile
@@ -103,6 +104,44 @@ class HistoryPrepareTests(unittest.TestCase):
         self.assertTrue(all(r['status']=='ready' and r['metadataPending'] for r in rows))
         self.assertTrue(all(r['application']=='' and r['date']=='' and r['title']=='' for r in rows))
 
+    def test_excel_reads_underreported_dimensions_and_normalizes_header_mapping(self):
+        root, config, output = fixture("excel-underreported-dimensions", [], [])
+        workbook_path = root / "export-original.xlsx"
+        book = openpyxl.Workbook()
+        sheet = book.active
+        sheet.append(["序号", "标题 (中文)", "摘要 (中文)", "公开（公告）号", "公开（公告）日", "申请号"])
+        sheet.append([1, "授权标题", "摘要内容", "CN1577321B", "2008-01-01", "CN200410058724.8"])
+        sheet.append([2, "授权标题二", "摘要内容二", "CN1577322B", "2008-02-01", "CN200410058725.6"])
+        book.save(workbook_path)
+        book.close()
+        broken_file = root / "export.xlsx"
+        with zipfile.ZipFile(workbook_path) as original, zipfile.ZipFile(broken_file, "w") as exported:
+            for entry in original.infolist():
+                contents = original.read(entry)
+                if entry.filename == "xl/worksheets/sheet1.xml":
+                    contents, replacements = re.subn(rb'<dimension ref="[^"]+"', b'<dimension ref="A1:A1"', contents)
+                    self.assertEqual(replacements, 1)
+                exported.writestr(entry, contents)
+
+        config.update(stage="metadata", excelPath=str(broken_file))
+        config["columns"].update(
+            publication="公开(公告)号", date="公开(公告)日", title="标题(中文)", abstract="摘要(中文)", application="申请号"
+        )
+        samples = prepare.inspect(config)["excelPath"]["samples"]
+        self.assertIn("公开（公告）号", samples[0]["columns"])
+        prepare.prepare(config, output)
+        records = [json.loads(line) for line in (output / "records.jsonl").read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([record["publication"] for record in records], ["CN1577321B", "CN1577322B"])
+        self.assertEqual(records[0]["title"], "授权标题")
+        self.assertEqual(records[0]["abstract"], "摘要内容")
+        self.assertEqual(records[0]["date"], "2008-01-01")
+        self.assertEqual(records[0]["application"], "CN200410058724")
+        self.assertEqual(records[0]["raw"]["标题 (中文)"], "授权标题")
+
+        config["columns"]["publication"] = "缺失表头"
+        with self.assertRaisesRegex(prepare.ExcelSourceError, "export.xlsx.*缺失表头"):
+            prepare.prepare(config, output)
+
     def stage_fixture(self, name):
         root, config, output = fixture(name, [
             ['CN1577321B', '200410058724.8', '授权版', '2008-01-01', '', ''],
@@ -141,6 +180,42 @@ class HistoryPrepareTests(unittest.TestCase):
         entries = list(prepare.pdf.prepared_pdf_entries(archive_tar,9999,100*1024**2,output/'unpacked-tar',{'CN1577321B'}))
         self.assertEqual(len(entries),1)
         self.assertTrue(list((output/'unpacked-tar').rglob('*.pdf')))
+
+    def test_history_image_stage_only_extracts_abstract_and_drawing(self):
+        root, config, output = self.stage_fixture("stage-drawing-scope")
+        pdf_file = root / "pdf/CN1577321B.pdf"
+        with pymupdf.open() as document:
+            cover = document.new_page()
+            cover.insert_text((40, 40), "CN1577321B")
+            abstract = document.new_page()
+            abstract.insert_text((240, 40), "摘要附图", fontname="china-s")
+            abstract.draw_rect(pymupdf.Rect(100, 150, 300, 310))
+            body = document.new_page()
+            body.insert_text((240, 40), "说明书", fontname="china-s")
+            body.insert_text((150, 350), "E = mc2", fontsize=16)
+            drawing = document.new_page()
+            drawing.insert_text((240, 40), "说明书附图", fontname="china-s")
+            drawing.draw_rect(pymupdf.Rect(120, 150, 350, 330))
+            pdf_file.write_bytes(document.tobytes())
+
+        # A manifest generated with body extraction enabled must not satisfy the new scope.
+        legacy_args = prepare.argparse.Namespace(
+            output=str(output / "images"), batch="HISTORY", dpi=300, pages=None,
+            max_pages=500, before_year=9999, save_pdf=False, figures=True,
+            publication_date="2008-01-01",
+        )
+        legacy = prepare.pdf.extract(
+            pdf_file.read_bytes(), pdf_file.name, str(pdf_file), legacy_args, prepare.pdf.TextReader(False)
+        )
+        self.assertEqual({image["image_role"] for image in legacy["images"]}, {"abstract", "drawing", "formula"})
+
+        config.update(stage="images", excelPath="", descriptionPath="", claimsPath="")
+        prepare.prepare(config, output)
+        record = json.loads((output / "records.jsonl").read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "ready")
+        manifest = json.loads(Path(record["pdfManifest"]).read_text(encoding="utf-8"))
+        self.assertEqual({(image["image_role"], image["page"]) for image in manifest["images"]},
+                         {("abstract", 2), ("drawing", 4)})
 
     def test_unsafe_archive_member_rejected(self):
         root, _, output = self.stage_fixture('stage-unsafe')

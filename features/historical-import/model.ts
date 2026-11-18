@@ -24,16 +24,7 @@ export const configSchema = z
     descriptionText: z.string().min(1).default('说明书'),
     claimsKey: z.string().min(1).default('公开号'),
     claimsText: z.string().min(1).default('权利要求'),
-    limit: z.number().int().min(0).max(1000000).default(100),
-    beforeDate: z
-      .string()
-      .regex(/^\d{4}-\d{2}-\d{2}$/)
-      .refine(
-        (value) =>
-          !Number.isNaN(Date.parse(value)) &&
-          new Date(value).toISOString().slice(0, 10) === value,
-      )
-      .default('2023-01-01'),
+    limit: z.number().int().min(0).max(1000000).default(0),
     cleanupApplications: z.boolean().default(true),
     ocr: z.boolean().default(true),
     noDrawingNumbers: z
@@ -68,6 +59,10 @@ export const configSchema = z
       })
   })
 export type ImportConfig = z.infer<typeof configSchema>
+export type SavedImportConfig = ImportConfig & {
+  // Older previews and queued jobs retain the date scope they were created with.
+  beforeDate?: string
+}
 export interface ImportRecord {
   publication: string
   application: string
@@ -106,7 +101,7 @@ export interface HistoryJob {
   updatedAt: string
   message: string
   processed: number
-  config: ImportConfig
+  config: SavedImportConfig
   summary: JobSummary
   sample: ImportRecord[]
   pid?: number
