@@ -403,6 +403,39 @@ describe('FTP 申请号索引', () => {
   })
 })
 
+describe('getAllBatches', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    pgMock.query.mockReset()
+  })
+
+  it.each([
+    { status: undefined, activeOnly: false, countParams: [] },
+    { status: 'completed' as const, activeOnly: false, countParams: ['completed'] },
+    { status: 'completed' as const, activeOnly: true, countParams: [] },
+  ])('uses the same FTP scope for the count and page ($status, active=$activeOnly)', async ({
+    status, activeOnly, countParams,
+  }) => {
+    const ftpBatch = { batch_code: 'CN-PA-TXTS-10-B-20201006', ftp_folder: '/ftp/20201006' }
+    pgMock.query
+      .mockResolvedValueOnce({ rows: [{ count: '21' }] })
+      .mockResolvedValueOnce({ rows: [ftpBatch] })
+    const { getAllBatches } = await import('../pg-db')
+
+    const result = await getAllBatches(2, 20, status, activeOnly)
+    const [[countSql, actualCountParams], [pageSql, pageParams]] = pgMock.query.mock.calls
+    const where = countSql.split(' WHERE ')[1]
+
+    expect(where).toContain("NULLIF(BTRIM(ftp_folder), '') IS NOT NULL")
+    expect(where).toContain("batch_code NOT LIKE 'HIST-%'")
+    expect(pageSql).toContain(`WHERE ${where}`)
+    if (activeOnly) expect(where).toContain("status IN ('downloading', 'processing', 'importing')")
+    expect(actualCountParams).toEqual(countParams)
+    expect(pageParams).toEqual([...countParams, 20, 20])
+    expect(result).toMatchObject({ items: [ftpBatch], total: 21, total_pages: 2 })
+  })
+})
+
 describe('deleteBatch', () => {
   beforeEach(() => {
     vi.resetModules()

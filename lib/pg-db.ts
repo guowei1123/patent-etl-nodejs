@@ -740,28 +740,32 @@ export async function getAllBatches(
   activeOnly = false,
 ): Promise<PaginatedResponse<SyncBatch>> {
   const offset = (page - 1) * limit
-  let whereClause = ''
-  const params: (string | number)[] = []
+  // Historical imports also create announcement batches in sync_batches.
+  const conditions = [
+    "NULLIF(BTRIM(ftp_folder), '') IS NOT NULL",
+    "batch_code NOT LIKE 'HIST-%'",
+  ]
+  const params: string[] = []
 
   if (activeOnly) {
-    whereClause = "WHERE status IN ('downloading', 'processing', 'importing')"
+    conditions.push("status IN ('downloading', 'processing', 'importing')")
   } else if (status) {
-    whereClause = 'WHERE status = $1'
+    conditions.push('status = $1')
     params.push(status)
   }
 
+  const whereClause = `WHERE ${conditions.join(' AND ')}`
   const countResult = await pool.query(
     `SELECT COUNT(*) FROM sync_batches ${whereClause}`,
     params,
   )
   const total = parseInt(countResult.rows[0].count)
 
-  const dataParams = status ? [status, limit, offset] : [limit, offset]
   const result = await pool.query<SyncBatch>(
     `SELECT * FROM sync_batches ${whereClause}
      ORDER BY created_at DESC
-     LIMIT $${status ? 2 : 1} OFFSET $${status ? 3 : 2}`,
-    dataParams,
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset],
   )
 
   return {
