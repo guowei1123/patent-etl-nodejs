@@ -12,6 +12,7 @@ import { extractSmsContexts } from './sms-context'
 import { planSmsPositions } from './sms-position'
 import { boundedQueue, runPipeline, serialQueue } from './pipeline'
 import { cleanupCompletedArtifacts } from './cleanup'
+import { getRepairPaths, defaultRepairPaths, repairEnvironment } from './settings'
 import { planSmsReplacement } from '../historical-import/pdf/sms-repair-plan'
 import { getPatentImage, patentImageExists, putPatentImage, removePatentImage } from '@/lib/oss-client'
 import sharp from 'sharp'
@@ -324,7 +325,7 @@ export async function smsBatchUpdatePlan(limit:number) {
   return {items,skipped}
 }
 
-export async function runSmsUpdate(number:string,approvedFingerprint:string,task:Task,allowAutomatic=false) {
+export async function runSmsUpdate(number:string,approvedFingerprint:string,task:Task,allowAutomatic=false,checkedOldKeys?:ReadonlySet<string>) {
   const initial=await loadSmsManifest(number)
   if(!initial) throw new Error('没有正文图片候选')
   const lockPath=path.join(initial.directory,'review.lock')
@@ -345,52 +346,34 @@ export async function runSmsUpdate(number:string,approvedFingerprint:string,task
       if(old.rows.length!==snapshot.size || old.rows.some(row=>{const before=snapshot.get(row.id);return !before || row.file_name!==before.file_name || row.oss_key!==before.oss_key || row.asset_id!==before.asset_id || row.is_abstract})) throw new Error('旧图关联已变化，请重新预检')
       await client.query('SELECT id FROM cnipa.image_asset WHERE id=ANY($1::uuid[]) ORDER BY id FOR UPDATE',[[...new Set(old.rows.map(row=>row.asset_id))]])
       const targetKeys=work.plan.images.map(item=>work.prefix+item.name)
-      const expected=new Map(work.plan.images.map((item,index)=>[targetKeys[index].toLowerCase(),item.candidate.sha256!]))
-      const oldSet=new Set(work.oldKeys.map(key=>key.toLowerCase()))
       const journalDir=path.join(root,'sms-updates',number)
       await mkdir(journalDir,{recursive:true})
       const journalPath=path.join(journalDir,'journal.json')
-      let journal:{fingerprint:string;oldHashes:Record<string,string>}|undefined
+      let journal:{fingerprint:string;oldHashes?:Record<string,string>}|undefined
       try {journal=JSON.parse(await readFile(journalPath,'utf8'))} catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
       if(journal && journal.fingerprint!==approvedFingerprint) throw new Error('存在其他未完成的 SMS 更新记录，请先核查')
-      const oldHashes:Record<string,string>=journal?.oldHashes || {}
-      for(const key of [...new Set([...work.oldKeys,...targetKeys])]) {
-        const lower=key.toLowerCase()
-        if(!(await patentImageExists(key))) {
-          if(!journal && oldSet.has(lower)) throw new Error(`旧图不存在：${key}`)
-          continue
+      for(const key of work.oldKeys) {
+        if(checkedOldKeys) {
+          if(!checkedOldKeys.has(key)) throw new Error('正文旧图路径已变化，请重新启动任务进行存在性检查')
+        } else if(!(await patentImageExists(key))) {
+          throw Object.assign(new Error(`正文旧图在对象存储中不存在，已跳过：${key}`),{code:'SMS_STORAGE_MISSING'})
         }
-        const content=(await getPatentImage(key)).content
-        const actual=createHash('sha256').update(content).digest('hex')
-        if(oldSet.has(lower)) {
-          if(journal && actual!==oldHashes[lower] && actual!==expected.get(lower)) throw new Error(`旧图内容发生变化：${key}`)
-          if(!journal) oldHashes[lower]=actual
-        } else if(actual!==expected.get(lower)) throw new Error(`目标图片已存在且内容不同：${key}`)
       }
       if(!journal) {
         const file=await open(journalPath,'wx')
-        try {await file.writeFile(JSON.stringify({fingerprint:approvedFingerprint,number,oldHashes,createdAt:new Date().toISOString()}));await file.sync()} finally {await file.close()}
-      }
-      for(const [index,key] of work.oldKeys.entries()) {
-        task.message=`正在删除旧图 ${index+1} / ${work.oldKeys.length}`
-        if(await patentImageExists(key)) {
-          const actual=createHash('sha256').update((await getPatentImage(key)).content).digest('hex')
-          if(actual===expected.get(key.toLowerCase())) continue
-          if(actual!==oldHashes[key.toLowerCase()]) throw new Error(`旧图内容发生变化：${key}`)
-          await removePatentImage(key)
-        }
+        try {await file.writeFile(JSON.stringify({fingerprint:approvedFingerprint,number,mode:'direct-overwrite',createdAt:new Date().toISOString()}));await file.sync()} finally {await file.close()}
       }
       for(const [index,item] of work.plan.images.entries()) {
         task.message=`正在写入新图 ${index+1} / ${work.count}`
         const key=targetKeys[index],bytes=work.contents[index],hash=item.candidate.sha256!
-        if(await patentImageExists(key)) {
-          if(createHash('sha256').update((await getPatentImage(key)).content).digest('hex')!==hash) throw new Error(`目标图内容不一致：${item.name}`)
-        } else await putPatentImage(key,bytes,'image/jpeg')
+        await putPatentImage(key,bytes,'image/jpeg')
         if(createHash('sha256').update((await getPatentImage(key)).content).digest('hex')!==hash) throw new Error(`新图校验失败：${item.name}`)
         const meta=await sharp(bytes).metadata()
         const asset=await client.query<{id:string}>(`INSERT INTO cnipa.image_asset(oss_key,content_hash,content_type,size,width,height) VALUES($1,$2,'image/jpeg',$3,$4,$5) ON CONFLICT(oss_key) DO UPDATE SET content_hash=EXCLUDED.content_hash,content_type=EXCLUDED.content_type,size=EXCLUDED.size,width=EXCLUDED.width,height=EXCLUDED.height RETURNING id`,[key,hash,bytes.length,meta.width,meta.height])
         await client.query(`UPDATE cnipa.patent_image SET asset_id=$2,oss_key=$3,content_type='image/jpeg',size=$4,width=$5,height=$6 WHERE id=$1`,[item.original.id,asset.rows[0].id,key,bytes.length,meta.width,meta.height])
       }
+      const targetSet=new Set(targetKeys.map(key=>key.toLowerCase()))
+      for(const key of work.oldKeys) if(!targetSet.has(key.toLowerCase())) await removePatentImage(key)
       commitStarted=true
       await client.query('COMMIT')
       task.completed=1
@@ -479,13 +462,11 @@ export async function runCombinedSms(numbers:string[], hooks:{stopped:()=>boolea
 type PipelineItem = {publication_number:string;batch:string;image_names:string[];repair_status?:string}
 const isSmsOnlyCandidate=(item:PipelineItem)=>item.image_names.length>0 && item.image_names.every(name=>/^SMS_[1-9]\d*\.JPG$/i.test(name.trim()))
 type PipelineRecord = {publication_number:string;batch:string;status:string;error?:string;error_code?:string;pdf?:string;pdf_hash?:string;manifest?:string;repair_revision?:number}
-const pipelineHistory=path.join(root,'pipeline-report.jsonl')
-const excelOutbox=path.join(root,'excel-sync.jsonl')
 type ExcelAction={id:string;kind:'mark'|'pdf-note'|'storage-note';number:string;batch:string;note?:string|null}
 
 async function runPipelineChild(command:string,args:string[],proxy:string,input?:string) {
   return new Promise<{code:number|null;signal:NodeJS.Signals|null;records:Record<string,unknown>[];stderr:string} >((resolve,reject)=>{
-    const child=spawn(command,args,{cwd:process.cwd(),windowsHide:true,env:{...process.env,PYTHONUTF8:'1',...(proxy?{HTTP_PROXY:proxy,HTTPS_PROXY:proxy}:{})},stdio:['pipe','pipe','pipe']})
+    const child=spawn(command,args,{cwd:process.cwd(),windowsHide:true,env:{...repairEnvironment(),PYTHONUTF8:'1',...(proxy?{HTTP_PROXY:proxy,HTTPS_PROXY:proxy}:{})},stdio:['pipe','pipe','pipe']})
     const records:Record<string,unknown>[]=[]
     let stderr=''
     const read=(line:string)=>{try {records.push(JSON.parse(line))} catch {/* Diagnostic output is not a structured result. */}}
@@ -509,7 +490,7 @@ export function drawingFailureDetail(result:{code:number|null;signal:NodeJS.Sign
 }
 
 async function snapshotWorkbook(python:string,target:string) {
-  const child=spawn(python,[path.resolve('features/historical-import/pdf/repair-finalize.py'),'--list-candidates'],{cwd:process.cwd(),windowsHide:true,env:{...process.env,PYTHONUTF8:'1'},stdio:['ignore','pipe','pipe']})
+  const child=spawn(python,[path.resolve('features/historical-import/pdf/repair-finalize.py'),'--list-candidates'],{cwd:process.cwd(),windowsHide:true,env:{...repairEnvironment(),PYTHONUTF8:'1'},stdio:['ignore','pipe','pipe']})
   let errorOutput=''
   child.stderr!.on('data',chunk=>{errorOutput+=String(chunk)})
   const closed=new Promise<number|null>((resolve,reject)=>{child.once('error',reject);child.once('close',resolve)})
@@ -530,9 +511,13 @@ async function* readPipelineSnapshot(file:string) {
 export function startContinuousPipeline(input:{delay:number;proxy:string;retry:boolean;concurrency:number}) {
   if(store.task?.status==='running') throw new Error('已有任务正在运行，请等待完成')
   if(!Number.isSafeInteger(input.concurrency)||input.concurrency<1) throw new Error('并行数量需为正整数')
+  const settings=getRepairPaths()
   const task:Task={mode:'download',status:'running',limit:0,completed:0,failed:0,message:'正在读取候选名单…',logs:[],startedAt:new Date().toISOString(),excelPending:0,timings:{downloadMs:0,smsMs:0,drawingMs:0,excelMs:0}}
   store.task=task;store.child=null
   const log=(line:string)=>{task.logs.push(line);if(task.logs.length>100) task.logs.shift()}
+  const suffix=settings.candidateFile===defaultRepairPaths.candidateFile?'':`-${createHash('sha256').update(settings.candidateFile).digest('hex').slice(0,16)}`
+  const pipelineHistory=path.join(root,`pipeline-report${suffix}.jsonl`)
+  const excelOutbox=path.join(root,`excel-sync${suffix}.jsonl`)
   const serial=serialQueue(),throttle=serialQueue(),updates=boundedQueue(input.concurrency)
   const python=process.env.PDF_PYTHON || path.resolve('.venv-pdf',process.platform==='win32'?'Scripts/python.exe':'bin/python')
   let lastStart=0,rateLimited=false,serviceUnavailable=false,storageFailures=0
@@ -614,10 +599,51 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
           return
         } catch(error) {if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error}
       }
+      // Check every object to be replaced before any PDF download or extraction.
+      // Keep the checked paths for the update phase so it never repeats HEAD.
+      const checkedOldKeys=new Set<string>()
+      try {
+        task.message=`正在检查旧图片是否存在 ${number}…`
+        const [smsOriginals,drawingKeys]=await Promise.all([
+          getSmsOriginals(number),
+          smsOnly?Promise.resolve([] as string[]):getPatentDrawingKeys(number,item.batch),
+        ])
+        if(smsOriginals.batch!==item.batch) throw new Error('正文图片所属批次与候选名单不一致，请核对')
+        const smsKeys=smsOriginals.images.filter(image=>!image.is_abstract).flatMap(image=>[image.oss_key,image.asset_key].filter((key):key is string=>!!key))
+        const keys=[...new Set([...drawingKeys,...smsKeys])]
+        const missingKeys:string[]=[]
+        for(let i=0;i<keys.length;i+=8) {
+          if(task.stopping||serviceUnavailable) return
+          const group=keys.slice(i,i+8)
+          const exists=await Promise.all(group.map(key=>patentImageExists(key)))
+          group.forEach((key,index)=>{if(exists[index]) checkedOldKeys.add(key);else missingKeys.push(key)})
+        }
+        if(missingKeys.length) {
+          await serial(async()=>{
+            await enqueue({kind:'storage-note',number,batch:item.batch})
+            await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing',missing_keys:missingKeys})+'\n','utf8')
+            task.failed++;log(`${number}：${missingKeys.length} 张旧图片在对象存储中不存在，已跳过下载、提取和替换，待同步 Excel 备注`)
+            await flushExcel()
+          })
+          return
+        }
+      } catch(error) {
+        const message=error instanceof Error?error.message:String(error)
+        const unavailable=/\b503\b|对象存储检查超时/.test(message)
+        await serial(async()=>{
+          storageFailures=unavailable?storageFailures+1:0
+          if(storageFailures>=3) serviceUnavailable=true
+          task.failed++;log(`${number}：旧图片存在性检查失败，未下载或提取，${message}`)
+          await appendFile(pipelineHistory,JSON.stringify({...item,status:unavailable?'transient_failure':'failed',error:message})+'\n','utf8')
+        })
+        return
+      }
+      if(task.stopping||serviceUnavailable) return
       let ready=history.get(key)
       if(!['ready',...(smsOnly?['pdf_ready']:[])].includes(ready?.status||'') || ready?.repair_revision!==4) ready=undefined
       if(smsOnly && ready?.pdf) {try {await stat(ready.pdf)} catch {ready=undefined}}
       if(!smsOnly) {
+      if(ready?.pdf && path.resolve(ready.pdf)!==path.join(settings.pdfDirectory,`${number}.pdf`)) ready=undefined
       if(ready?.pdf && ready.manifest) {try {await stat(ready.pdf);await stat(ready.manifest)} catch {ready=undefined}}
       }
       if(!ready?.pdf || (!smsOnly && !ready.manifest)) {
@@ -670,28 +696,12 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
           log(smsOnly?`${number}：PDF 已就绪，开始处理正文图片`:`${number}：PDF 和说明书附图已就绪，开始处理`)
           let partialReason=''
           let smsDirectory:string|undefined
-          if(!smsOnly) {
-          const drawingKeys=await getPatentDrawingKeys(number,item.batch)
-          const missingKeys:string[]=[]
-          for(let i=0;i<drawingKeys.length;i+=8) {
-            const keys=drawingKeys.slice(i,i+8)
-            const exists=await Promise.all(keys.map(key=>patentImageExists(key)))
-            keys.forEach((key,index)=>{if(!exists[index]) missingKeys.push(key)})
-          }
-          if(drawingKeys.length && missingKeys.length) {
-            log(`${number}：对象存储中 ${missingKeys.length} 张旧附图不存在，已记录`)
-            await serial(async()=>{
-              await enqueue({kind:'storage-note',number,batch:item.batch})
-              await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing',storage_note:'对象存储中附图不存在',missing_keys:missingKeys})+'\n','utf8')
-            })
-          }
-          }
           const smsStarted=Date.now()
           try {
           const source=await getSmsReviewSource(number)
           if(source.originalNames.length) {
             if(!await loadSmsManifest(number)) {
-              const sms=await runPipelineChild(python,[path.resolve('features/historical-import/pdf/sms-preview.py'),'--pdf',path.join(root,'pdf',`${number}.pdf`),'--publication',number,'--skip-context','--output',path.join(root,'sms-preview',`${number}-${Date.now()}-${randomUUID()}`)],input.proxy)
+              const sms=await runPipelineChild(python,[path.resolve('features/historical-import/pdf/sms-preview.py'),'--pdf',path.join(getRepairPaths().pdfDirectory,`${number}.pdf`),'--publication',number,'--skip-context','--output',path.join(root,'sms-preview',`${number}-${Date.now()}-${randomUUID()}`)],input.proxy)
               if(sms.code!==0 || !sms.records.some(r=>r.status==='sms_ready')) throw new Error(String(sms.records.find(r=>r.error)?.error||'正文图片提取失败'))
               log(`${number}：正文图片已提取`)
             }
@@ -705,12 +715,12 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
             if(plan) {
               const single:Task={mode:'sms-apply',status:'running',number,limit:1,completed:0,failed:0,message:'',logs:[],startedAt:task.startedAt}
               try {
-                await runSmsUpdate(number,plan.fingerprint,single,true)
+                await runSmsUpdate(number,plan.fingerprint,single,true,checkedOldKeys)
                 log(single.logs.join('；'))
                 if(single.logs.some(line=>line.includes('完成标记写入失败'))) throw new Error('正文更新完成标记写入失败，请核对')
               } catch(error) {
                 partialReason=error instanceof Error?error.message:String(error)
-                if(/\b503\b|对象存储检查超时|提交结果不确定/.test(partialReason)) throw error
+                if((error as NodeJS.ErrnoException).code==='SMS_STORAGE_MISSING' || /\b503\b|对象存储检查超时|提交结果不确定/.test(partialReason)) throw error
                 log(`${number}：正文图片待处理，${partialReason}；继续处理说明书附图`)
               }
             }
@@ -720,14 +730,23 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
           if(smsOnly) {
             if(partialReason) throw new Error(`正文图片待处理：${partialReason}`)
             await serial(async()=>{await appendFile(pipelineHistory,JSON.stringify({...item,status:'completed'})+'\n','utf8');storageFailures=0;task.completed++;log(`${number}：正文图片处理完成；未更新说明书附图`)})
-            const errors=await cleanupCompletedArtifacts(root,number,{smsDirectory,pdfHash:ready?.pdf_hash})
+            const errors=await cleanupCompletedArtifacts(root,number,{smsDirectory,pdfHash:ready?.pdf_hash,pdfDirectory:settings.pdfDirectory})
             if(errors.length) log(`${number}：处理文件清理未完成：${errors.join('；')}`)
             return
           }
           log(`${number}：正在更新说明书附图`)
           const drawingStarted=Date.now()
-          const drawing=await runPipelineChild(process.execPath,['--env-file-if-exists=.env','--experimental-strip-types',path.resolve('features/historical-import/pdf/repair-apply.ts'),'--limit','1','--apply','--defer-finalize','--publication',number],'')
+          const drawing=await runPipelineChild(process.execPath,['--env-file-if-exists=.env','--experimental-strip-types',path.resolve('features/historical-import/pdf/repair-apply.ts'),'--limit','1','--apply','--defer-finalize','--checked-old-keys-stdin','--publication',number],'',JSON.stringify([...checkedOldKeys]))
           task.timings!.drawingMs+=Date.now()-drawingStarted
+          if(drawing.records.some(record=>record.error_code==='storage_missing')) {
+            await serial(async()=>{
+              await enqueue({kind:'storage-note',number,batch:item.batch})
+              await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing'})+'\n','utf8')
+              task.failed++;log(`${number}：旧附图在对象存储中不存在，已跳过，待同步 Excel 备注`)
+              await flushExcel()
+            })
+            return
+          }
           if(drawing.code!==0) throw new Error(drawingFailureDetail(drawing))
           if(!drawing.records.some(r=>r.status==='applied'||r.status==='skipped_applied')) throw new Error('没有找到可更新的说明书附图记录')
           if(partialReason) throw new Error(`说明书附图已更新，正文图片待处理：${partialReason}`)
@@ -741,6 +760,15 @@ export function startContinuousPipeline(input:{delay:number;proxy:string;retry:b
           if(errors.length) log(`${number}：处理文件清理未完成：${errors.join('；')}`)
         } catch(error) {
           const message=error instanceof Error?error.message:String(error)
+          if((error as NodeJS.ErrnoException).code==='SMS_STORAGE_MISSING') {
+            await serial(async()=>{
+              await enqueue({kind:'storage-note',number,batch:item.batch})
+              await appendFile(pipelineHistory,JSON.stringify({...item,status:'storage_missing',error:message})+'\n','utf8')
+              task.failed++;log(`${number}：${message}；待同步 Excel 存储备注`)
+              await flushExcel()
+            })
+            return
+          }
           const unavailable=/\b503\b|对象存储检查超时/.test(message)
           await serial(async()=>{
             storageFailures=unavailable?storageFailures+1:0
@@ -775,13 +803,13 @@ export async function startTask(input: { mode: Mode; number?: string; limit: num
   const isPython = isDownload || input.mode === 'sms'
   const command = isPython ? (process.env.PDF_PYTHON || path.resolve('.venv-pdf', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')) : process.execPath
   const args = input.mode === 'sms'
-    ? [path.resolve('features/historical-import/pdf/sms-preview.py'), '--pdf', path.join(root,'pdf',`${input.number}.pdf`), '--publication', input.number!, '--download-if-missing', '--output', path.join(root,'sms-preview',`${input.number}-${Date.now()}-${randomUUID()}`)]
+    ? [path.resolve('features/historical-import/pdf/sms-preview.py'), '--pdf', path.join(getRepairPaths().pdfDirectory,`${input.number}.pdf`), '--publication', input.number!, '--download-if-missing', '--output', path.join(root,'sms-preview',`${input.number}-${Date.now()}-${randomUUID()}`)]
     : isDownload
     ? [path.resolve('features/historical-import/pdf/repair-download.py'), '--limit', String(input.mode === 'preview' ? 1 : input.limit), '--delay', String(input.delay), '--ocr', ...(input.mode === 'preview' ? ['--publication', input.number!] : []), ...(input.retry ? ['--retry-failed'] : [])]
     : ['--env-file-if-exists=.env', '--experimental-strip-types', path.resolve('features/historical-import/pdf/repair-apply.ts'), '--limit', String(input.mode === 'apply' ? 1 : input.limit), '--apply', ...(input.mode === 'apply' ? ['--publication', input.number!] : [])]
   const task: Task = { mode: input.mode, status:'running', number: input.number, limit: input.mode === 'preview' || input.mode === 'apply' || input.mode === 'sms' ? 1 : input.limit, completed:0, failed:0, message:'正在启动…', logs:[], startedAt:new Date().toISOString() }
   store.task = task
-  const child = spawn(command, args, { cwd: process.cwd(), windowsHide:true, env: { ...process.env, PYTHONUTF8:'1', ...(isPython && input.proxy ? {HTTP_PROXY:input.proxy, HTTPS_PROXY:input.proxy} : {}) }, stdio:['ignore','pipe','pipe'] })
+  const child = spawn(command, args, { cwd: process.cwd(), windowsHide:true, env: { ...repairEnvironment(), PYTHONUTF8:'1', ...(isPython && input.proxy ? {HTTP_PROXY:input.proxy, HTTPS_PROXY:input.proxy} : {}) }, stdio:['ignore','pipe','pipe'] })
   store.child = child
   let finished = false
   const readyNumbers = new Set<string>()
@@ -852,8 +880,8 @@ export async function startTask(input: { mode: Mode; number?: string; limit: num
             } else launch()
             function launch() {
               if(task.stopping) {resolve('已停止');return}
-              const smsArgs=[path.resolve('features/historical-import/pdf/sms-preview.py'),'--pdf',path.join(root,'pdf',`${number}.pdf`),'--publication',number,'--download-if-missing','--output',path.join(root,'sms-preview',`${number}-${Date.now()}-${randomUUID()}`)]
-              const sms=spawn(command,smsArgs,{cwd:process.cwd(),windowsHide:true,env:{...process.env,PYTHONUTF8:'1',...(input.proxy?{HTTP_PROXY:input.proxy,HTTPS_PROXY:input.proxy}:{})},stdio:['ignore','pipe','pipe']})
+              const smsArgs=[path.resolve('features/historical-import/pdf/sms-preview.py'),'--pdf',path.join(getRepairPaths().pdfDirectory,`${number}.pdf`),'--publication',number,'--download-if-missing','--output',path.join(root,'sms-preview',`${number}-${Date.now()}-${randomUUID()}`)]
+              const sms=spawn(command,smsArgs,{cwd:process.cwd(),windowsHide:true,env:{...repairEnvironment(),PYTHONUTF8:'1',...(input.proxy?{HTTP_PROXY:input.proxy,HTTPS_PROXY:input.proxy}:{})},stdio:['ignore','pipe','pipe']})
               store.child=sms
               let result='',detail='',settled=false
               createInterface({input:sms.stdout!}).on('line',line=>{try {const parsed=JSON.parse(line);if(parsed.status==='sms_ready') result=`已提取 ${parsed.candidates ?? 0} 个正文图片候选${parsed.needs_review ? `，${parsed.needs_review} 个需人工检查` : ''}`} catch {/* Ignore non-JSON output. */}})

@@ -3,6 +3,7 @@
 This command never writes to the database or object storage.
 """
 import argparse
+import os
 import hashlib
 import importlib.util
 import json
@@ -138,20 +139,31 @@ class RepairReader(extractor.TextReader):
         return text
 
 
+def candidate_items(source):
+    if source.suffix.lower() == '.xlsx':
+        import zipfile
+        spec = importlib.util.spec_from_file_location('repair_workbook', Path(__file__).with_name('repair-finalize.py'))
+        workbook_reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(workbook_reader)
+        with zipfile.ZipFile(source) as workbook, workbook.open(workbook_reader.SHEET) as sheet:
+            yield from workbook_reader.iter_candidate_rows(sheet)
+    else:
+        with source.open(encoding='utf-8') as file:
+            for line in file:
+                yield json.loads(line)
+
+
 def candidates(source, selected):
     # Explicit requests retain their requested version. Batch processing scans
     # grant documents first without treating applications as equivalent records.
     for grant_pass in ([True, False] if not selected else [None]):
-        with source.open(encoding='utf-8') as file:
-            for line in file:
-                item = json.loads(line)
-                number = item.get('publication_number', '')
-                if not NUMBER.fullmatch(number) or (selected and number not in selected):
-                    continue
-                if grant_pass is not None and bool(re.search(r'B\d?$', number)) != grant_pass:
-                    continue
-                yield item
-
+        for item in candidate_items(source):
+            number = item.get('publication_number', '')
+            if not NUMBER.fullmatch(number) or (selected and number not in selected):
+                continue
+            if grant_pass is not None and bool(re.search(r'B\d?$', number)) != grant_pass:
+                continue
+            yield item
 
 def is_rate_limited(error):
     seen = set()
@@ -165,7 +177,7 @@ def is_rate_limited(error):
 
 def main():
     parser = argparse.ArgumentParser(description='准备专利附图修复候选，不修改数据库')
-    parser.add_argument('--input', default='outputs/repeated-image-audit/candidate-patents.jsonl')
+    parser.add_argument('--input', default=os.environ.get('REPAIR_WORKBOOK') or 'outputs/repeated-image-audit/candidate-patents.jsonl')
     parser.add_argument('--output', default='data/patent-image-repair')
     parser.add_argument('--publication', action='append', default=[])
     parser.add_argument('--limit', type=int, default=10)
@@ -178,7 +190,7 @@ def main():
     if args.limit < 1 or args.delay < 0 or any(not NUMBER.fullmatch(n) for n in args.publication):
         parser.error('limit 必须大于 0，delay 不得为负，公开号需为完整 CN 公开号')
     root = Path(args.output).resolve()
-    downloads = root / 'pdf'
+    downloads = Path(os.environ.get('REPAIR_PDF_DIR') or root / 'pdf').resolve()
     downloads.mkdir(parents=True, exist_ok=True)
     report_path = root / 'report.jsonl'
     processed = set()
@@ -189,7 +201,10 @@ def main():
             for line in report:
                 record = json.loads(line)
                 previous[(record.get('publication_number'), record.get('batch'))] = record
-                if (record.get('status') == 'ready' and record.get('repair_revision') == REPAIR_REVISION) or (record.get('status') == 'failed' and not args.retry_failed and not args.publication):
+                reusable = (record.get('status') == 'ready' and record.get('repair_revision') == REPAIR_REVISION
+                            and record.get('pdf') == str(downloads / (record['publication_number'] + '.pdf'))
+                            and (downloads / (record['publication_number'] + '.pdf')).is_file())
+                if reusable or (record.get('status') == 'failed' and not args.retry_failed and not args.publication):
                     processed.add(record['publication_number'])
     downloader = PagePdfDownloader()
     rate_limit = RateLimitHandler()

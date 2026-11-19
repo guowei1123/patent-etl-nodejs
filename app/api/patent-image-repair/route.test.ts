@@ -3,10 +3,26 @@ import { NextRequest } from 'next/server'
 
 const service=vi.hoisted(()=>({getTask:vi.fn(),preview:vi.fn(),smsPreview:vi.fn(),saveSmsReview:vi.fn(),saveSmsReviews:vi.fn(),smsUpdatePlan:vi.fn(),startSmsUpdate:vi.fn(),smsBatchUpdatePlan:vi.fn(),startSmsBatchUpdate:vi.fn(),startTask:vi.fn(),stopTask:vi.fn()}))
 vi.mock('@/features/patent-image-repair/service',()=>service)
+const settings=vi.hoisted(()=>({getRepairPaths:vi.fn(),saveRepairPaths:vi.fn()}))
+vi.mock('@/features/patent-image-repair/settings',()=>settings)
 import { GET, POST } from './route'
 
 describe('附图修复接口',()=>{
-  beforeEach(()=>vi.clearAllMocks())
+  beforeEach(()=>{vi.clearAllMocks();service.getTask.mockReset()})
+  it('保存并返回文件路径配置',async()=>{
+    const paths={candidateFile:'D:/名单/候选.xlsx',pdfDirectory:'E:/PDF'}
+    settings.saveRepairPaths.mockReturnValue(paths)
+    const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'save-paths',...paths})}))
+    expect(r.status).toBe(200)
+    expect(settings.saveRepairPaths).toHaveBeenCalledWith(paths)
+    expect((await r.json()).data).toEqual(paths)
+  })
+  it('任务运行时禁止切换路径',async()=>{
+    service.getTask.mockReturnValue({status:'running'})
+    const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'save-paths',candidateFile:'list.xlsx',pdfDirectory:'PDF'})}))
+    expect(r.status).toBe(400)
+    expect(settings.saveRepairPaths).not.toHaveBeenCalled()
+  })
   it('只允许当前站点发起任务',async()=>{
     const r=await POST(new NextRequest('http://localhost:3000/api/patent-image-repair',{method:'POST',headers:{origin:'http://other.example','content-type':'application/json'},body:'{}'}))
     expect(r.status).toBe(403)

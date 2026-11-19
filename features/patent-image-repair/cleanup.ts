@@ -5,7 +5,7 @@ import path from 'node:path'
 const numberPattern = /^CN\d{7,12}[ABCUSY]\d?$/
 
 // Only remove the specific artifacts used by a successfully completed item.
-export async function cleanupCompletedArtifacts(root:string, number:string, options:{manifest?:string;smsDirectory?:string;pdfHash?:string}) {
+export async function cleanupCompletedArtifacts(root:string, number:string, options:{manifest?:string;smsDirectory?:string;pdfHash?:string;pdfDirectory?:string}) {
   if (!numberPattern.test(number)) throw new Error('清理失败：公开号无效')
   const errors:string[]=[]
   async function attempt(action:()=>Promise<void>) {
@@ -28,7 +28,7 @@ export async function cleanupCompletedArtifacts(root:string, number:string, opti
   if (options.smsDirectory) await attempt(()=>removeDirectory('sms-preview',options.smsDirectory!, 'manifest.json','publication_number'))
   if (options.pdfHash) await attempt(async()=>{
     if (!/^[a-f0-9]{64}$/.test(options.pdfHash!)) throw new Error('PDF 清理哈希无效')
-    const base=await realpath(path.join(root,'pdf'))
+    const base=await realpath(options.pdfDirectory||path.join(root,'pdf'))
     const file=path.join(base,`${number}.pdf`)
     const info=await lstat(file)
     if (!info.isFile() || info.isSymbolicLink()) throw new Error('PDF 清理路径无效')

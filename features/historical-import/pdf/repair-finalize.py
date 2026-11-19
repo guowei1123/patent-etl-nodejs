@@ -12,8 +12,8 @@ from pathlib import Path
 from xml.sax.saxutils import unescape
 
 ROOT = Path.cwd().resolve()
-WORKBOOK = ROOT / 'outputs/repeated-image-audit/重名图片专利公开号.xlsx'
-PDF_DIR = ROOT / 'data/patent-image-repair/pdf'
+WORKBOOK = Path(os.environ.get('REPAIR_WORKBOOK') or ROOT / 'outputs/repeated-image-audit/重名图片专利公开号.xlsx').resolve()
+PDF_DIR = Path(os.environ.get('REPAIR_PDF_DIR') or ROOT / 'data/patent-image-repair/pdf').resolve()
 SHEET = 'xl/worksheets/sheet1.xml'
 MARK = '说明书附图已更新'
 NO_PDF = 'Google Patents 未提供 PDF 链接'

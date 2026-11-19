@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
+import { getRepairPaths, saveRepairPaths } from '@/features/patent-image-repair/settings'
 import { getTask, preview, smsPreview, saveSmsReview, saveSmsReviews, smsUpdatePlan, startSmsUpdate, startTask, stopTask, smsPositionPlan, applySmsPositions, smsBatchUpdatePlan, startSmsBatchUpdate } from '@/features/patent-image-repair/service'
 
 export const runtime = 'nodejs'
@@ -13,6 +14,7 @@ const smsBatchApplySchema=z.object({action:z.literal('sms_batch_apply'),items:z.
 
 export async function GET(request: NextRequest) {
   try {
+    if(request.nextUrl.searchParams.get('type')==='settings') return NextResponse.json({data:getRepairPaths()})
     if(request.nextUrl.searchParams.get('type')==='sms-batch-plan') {
       const limit=request.nextUrl.searchParams.get('limit')
       if(!limit || !/^\d+$/.test(limit)) throw new Error('批量数量需为 1 至 10000')
@@ -38,6 +40,11 @@ export async function POST(request: NextRequest) {
   if (origin && origin !== request.nextUrl.origin) return NextResponse.json({error:'请从当前工作台发起操作'}, {status:403})
   try {
     const body=await request.json()
+    if(body?.action==='save-paths') {
+      if(getTask()?.status==='running') throw new Error('请先停止当前任务，再修改文件路径')
+      const input=z.object({candidateFile:z.string().trim().min(1).max(4096),pdfDirectory:z.string().trim().min(1).max(4096)}).parse(body)
+      return NextResponse.json({data:saveRepairPaths(input)})
+    }
     if (body?.action === 'stop') { stopTask(); return NextResponse.json({data:getTask()}) }
     if (body?.action === 'sms_review') { await saveSmsReview(reviewSchema.parse(body)); return NextResponse.json({data:{saved:true}}) }
     if (body?.action === 'sms_review_batch') return NextResponse.json({data:await saveSmsReviews(batchReviewSchema.parse(body))})

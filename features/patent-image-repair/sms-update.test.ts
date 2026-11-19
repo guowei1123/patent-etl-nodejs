@@ -34,6 +34,7 @@ vi.mock('@/lib/pg-db',()=>({
 vi.mock('@/features/historical-import/pdf/historical-pdf',()=>({readVerifiedImage:vi.fn(),validateManifest:vi.fn()}))
 
 import { smsUpdatePlan, runSmsUpdate, saveSmsReviews, startTask, smsPositionPlan, applySmsPositions, runCombinedSms, smsBatchUpdatePlan, startSmsBatchUpdate } from './service'
+import { patentImageExists } from '@/lib/oss-client'
 
 const digest=(b:Buffer)=>createHash('sha256').update(b).digest('hex')
 const prefix='patents/batch/1234567/'
@@ -101,19 +102,55 @@ describe('SMS 更新顺序和恢复',()=>{
     await expect(runSmsUpdate(plan.number,'f'.repeat(64),task())).rejects.toThrow('变化')
     expect(s.calls).toEqual([])
   })
-  it('不因其他记录引用而阻止更新',async()=>{
+  it('不因其他记录引用而阻止覆盖更新',async()=>{
     const plan=await smsUpdatePlan('CN1234567B')
     s.foreignTarget=true
     await runSmsUpdate(plan.number,plan.fingerprint,task())
-    expect(s.calls.some(x=>x.startsWith('delete:'))).toBe(true)
+    expect(s.calls.some(x=>x.startsWith('put:'))).toBe(true)
   })
-  it('共享旧对象仅删除一次，再写入所有新图并提交',async()=>{
+  it('直接覆盖目标对象，写入所有新图并提交',async()=>{
     const plan=await smsUpdatePlan('CN1234567B')
     await runSmsUpdate(plan.number,plan.fingerprint,task())
-    expect(s.calls.filter(x=>x.startsWith('delete:'))).toHaveLength(1)
-    expect(s.calls.findIndex(x=>x.startsWith('delete:'))).toBeLessThan(s.calls.findIndex(x=>x.startsWith('put:')))
+    expect(s.calls.filter(x=>x.startsWith('delete:'))).toHaveLength(0)
+    expect(s.calls.filter(x=>x.startsWith('put:'))).toHaveLength(2)
     expect(s.calls.at(-1)).toBe('COMMIT')
     expect(s.objects.get((prefix+'SMS_2.JPG').toLowerCase())).toEqual(Buffer.from('new2'))
+  })
+  it('旧对象内容读取会报 503 时仍可通过覆盖完成修复',async()=>{
+    const {getPatentImage}=await import('@/lib/oss-client')
+    const mock=vi.mocked(getPatentImage)
+    const original=mock.getMockImplementation()!
+    mock.mockImplementation(async key=>{
+      if(s.objects.get(key.toLowerCase())?.equals(Buffer.from('old'))) throw new Error('HTTP 503 SlowDownRead')
+      return original(key)
+    })
+    try {
+      const plan=await smsUpdatePlan('CN1234567B')
+      await runSmsUpdate(plan.number,plan.fingerprint,task())
+      expect(s.calls.at(-1)).toBe('COMMIT')
+    } finally {mock.mockImplementation(original)}
+  })
+  it('任意旧对象缺失时在全部写入前退出',async()=>{
+    s.objects.clear()
+    const plan=await smsUpdatePlan('CN1234567B')
+    await expect(runSmsUpdate(plan.number,plan.fingerprint,task())).rejects.toMatchObject({code:'SMS_STORAGE_MISSING'})
+    expect(s.calls.some(x=>x.startsWith('put:')||x.startsWith('delete:'))).toBe(false)
+    expect(s.calls.at(-1)).toBe('ROLLBACK')
+  })
+  it('复用入口已检查的旧路径，写入时不再请求旧对象是否存在',async()=>{
+    const plan=await smsUpdatePlan('CN1234567B')
+    vi.mocked(patentImageExists).mockClear()
+    await runSmsUpdate(plan.number,plan.fingerprint,task(),false,new Set(plan.oldKeys))
+    expect(patentImageExists).not.toHaveBeenCalled()
+    expect(s.calls.at(-1)).toBe('COMMIT')
+  })
+  it('旧路径不在入口检查结果中时停止写入，避免漏检新关联',async()=>{
+    const plan=await smsUpdatePlan('CN1234567B')
+    vi.mocked(patentImageExists).mockClear()
+    await expect(runSmsUpdate(plan.number,plan.fingerprint,task(),false,new Set(['other-key']))).rejects.toThrow('旧图路径已变化')
+    expect(patentImageExists).not.toHaveBeenCalled()
+    expect(s.calls.some(x=>x.startsWith('put:'))).toBe(false)
+    expect(s.calls.at(-1)).toBe('ROLLBACK')
   })
   it('写入中断后可按同一清单重试，不删除已写入的新图',async()=>{
     const plan=await smsUpdatePlan('CN1234567B')

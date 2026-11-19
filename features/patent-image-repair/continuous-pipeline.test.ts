@@ -3,8 +3,9 @@ import { EventEmitter } from 'node:events'
 import { PassThrough, Readable, Writable } from 'node:stream'
 import path from 'node:path'
 
-const state=vi.hoisted(()=>({events:[] as string[],files:new Map<string,string>(),snapshot:'',failFinalize:false,unavailable:false,updateDelay:0,smsPresent:false,items:['CN1234567B','CN1234568B'].map(publication_number=>({publication_number,batch:'batch',image_names:['FT_1.JPG'],repair_status:''}))}))
+const state=vi.hoisted(()=>({events:[] as string[],files:new Map<string,string>(),snapshot:'',failFinalize:false,unavailable:false,missing:false,updateDelay:0,smsPresent:false,items:['CN1234567B','CN1234568B'].map(publication_number=>({publication_number,batch:'batch',image_names:['FT_1.JPG'],repair_status:''}))}))
 vi.mock('node:fs',()=>({
+  readFileSync:()=>{throw Object.assign(new Error('missing'),{code:'ENOENT'})},
   createReadStream:()=>Readable.from([state.snapshot]),
   createWriteStream:()=>{state.snapshot='';return new Writable({write(chunk,_encoding,callback){state.snapshot+=String(chunk);callback()}})},
 }))
@@ -38,6 +39,10 @@ vi.mock('node:child_process',()=>({spawn:vi.fn((_command:string,args:string[])=>
       child.stdout.end(JSON.stringify(output)+'\n');child.stderr.end();child.emit('close',state.failFinalize?1:0)
     } else {
       const n=args[args.indexOf('--publication')+1]
+      if(args.some(arg=>arg.endsWith('repair-apply.ts'))) {
+        expect(args).toContain('--checked-old-keys-stdin')
+        expect(JSON.parse(data)).toContain('original')
+      }
       state.events.push(`update:${n}`)
       const finish=()=>{state.events.push(`update-end:${n}`);child.stdout.end(JSON.stringify({status:'applied',number:n})+'\n');child.stderr.end();child.emit('close',0)}
       if(state.updateDelay) setTimeout(finish,state.updateDelay);else finish()
@@ -45,14 +50,85 @@ vi.mock('node:child_process',()=>({spawn:vi.fn((_command:string,args:string[])=>
   })
   return child
 })}))
-vi.mock('@/lib/pg-db',()=>({getSmsReviewSource:vi.fn(async()=>({originalNames:state.smsPresent?['SMS_1.JPG']:[]})),getPatentDrawingKeys:vi.fn(async()=>['original'])}))
-vi.mock('@/lib/oss-client',()=>({patentImageExists:vi.fn(async()=>{if(state.unavailable) throw new Error('Retryable HTTP status: 503');return true})}))
+vi.mock('@/lib/pg-db',()=>({
+  getSmsReviewSource:vi.fn(async()=>({originalNames:state.smsPresent?['SMS_1.JPG']:[]})),
+  getSmsOriginals:vi.fn(async()=>({batch:'batch',images:state.smsPresent?[{oss_key:'sms-original',asset_key:'sms-original',is_abstract:false}]:[]})),
+  getPatentDrawingKeys:vi.fn(async()=>['original']),
+}))
+vi.mock('@/lib/oss-client',()=>({patentImageExists:vi.fn(async()=>{if(state.unavailable) throw new Error('Retryable HTTP status: 503');return !state.missing})}))
 vi.mock('@/features/historical-import/pdf/historical-pdf',()=>({readVerifiedImage:vi.fn(),validateManifest:vi.fn()}))
 vi.mock('./cleanup',()=>({cleanupCompletedArtifacts:vi.fn(async()=>[])}))
 import { cleanupCompletedArtifacts } from './cleanup'
+import { patentImageExists } from '@/lib/oss-client'
 import { drawingFailureDetail, startContinuousPipeline, stopTask } from './service'
 
 describe('持续下载流水线',()=>{
+  it('旧附图不存在时不下载、不提取、不替换并同步 Excel 存储备注，恢复后可重试',async()=>{
+    state.files.clear();state.events=[];state.missing=true
+    const original=state.items
+    state.items=[original[0]]
+    try {
+      const task=startContinuousPipeline({concurrency:1,delay:0,proxy:'',retry:false})
+      await vi.waitFor(()=>expect(task.status).toBe('failed'))
+      expect(task.failed).toBe(1)
+      expect(state.events.some(event=>event.startsWith('download:')||event.startsWith('sms:'))).toBe(false)
+      expect(state.events.some(event=>event.startsWith('update:'))).toBe(false)
+      expect(state.events).toContain('excel')
+      const outbox=state.files.get(path.resolve('data/patent-image-repair/excel-sync.jsonl'))!
+      expect(outbox).toContain('storage-note')
+      const history=state.files.get(path.resolve('data/patent-image-repair/pipeline-report.jsonl'))!
+      expect(history).toContain('storage_missing')
+      state.missing=false;state.events=[]
+      const resumed=startContinuousPipeline({concurrency:1,delay:0,proxy:'',retry:false})
+      await vi.waitFor(()=>expect(resumed.status).toBe('completed'))
+      expect(resumed.completed).toBe(1)
+      expect(state.events).toContain('download:CN1234567B')
+    } finally {state.items=original;state.missing=false;state.files.clear();state.events=[]}
+  })
+  it('SMS 旧对象不存在时也在下载、正文提取和附图更新前跳过',async()=>{
+    state.files.clear();state.events=[];state.smsPresent=true
+    const original=state.items
+    state.items=[original[0]]
+    vi.mocked(patentImageExists).mockImplementation(async key=>key!=='sms-original')
+    try {
+      const task=startContinuousPipeline({concurrency:1,delay:0,proxy:'',retry:false})
+      await vi.waitFor(()=>expect(task.status).toBe('failed'))
+      expect(state.events).toEqual(['excel'])
+      expect(task.logs.join('\n')).toContain('已跳过下载、提取和替换')
+      expect(state.files.get(path.resolve('data/patent-image-repair/excel-sync.jsonl'))).toContain('storage-note')
+    } finally {
+      state.items=original;state.smsPresent=false;state.files.clear();state.events=[]
+      vi.mocked(patentImageExists).mockImplementation(async()=>{if(state.unavailable) throw new Error('Retryable HTTP status: 503');return !state.missing})
+    }
+  })
+  it('仅正文候选缺图时也不下载 PDF',async()=>{
+    state.files.clear();state.events=[];state.smsPresent=true;state.missing=true
+    const original=state.items
+    state.items=[{...original[0],image_names:['SMS_1.JPG']}]
+    try {
+      const task=startContinuousPipeline({concurrency:1,delay:0,proxy:'',retry:false})
+      await vi.waitFor(()=>expect(task.status).toBe('failed'))
+      expect(state.events).toEqual(['excel'])
+    } finally {state.items=original;state.smsPresent=false;state.missing=false;state.files.clear();state.events=[]}
+  })
+  it('附图存在时只执行一轮存在性检查并把结果传给更新程序',async()=>{
+    state.files.clear();state.events=[];vi.mocked(patentImageExists).mockClear()
+    const original=state.items
+    state.items=[original[0]]
+    vi.mocked(patentImageExists).mockImplementation(async()=>{
+      expect(state.events.some(event=>event.startsWith('download:'))).toBe(false)
+      return true
+    })
+    try {
+      const task=startContinuousPipeline({concurrency:1,delay:0,proxy:'',retry:false})
+      await vi.waitFor(()=>expect(task.status).toBe('completed'))
+      expect(patentImageExists).toHaveBeenCalledTimes(1)
+      expect(state.events).toContain('update:CN1234567B')
+    } finally {
+      state.items=original;state.files.clear();state.events=[]
+      vi.mocked(patentImageExists).mockImplementation(async()=>{if(state.unavailable) throw new Error('Retryable HTTP status: 503');return !state.missing})
+    }
+  })
   it('仅正文候选执行正文提取，不运行说明书附图更新或标记',async()=>{
     state.files.clear();state.events=[];state.smsPresent=true;vi.mocked(cleanupCompletedArtifacts).mockClear()
     const original=state.items
@@ -144,6 +220,8 @@ describe('持续下载流水线',()=>{
     await vi.waitFor(()=>expect(first.status).toBe('failed'))
     expect(first.failed).toBe(3)
     expect(first.message).toContain('对象存储连续异常')
+    expect(state.events.some(event=>event.startsWith('download:'))).toBe(false)
+    expect(state.files.get(path.resolve('data/patent-image-repair/excel-sync.jsonl'))||'').not.toContain('storage-note')
     state.unavailable=false
     const resumed=startContinuousPipeline({concurrency:2,delay:0,proxy:'',retry:false})
     await vi.waitFor(()=>expect(resumed.status).toBe('completed'))
